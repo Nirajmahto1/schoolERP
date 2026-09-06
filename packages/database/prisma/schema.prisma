@@ -1,0 +1,663 @@
+// ──────────────────────────────────────────────
+// School ERP — Prisma Schema
+// ──────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Multi-tenancy ──
+
+model School {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  address   String
+  city      String
+  state     String
+  pincode   String
+  phone     String
+  email     String   @unique
+  website   String?
+  logo      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branches Branch[]
+
+  @@map("schools")
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  schoolId  String
+  name      String
+  code      String
+  address   String
+  phone     String
+  email     String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  users         User[]
+  students      Student[]
+  staff         Staff[]
+  classes       Class[]
+  feeStructures FeeStructure[]
+  attendances   Attendance[]
+  announcements Announcement[]
+  academicYears AcademicYear[]
+  examinations  Examination[]
+  books         Book[]
+  vehicles      Vehicle[]
+  routes        TransportRoute[]
+
+  @@unique([schoolId, code])
+  @@map("branches")
+}
+
+// ── Authentication & Authorization ──
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  role         UserRole
+  isActive     Boolean   @default(true)
+  branchId     String
+  schoolId     String
+  lastLogin    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  student     Student?
+  staff       Staff?
+  parent      Parent?
+  permissions RolePermission[]
+
+  @@index([email])
+  @@index([branchId])
+  @@map("users")
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  module      String
+  action      String
+  description String?
+
+  roles RolePermission[]
+
+  @@unique([module, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  userId       String
+  permissionId String
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+  @@map("role_permissions")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  BRANCH_ADMIN
+  PRINCIPAL
+  TEACHER
+  STUDENT
+  PARENT
+  ACCOUNTANT
+  LIBRARIAN
+  TRANSPORT_MANAGER
+  FINANCE
+}
+
+// ── Academic Year ──
+
+model AcademicYear {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  isCurrent Boolean  @default(false)
+  branchId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  classes      Class[]
+  examinations Examination[]
+
+  @@map("academic_years")
+}
+
+// ── Student Management ──
+
+model Student {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  admissionNo    String    @unique
+  rollNo         String?
+  firstName      String
+  lastName       String
+  dateOfBirth    DateTime
+  gender         Gender
+  bloodGroup     String?
+  classId        String
+  sectionId      String
+  parentId       String
+  address        String
+  phone          String?
+  photo          String?
+  previousSchool String?
+  admissionDate  DateTime
+  isActive       Boolean   @default(true)
+  branchId       String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id])
+  class       Class        @relation(fields: [classId], references: [id])
+  section     Section      @relation(fields: [sectionId], references: [id])
+  parent      Parent       @relation(fields: [parentId], references: [id])
+  branch      Branch       @relation(fields: [branchId], references: [id])
+  attendances Attendance[]
+  feeInvoices FeeInvoice[]
+  examResults ExamResult[]
+  bookIssues  BookIssue[]
+
+  @@index([branchId])
+  @@index([classId, sectionId])
+  @@index([admissionNo])
+  @@map("students")
+}
+
+model Parent {
+  id            String @id @default(cuid())
+  userId        String? @unique
+  fatherName    String
+  fatherPhone   String
+  fatherEmail   String?
+  fatherOccupation String?
+  motherName    String
+  motherPhone   String?
+  motherEmail   String?
+  motherOccupation String?
+  guardianName  String?
+  guardianPhone String?
+  dateOfBirth   DateTime?
+  address       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user     User?    @relation(fields: [userId], references: [id])
+  students Student[]
+
+  @@map("parents")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+// ── Staff & HR ──
+
+model Staff {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  employeeId    String   @unique
+  firstName     String
+  lastName      String
+  dateOfBirth   DateTime
+  gender        Gender
+  designation   String
+  department    String
+  qualification String
+  experience    Int      @default(0)
+  joinDate      DateTime
+  salary        Decimal  @db.Decimal(12, 2)
+  address       String
+  phone         String
+  photo         String?
+  isActive      Boolean  @default(true)
+  branchId      String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id])
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  subjectTeachers SubjectTeacher[]
+  payrolls       Payroll[]
+
+  @@index([branchId])
+  @@index([employeeId])
+  @@map("staff")
+}
+
+model LeaveRequest {
+  id        String      @id @default(cuid())
+  staffId   String
+  leaveType String
+  startDate DateTime
+  endDate   DateTime
+  reason    String
+  status    LeaveStatus @default(PENDING)
+  approvedBy String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@map("leave_requests")
+}
+
+model Payroll {
+  id          String   @id @default(cuid())
+  staffId     String
+  month       Int
+  year        Int
+  basicSalary Decimal  @db.Decimal(12, 2)
+  allowances  Decimal  @default(0) @db.Decimal(12, 2)
+  deductions  Decimal  @default(0) @db.Decimal(12, 2)
+  netSalary   Decimal  @db.Decimal(12, 2)
+  paidOn      DateTime?
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  staff Staff @relation(fields: [staffId], references: [id])
+
+  @@unique([staffId, month, year])
+  @@map("payrolls")
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// ── Academics ──
+
+model Class {
+  id             String @id @default(cuid())
+  name           String
+  numericOrder   Int
+  branchId       String
+  academicYearId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  sections     Section[]
+  subjects     Subject[]
+  students     Student[]
+
+  @@unique([branchId, name, academicYearId])
+  @@map("classes")
+}
+
+model Section {
+  id       String @id @default(cuid())
+  name     String
+  classId  String
+  capacity Int    @default(40)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  students       Student[]
+  timetableSlots TimetableSlot[]
+
+  @@unique([classId, name])
+  @@map("sections")
+}
+
+model Subject {
+  id       String @id @default(cuid())
+  name     String
+  code     String
+  classId  String
+  type     String @default("THEORY") // THEORY, PRACTICAL, ELECTIVE
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  teachers       SubjectTeacher[]
+  timetableSlots TimetableSlot[]
+  examSubjects   ExamSubject[]
+
+  @@unique([classId, code])
+  @@map("subjects")
+}
+
+model SubjectTeacher {
+  id        String @id @default(cuid())
+  subjectId String
+  staffId   String
+  createdAt DateTime @default(now())
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectId, staffId])
+  @@map("subject_teachers")
+}
+
+// ── Attendance (Daily) ──
+
+model Attendance {
+  id        String           @id @default(cuid())
+  date      DateTime         @db.Date
+  status    AttendanceStatus
+  studentId String?
+  staffId   String?
+  remarks   String?
+  markedBy  String
+  branchId  String
+  createdAt DateTime         @default(now())
+
+  student Student? @relation(fields: [studentId], references: [id])
+  staff   Staff?   @relation(fields: [staffId], references: [id])
+  branch  Branch   @relation(fields: [branchId], references: [id])
+
+  @@unique([date, studentId])
+  @@unique([date, staffId])
+  @@index([branchId, date])
+  @@map("attendances")
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  ON_LEAVE
+}
+
+// ── Fee Management ──
+
+model FeeStructure {
+  id       String @id @default(cuid())
+  name     String
+  branchId String
+  classIds String[] // applicable classes
+  amount   Decimal @db.Decimal(12, 2)
+  frequency String @default("MONTHLY") // MONTHLY, QUARTERLY, YEARLY, ONE_TIME
+  dueDay   Int     @default(10)
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id])
+  feeItems FeeItem[]
+
+  @@map("fee_structures")
+}
+
+model FeeInvoice {
+  id         String    @id @default(cuid())
+  invoiceNo  String    @unique
+  studentId  String
+  totalAmount Decimal  @db.Decimal(12, 2)
+  paidAmount  Decimal  @default(0) @db.Decimal(12, 2)
+  dueDate    DateTime
+  status     FeeStatus @default(PENDING)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  student Student   @relation(fields: [studentId], references: [id])
+  items   FeeItem[]
+  payments Payment[]
+
+  @@index([studentId])
+  @@index([status])
+  @@map("fee_invoices")
+}
+
+model FeeItem {
+  id             String @id @default(cuid())
+  invoiceId      String
+  feeStructureId String
+  amount         Decimal @db.Decimal(12, 2)
+  discount       Decimal @default(0) @db.Decimal(12, 2)
+
+  invoice      FeeInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id])
+
+  @@map("fee_items")
+}
+
+model Payment {
+  id            String  @id @default(cuid())
+  invoiceId     String
+  amount        Decimal @db.Decimal(12, 2)
+  method        String  // CASH, ONLINE, CHEQUE, UPI
+  transactionId String?
+  receiptNo     String  @unique
+  paidAt        DateTime @default(now())
+
+  invoice FeeInvoice @relation(fields: [invoiceId], references: [id])
+
+  @@map("payments")
+}
+
+enum FeeStatus {
+  PENDING
+  PARTIAL
+  PAID
+  OVERDUE
+  WAIVED
+}
+
+// ── Examination ──
+
+model Examination {
+  id             String @id @default(cuid())
+  name           String
+  academicYearId String
+  branchId       String
+  startDate      DateTime
+  endDate        DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  academicYear AcademicYear  @relation(fields: [academicYearId], references: [id])
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  subjects     ExamSubject[]
+
+  @@map("examinations")
+}
+
+model ExamSubject {
+  id            String   @id @default(cuid())
+  examinationId String
+  subjectId     String
+  examDate      DateTime
+  startTime     String
+  endTime       String
+  maxMarks      Int
+  passingMarks  Int
+  createdAt     DateTime @default(now())
+
+  examination Examination  @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  subject     Subject      @relation(fields: [subjectId], references: [id])
+  results     ExamResult[]
+
+  @@unique([examinationId, subjectId])
+  @@map("exam_subjects")
+}
+
+model ExamResult {
+  id            String @id @default(cuid())
+  examSubjectId String
+  studentId     String
+  marksObtained Decimal @db.Decimal(5, 2)
+  grade         String?
+  remarks       String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  examSubject ExamSubject @relation(fields: [examSubjectId], references: [id], onDelete: Cascade)
+  student     Student     @relation(fields: [studentId], references: [id])
+
+  @@unique([examSubjectId, studentId])
+  @@map("exam_results")
+}
+
+// ── Timetable ──
+
+model TimetableSlot {
+  id        String @id @default(cuid())
+  sectionId String
+  subjectId String
+  day       String // MONDAY, TUESDAY, etc.
+  startTime String
+  endTime   String
+  room      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id])
+
+  @@unique([sectionId, day, startTime])
+  @@map("timetable_slots")
+}
+
+// ── Communication ──
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  type      String   @default("GENERAL") // GENERAL, CIRCULAR, EVENT, NOTICE
+  targetRoles UserRole[]
+  branchId  String
+  createdBy String
+  isActive  Boolean  @default(true)
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId])
+  @@map("announcements")
+}
+
+// ── Library ──
+
+model Book {
+  id        String @id @default(cuid())
+  title     String
+  author    String
+  isbn      String? @unique
+  publisher String?
+  category  String
+  totalCopies Int   @default(1)
+  availableCopies Int @default(1)
+  shelfLocation String?
+  branchId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch      @relation(fields: [branchId], references: [id])
+  issues BookIssue[]
+
+  @@index([isbn])
+  @@index([branchId])
+  @@map("books")
+}
+
+model BookIssue {
+  id         String    @id @default(cuid())
+  bookId     String
+  studentId  String
+  issueDate  DateTime  @default(now())
+  dueDate    DateTime
+  returnDate DateTime?
+  fine       Decimal   @default(0) @db.Decimal(8, 2)
+  status     String    @default("ISSUED") // ISSUED, RETURNED, OVERDUE
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  book    Book    @relation(fields: [bookId], references: [id])
+  student Student @relation(fields: [studentId], references: [id])
+
+  @@map("book_issues")
+}
+
+// ── Transport ──
+
+model Vehicle {
+  id              String @id @default(cuid())
+  vehicleNo       String @unique
+  type            String
+  capacity        Int
+  driverName      String
+  driverPhone     String
+  driverLicense   String
+  insuranceExpiry DateTime?
+  isActive        Boolean @default(true)
+  branchId        String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch Branch           @relation(fields: [branchId], references: [id])
+  routes TransportRoute[]
+
+  @@map("vehicles")
+}
+
+model TransportRoute {
+  id        String @id @default(cuid())
+  name      String
+  vehicleId String
+  branchId  String
+  fare      Decimal @db.Decimal(8, 2)
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vehicle Vehicle      @relation(fields: [vehicleId], references: [id])
+  branch  Branch       @relation(fields: [branchId], references: [id])
+  stops   RouteStop[]
+
+  @@map("transport_routes")
+}
+
+model RouteStop {
+  id        String @id @default(cuid())
+  routeId   String
+  name      String
+  pickupTime String
+  dropTime   String
+  order     Int
+  createdAt DateTime @default(now())
+
+  route TransportRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@map("route_stops")
+}

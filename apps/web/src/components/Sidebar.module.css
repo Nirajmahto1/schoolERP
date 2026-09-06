@@ -1,0 +1,104 @@
+.sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0;
+  width: var(--sidebar-width); background: var(--white);
+  border-right: 1px solid var(--gray-200);
+  display: flex; flex-direction: column;
+  z-index: 100; transition: transform 0.3s ease;
+}
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+  z-index: 99; display: none;
+}
+.logo {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 20px 16px; border-bottom: 1px solid var(--gray-100);
+}
+.logoIcon {
+  width: 38px; height: 38px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.logoTitle { font-size: 1.125rem; font-weight: 800; color: var(--gray-900); line-height: 1.2; }
+.logoSub { font-size: 0.6875rem; color: var(--gray-400); font-weight: 500; }
+.closeMobile { display: none; background: none; border: none; cursor: pointer; color: var(--gray-400); margin-left: auto; }
+
+.roleSwitcher { padding: 8px 10px 0; }
+.roleSwitcherBtn {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 8px 12px; border-radius: var(--radius-sm); border: 1px dashed var(--gray-300);
+  background: var(--gray-50); font-family: inherit; font-size: 0.8125rem;
+  font-weight: 600; color: var(--primary); cursor: pointer; transition: all 0.15s;
+}
+.roleSwitcherBtn:hover { background: var(--primary-50); border-color: var(--primary); }
+.roleSwitcherDropdown {
+  margin-top: 4px; padding: 4px; background: var(--white);
+  border: 1px solid var(--gray-200); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+.roleSwitcherItem {
+  display: block; width: 100%; padding: 8px 12px; text-align: left;
+  border: none; background: none; font-family: inherit; font-size: 0.8125rem;
+  color: var(--gray-600); cursor: pointer; border-radius: 6px;
+}
+.roleSwitcherItem:hover { background: var(--gray-50); }
+.roleSwitcherActive { background: var(--primary-50) !important; color: var(--primary); font-weight: 600; }
+
+.nav { flex: 1; padding: 12px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.navItem {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-radius: var(--radius-sm);
+  color: var(--gray-600); text-decoration: none;
+  font-size: 0.875rem; font-weight: 500;
+  transition: all 0.15s ease;
+}
+.navItem:hover { background: var(--gray-50); color: var(--gray-800); }
+.navItem .icon { font-size: 20px; }
+.active {
+  background: var(--primary-50) !important;
+  color: var(--primary) !important; font-weight: 600;
+}
+.active .icon { color: var(--primary); }
+
+.userProfile {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 16px; border-top: 1px solid var(--gray-100);
+  margin-top: auto;
+}
+.userInfo { flex: 1; min-width: 0; }
+.userName { font-size: 0.8125rem; font-weight: 600; color: var(--gray-800); }
+.userRole { font-size: 0.6875rem; color: var(--gray-400); }
+.logoutBtn {
+  background: none; border: none; cursor: pointer;
+  color: var(--gray-400); padding: 6px; border-radius: 6px;
+  transition: all 0.15s;
+}
+.logoutBtn:hover { background: var(--danger-light); color: var(--danger); }
+
+.mobileToggle {
+  display: none; position: fixed; top: 14px; left: 14px; z-index: 50;
+  background: var(--white); border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm); padding: 8px; cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.bottomBar {
+  display: none; position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--white); border-top: 1px solid var(--gray-200);
+  z-index: 100; justify-content: space-around; padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+}
+.bottomItem {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  font-size: 0.625rem; color: var(--gray-400); text-decoration: none;
+  padding: 4px 8px; font-weight: 500;
+}
+.bottomItem .icon { font-size: 22px; }
+.bottomActive { color: var(--primary); font-weight: 600; }
+
+@media (max-width: 768px) {
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .overlay { display: block; }
+  .mobileToggle { display: flex; }
+  .closeMobile { display: flex; }
+  .bottomBar { display: flex; }
+}

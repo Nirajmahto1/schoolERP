@@ -1,0 +1,29 @@
+{
+  "name": "school-erp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Comprehensive School ERP Solution — Polyglot Microservice Architecture",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean",
+    "db:migrate": "turbo run db:migrate --filter=@school-erp/database",
+    "db:seed": "turbo run db:seed --filter=@school-erp/database",
+    "docker:up": "docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d",
+    "docker:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "packageManager": "npm@10.0.0"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@school-erp/communication-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "express": "^4.21.0", "cors": "^2.8.5", "dotenv": "^16.4.0",
+    "zod": "^3.23.0", "winston": "^3.14.0",
+    "@school-erp/shared-types": "*", "@school-erp/database": "*"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "typescript": "^5.4.0", "ts-node-dev": "^2.0.0", "rimraf": "^5.0.0"
+  }
+}

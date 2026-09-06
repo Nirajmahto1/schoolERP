@@ -1,0 +1,36 @@
+{
+  "name": "@school-erp/student-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@school-erp/database": "*",
+    "@school-erp/shared-types": "*",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.1",
+    "winston": "^3.14.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/morgan": "^1.9.10",
+    "jest": "^29.7.0",
+    "rimraf": "^5.0.0",
+    "ts-jest": "^29.2.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.0"
+  }
+}

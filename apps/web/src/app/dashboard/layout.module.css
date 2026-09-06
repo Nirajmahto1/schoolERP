@@ -1,0 +1,6 @@
+.layout { display: flex; min-height: 100vh; background: var(--gray-50); }
+.main { flex: 1; margin-left: var(--sidebar-width); min-width: 0; }
+
+@media (max-width: 768px) {
+  .main { margin-left: 0; padding-bottom: 72px; }
+}

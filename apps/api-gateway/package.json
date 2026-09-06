@@ -1,0 +1,37 @@
+{
+  "name": "@school-erp/api-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "clean": "rimraf dist",
+    "lint": "tsc --noEmit",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0",
+    "http-proxy-middleware": "^3.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "express-rate-limit": "^7.4.0",
+    "dotenv": "^16.4.0",
+    "winston": "^3.14.0",
+    "@school-erp/shared-types": "*"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/morgan": "^1.9.9",
+    "@types/jsonwebtoken": "^9.0.7",
+    "typescript": "^5.4.0",
+    "ts-node-dev": "^2.0.0",
+    "rimraf": "^5.0.0",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.0",
+    "ts-jest": "^29.2.0"
+  }
+}
