@@ -67,6 +67,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate --schema ${{ env.PRISMA_SCHEMA }}
+      # turbo does not reliably forward shell env vars into task processes
+      # (verified locally: a probe through `turbo run test` sees no
+      # DATABASE_URL even when the shell set it). The test harness reads the
+      # monorepo-root .env itself, so mirror the local setup by writing one.
+      # The step's own env is applied by GitHub to the shell that runs here.
+      - name: Write test environment (.env)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_erp_test?schema=public
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL is not set on the test job"
+            exit 1
+          fi
+          printf 'DATABASE_URL=%s\n' "$DATABASE_URL" > .env
       # turbo's test task dependsOn build, so shared packages compile first.
       - name: Test (vitest, incl. cross-tenant isolation suite)
         run: npx turbo run test --filter=./packages/* --filter=./apps/*-service --filter=./apps/api-gateway

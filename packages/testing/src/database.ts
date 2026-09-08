@@ -41,7 +41,14 @@ export class TestDatabase {
   }
 
   /** Create the schema and apply every committed migration. */
-  static async create(baseUrl: string): Promise<TestDatabase> {
+  static async create(baseUrl: string | undefined): Promise<TestDatabase> {
+    if (!baseUrl) {
+      throw new Error(
+        'DATABASE_URL is not set. Point it at a scratch Postgres before running ' +
+        'tests (the harness creates and drops throwaway schemas on it). In CI it ' +
+        'comes from the workflow env on the test job.',
+      );
+    }
     const schema = `test_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const db = new TestDatabase(schema, withSchema(baseUrl, schema));
     await db.migrate();
