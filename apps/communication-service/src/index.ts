@@ -2,30 +2,36 @@
 // School ERP — Communication Service
 // ──────────────────────────────────────────────
 
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
-import { ctx } from '@school-erp/auth';
+import { loadServiceEnv } from '@school-erp/config';
+import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 
-dotenv.config({ path: '../../.env' });
-
-const app = express();
+const SERVICE_NAME = 'communication-service';
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
 const prisma = new PrismaClient();
-const PORT = process.env.PORT_COMMUNICATION_SERVICE || 4005;
 
-app.use(cors());
-app.use(express.json());
-app.set('prisma', prisma);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'communication-service', timestamp: new Date().toISOString() });
+// No CORS, no dotenv, no per-service port fallback. Configuration comes from
+// @school-erp/config (missing var = crash at boot), and every non-health route
+// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
+const { app, mount, finalize } = createServiceApp({
+  serviceName: SERVICE_NAME,
+  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
+app.set('prisma', prisma);
+
+const r = Router();
+
 // ── Announcements ──
-app.get('/announcements', async (req, res) => {
+r.get('/announcements', async (req, res) => {
   try {
     const { branchId, roles } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list announcements.' });
+      return;
+    }
     const announcements = await prisma.announcement.findMany({
       // hasSome, not has: a user can hold several roles, and an announcement
       // targeted at any one of them should be visible.
@@ -40,10 +46,14 @@ app.get('/announcements', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/announcements', async (req, res) => {
+r.post('/announcements', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const { userId: createdBy } = ctx(req);
+    if (!branchId || !createdBy) {
+      res.status(403).json({ detail: 'Account has no branch or user id — cannot create announcements.' });
+      return;
+    }
     const { title, content, type, targetRoles, expiresAt } = req.body;
     const roles: string[] = Array.isArray(targetRoles) ? targetRoles : [];
     const announcement = await prisma.announcement.create({
@@ -61,20 +71,23 @@ app.post('/announcements', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.put('/announcements/:id', async (req, res) => {
+r.put('/announcements/:id', async (req, res) => {
   try {
     const announcement = await prisma.announcement.update({ where: { id: req.params.id }, data: req.body });
     res.json(announcement);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/announcements/:id', async (req, res) => {
+r.delete('/announcements/:id', async (req, res) => {
   try {
     await prisma.announcement.update({ where: { id: req.params.id }, data: { isActive: false } });
     res.status(204).send();
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-process.on('SIGTERM', async () => { await prisma.$disconnect(); process.exit(0); });
-app.listen(PORT, () => console.log(`📢 Communication Service running on http://localhost:${PORT}`));
+mount('/', r);
+finalize();
+
+listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
 export { app, prisma };

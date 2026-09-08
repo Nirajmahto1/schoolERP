@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"schoolerp-go-service/src/database"
 	"schoolerp-go-service/src/handlers"
@@ -19,11 +18,9 @@ func main() {
 		AppName: "School ERP - Go Microservice",
 	})
 
-	// Configure CORS
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Branch-ID",
-	}))
+	// NOTE: CORS was removed in Phase 0. This is an internal service reachable
+	// only through the API gateway, which owns the browser-facing CORS policy.
+	// The previous `AllowOrigins: "*"` let any website call it directly.
 
 	// Add Logger Middleware
 	app.Use(logger.New(logger.Config{

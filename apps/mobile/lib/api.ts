@@ -39,15 +39,9 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
     headers['Authorization'] = `Bearer ${authToken}`;
   }
 
-  // Add branch & school headers from stored user
-  const userData = await AsyncStorage.getItem('erp_user');
-  if (userData) {
-    try {
-      const user = JSON.parse(userData);
-      if (user.branchId) headers['x-branch-id'] = user.branchId;
-      if (user.schoolId) headers['x-school-id'] = user.schoolId;
-    } catch { /* ignore */ }
-  }
+  // NOTE: branch/school are intentionally NOT sent as headers. The gateway
+  // mints an audience-bound assertion per request; the legacy x-branch-id /
+  // x-school-id headers are stripped at the edge and never trusted downstream.
 
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
 

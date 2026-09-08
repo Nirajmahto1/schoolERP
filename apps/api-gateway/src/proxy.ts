@@ -48,7 +48,10 @@ export function createUpstreamProxy(
     on: {
       proxyReq: (proxyReq, req) => {
         // Belt and braces: the client's copies were stripped at the edge, but
-        // ensure nothing re-added them before this hop.
+        // ensure nothing re-added them before this hop. The assertion is
+        // replaced (not appended) below — removing it first guarantees a
+        // client-supplied copy can never survive.
+        proxyReq.removeHeader(INTERNAL_ASSERTION_HEADER);
         proxyReq.removeHeader('x-user-id');
         proxyReq.removeHeader('x-user-email');
         proxyReq.removeHeader('x-user-role');

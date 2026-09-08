@@ -1,0 +1,108 @@
+# ──────────────────────────────────────────────
+# CI (BUILD_PLAN 0.8)
+#
+# Scope: backend workspaces (packages + Node services + gateway). The Next.js
+# web app, Expo mobile app, and Go/Python services have no reliable headless
+# build in CI yet — they join when Phase 3/6/8 land their own checks.
+#
+# The test suite creates throwaway Postgres schemas on whatever DATABASE_URL
+# points at, so a plain postgres service container is all the tests need.
+# ──────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Prisma client is generated into node_modules (gitignored) on every job.
+  # The schema lives in packages/database; NPM workspaces hoist the binary.
+  PRISMA_SCHEMA: packages/database/prisma/schema.prisma
+
+jobs:
+  lint:
+    name: Lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate --schema ${{ env.PRISMA_SCHEMA }}
+      - name: Turbo lint (tsc --noEmit per workspace)
+        run: npx turbo run lint --filter=./packages/* --filter=./apps/*-service --filter=./apps/api-gateway
+
+  test:
+    name: Unit & integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: school_erp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_erp_test?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate --schema ${{ env.PRISMA_SCHEMA }}
+      # turbo's test task dependsOn build, so shared packages compile first.
+      - name: Test (vitest, incl. cross-tenant isolation suite)
+        run: npx turbo run test --filter=./packages/* --filter=./apps/*-service --filter=./apps/api-gateway
+
+  build:
+    name: Build (backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate --schema ${{ env.PRISMA_SCHEMA }}
+      - name: Turbo build
+        run: npx turbo run build --filter=./packages/* --filter=./apps/*-service --filter=./apps/api-gateway
+
+  security:
+    name: Secrets & dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (secret scanning)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Report-only for now: the inherited prototype still carries old deps.
+      # Flip to blocking (drop `|| true`) as part of the Phase 1 dependency
+      # cleanup, before any paying tenant connects.
+      - name: npm audit (advisory report)
+        run: npm audit --omit=dev --audit-level=high || true

@@ -575,12 +575,19 @@ router.post('/change-password', async (req: Request, res: Response) => {
 });
 
 // ── GET /students/:id ──
+// Scoped to the caller's branch: a request for another tenant's student id
+// must 404, never 200 — a 404 does not confirm the resource exists.
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch.' });
+      return;
+    }
 
-    const student = await prisma.student.findUnique({
-      where: { id: req.params.id },
+    const student = await prisma.student.findFirst({
+      where: { id: req.params.id, branchId },
       include: {
         user: { select: { email: true, role: true } },
         class: true,
@@ -609,6 +616,10 @@ router.post('/', async (req: Request, res: Response) => {
     const prisma: PrismaClient = req.app.get('prisma');
     const { branchId } = ctx(req);
     const { tenantId: schoolId } = ctx(req);
+    if (!branchId || !schoolId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch or tenant.' });
+      return;
+    }
     const bcrypt = await import('bcryptjs');
 
     let finalParentId = parentId;
@@ -684,13 +695,35 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 // ── PUT /students/:id ──
+// updateMany with the branch scoping: cross-tenant ids update nothing and 404.
+// Identity-bearing fields are stripped from the body — they come from the
+// assertion, never from the client.
 router.put('/:id', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch.' });
+      return;
+    }
 
-    const student = await prisma.student.update({
+    const data = { ...req.body };
+    delete data.id;
+    delete data.branchId;
+    delete data.userId;
+
+    const updated = await prisma.student.updateMany({
+      where: { id: req.params.id, branchId },
+      data,
+    });
+
+    if (updated.count === 0) {
+      res.status(404).json({ type: 'not-found', title: 'Student Not Found', status: 404, detail: `Student ${req.params.id} not found.` });
+      return;
+    }
+
+    const student = await prisma.student.findUnique({
       where: { id: req.params.id },
-      data: req.body,
       include: {
         class: { select: { name: true } },
         section: { select: { name: true } },
@@ -704,14 +737,25 @@ router.put('/:id', async (req: Request, res: Response) => {
 });
 
 // ── DELETE /students/:id (soft delete) ──
+// Scoped like the other by-id routes: cross-tenant ids soft-delete nothing and 404.
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch.' });
+      return;
+    }
 
-    await prisma.student.update({
-      where: { id: req.params.id },
+    const updated = await prisma.student.updateMany({
+      where: { id: req.params.id, branchId },
       data: { isActive: false },
     });
+
+    if (updated.count === 0) {
+      res.status(404).json({ type: 'not-found', title: 'Student Not Found', status: 404, detail: `Student ${req.params.id} not found.` });
+      return;
+    }
 
     res.status(204).send();
   } catch (error) {

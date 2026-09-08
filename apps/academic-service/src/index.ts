@@ -2,39 +2,44 @@
 // School ERP — Academic Service
 // ──────────────────────────────────────────────
 
-import express from 'express';
-import cors from 'cors';
-import morgan from 'morgan';
-import dotenv from 'dotenv';
+import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
+import { loadServiceEnv } from '@school-erp/config';
+import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { logger } from './utils/logger';
-import { ctx } from '@school-erp/auth';
 
-dotenv.config({ path: '../../.env' });
-
-const app = express();
+const SERVICE_NAME = 'academic-service';
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
 const prisma = new PrismaClient();
-const PORT = process.env.PORT_ACADEMIC_SERVICE || 4003;
 
-app.use(cors());
-app.use(express.json());
-app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
-app.set('prisma', prisma);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'academic-service', timestamp: new Date().toISOString() });
+// No CORS, no dotenv, no per-service port fallback. Configuration comes from
+// @school-erp/config (missing var = crash at boot), and every non-health route
+// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
+const { app, mount, finalize } = createServiceApp({
+  serviceName: SERVICE_NAME,
+  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+  onLog: (msg: string) => logger.info(msg),
+  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
+app.set('prisma', prisma);
+
+const r = Router();
+
 // ── Academic Years ──
-app.get('/academic-years', async (req, res) => {
+r.get('/academic-years', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list academic years.' });
+      return;
+    }
     const years = await prisma.academicYear.findMany({ where: { branchId }, orderBy: { startDate: 'desc' } });
     res.json({ data: years });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/academic-years', async (req, res) => {
+r.post('/academic-years', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const year = await prisma.academicYear.create({ data: { ...req.body, branchId } });
@@ -43,9 +48,13 @@ app.post('/academic-years', async (req, res) => {
 });
 
 // ── Classes ──
-app.get('/classes', async (req, res) => {
+r.get('/classes', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list classes.' });
+      return;
+    }
     const classes = await prisma.class.findMany({
       where: { branchId },
       include: { sections: true, subjects: true, _count: { select: { students: true } } },
@@ -55,7 +64,7 @@ app.get('/classes', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/classes', async (req, res) => {
+r.post('/classes', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const { sections, ...classData } = req.body;
@@ -71,7 +80,7 @@ app.post('/classes', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/classes/:id', async (req, res) => {
+r.delete('/classes/:id', async (req, res) => {
   try {
     await prisma.class.delete({ where: { id: req.params.id } });
     res.json({ message: 'Class deleted' });
@@ -79,7 +88,7 @@ app.delete('/classes/:id', async (req, res) => {
 });
 
 // ── Sections ──
-app.get('/sections', async (req, res) => {
+r.get('/sections', async (req, res) => {
   try {
     const { classId } = req.query;
     const sections = await prisma.section.findMany({
@@ -90,14 +99,14 @@ app.get('/sections', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/sections', async (req, res) => {
+r.post('/sections', async (req, res) => {
   try {
     const section = await prisma.section.create({ data: req.body });
     res.status(201).json(section);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/sections/:id', async (req, res) => {
+r.delete('/sections/:id', async (req, res) => {
   try {
     await prisma.section.delete({ where: { id: req.params.id } });
     res.json({ message: 'Section deleted' });
@@ -105,7 +114,7 @@ app.delete('/sections/:id', async (req, res) => {
 });
 
 // ── Subjects ──
-app.get('/subjects', async (req, res) => {
+r.get('/subjects', async (req, res) => {
   try {
     const { classId } = req.query;
     const subjects = await prisma.subject.findMany({
@@ -116,7 +125,7 @@ app.get('/subjects', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/subjects', async (req, res) => {
+r.post('/subjects', async (req, res) => {
   try {
     const { hodStaffId, ...subjectData } = req.body;
     const subject = await prisma.subject.create({ data: subjectData });
@@ -128,7 +137,7 @@ app.post('/subjects', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/subjects/:id', async (req, res) => {
+r.delete('/subjects/:id', async (req, res) => {
   try {
     await prisma.subject.delete({ where: { id: req.params.id } });
     res.json({ message: 'Subject deleted' });
@@ -136,14 +145,14 @@ app.delete('/subjects/:id', async (req, res) => {
 });
 
 // ── Subject-Teacher Assignment ──
-app.post('/subject-teachers', async (req, res) => {
+r.post('/subject-teachers', async (req, res) => {
   try {
     const assignment = await prisma.subjectTeacher.create({ data: req.body });
     res.status(201).json(assignment);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/subject-teachers/:id', async (req, res) => {
+r.delete('/subject-teachers/:id', async (req, res) => {
   try {
     await prisma.subjectTeacher.delete({ where: { id: req.params.id } });
     res.json({ message: 'Assignment removed' });
@@ -151,9 +160,13 @@ app.delete('/subject-teachers/:id', async (req, res) => {
 });
 
 // ── Examinations ──
-app.get('/examinations', async (req, res) => {
+r.get('/examinations', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list examinations.' });
+      return;
+    }
     const exams = await prisma.examination.findMany({
       where: { branchId },
       include: { subjects: { include: { subject: true } } },
@@ -163,7 +176,7 @@ app.get('/examinations', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/examinations', async (req, res) => {
+r.post('/examinations', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const { examSubjects, ...examData } = req.body;
@@ -188,7 +201,7 @@ app.post('/examinations', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.delete('/examinations/:id', async (req, res) => {
+r.delete('/examinations/:id', async (req, res) => {
   try {
     await prisma.examination.delete({ where: { id: req.params.id } });
     res.json({ message: 'Examination deleted' });
@@ -196,7 +209,7 @@ app.delete('/examinations/:id', async (req, res) => {
 });
 
 // ── Exam Results ──
-app.post('/exam-results', async (req, res) => {
+r.post('/exam-results', async (req, res) => {
   try {
     const raw = req.body.results as any[];
     if (!Array.isArray(raw)) {
@@ -215,7 +228,7 @@ app.post('/exam-results', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.get('/exam-results/:examinationId', async (req, res) => {
+r.get('/exam-results/:examinationId', async (req, res) => {
   try {
     const results = await prisma.examResult.findMany({
       where: { examSubject: { examinationId: req.params.examinationId } },
@@ -229,7 +242,7 @@ app.get('/exam-results/:examinationId', async (req, res) => {
 });
 
 // ── Library ──
-app.get('/library/books', async (req, res) => {
+r.get('/library/books', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const { search, category } = req.query;
@@ -255,7 +268,7 @@ app.get('/library/books', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/library/issue', async (req, res) => {
+r.post('/library/issue', async (req, res) => {
   try {
     const { bookId, studentId, staffId, dueDate } = req.body;
     // Check availability
@@ -276,7 +289,7 @@ app.post('/library/issue', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/library/return/:id', async (req, res) => {
+r.post('/library/return/:id', async (req, res) => {
   try {
     const issue = await prisma.bookIssue.findUnique({ where: { id: req.params.id } });
     if (!issue || issue.status === 'RETURNED') {
@@ -303,6 +316,9 @@ app.post('/library/return/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-process.on('SIGTERM', async () => { await prisma.$disconnect(); process.exit(0); });
-app.listen(PORT, () => console.log(`📖 Academic Service running on http://localhost:${PORT}`));
+mount('/', r);
+finalize();
+
+listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
 export { app, prisma };

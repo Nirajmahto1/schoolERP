@@ -2,34 +2,39 @@
 // School ERP — Attendance Service (Daily only)
 // ──────────────────────────────────────────────
 
-import express from 'express';
-import cors from 'cors';
-import morgan from 'morgan';
-import dotenv from 'dotenv';
+import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
+import { loadServiceEnv } from '@school-erp/config';
+import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { logger } from './utils/logger';
-import { ctx } from '@school-erp/auth';
 
-dotenv.config({ path: '../../.env' });
-
-const app = express();
+const SERVICE_NAME = 'attendance-service';
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
 const prisma = new PrismaClient();
-const PORT = process.env.PORT_ATTENDANCE_SERVICE || 4006;
 
-app.use(cors());
-app.use(express.json());
-app.use(morgan('combined', { stream: { write: (msg) => logger.info(msg.trim()) } }));
-app.set('prisma', prisma);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'attendance-service', timestamp: new Date().toISOString() });
+// No CORS, no dotenv, no per-service port fallback. Configuration comes from
+// @school-erp/config (missing var = crash at boot), and every non-health route
+// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
+const { app, mount, finalize } = createServiceApp({
+  serviceName: SERVICE_NAME,
+  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+  onLog: (msg: string) => logger.info(msg),
+  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
+app.set('prisma', prisma);
+
+const r = Router();
+
 // ── Mark Daily Attendance (bulk) ──
-app.post('/attendance/mark', async (req, res) => {
+r.post('/attendance/mark', async (req, res) => {
   try {
     const { date, records, markedBy } = req.body;
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot mark attendance.' });
+      return;
+    }
     // records: [{ studentId: string, status: "PRESENT" | "ABSENT" | "LATE" | "HALF_DAY" | "ON_LEAVE", remarks?: string }]
 
     const result = await Promise.all(
@@ -47,10 +52,14 @@ app.post('/attendance/mark', async (req, res) => {
 });
 
 // ── Mark Staff Attendance ──
-app.post('/attendance/staff/mark', async (req, res) => {
+r.post('/attendance/staff/mark', async (req, res) => {
   try {
     const { date, records, markedBy } = req.body;
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot mark staff attendance.' });
+      return;
+    }
 
     const result = await Promise.all(
       records.map((r: any) =>
@@ -67,7 +76,7 @@ app.post('/attendance/staff/mark', async (req, res) => {
 });
 
 // ── Get Attendance by Date ──
-app.get('/attendance/daily', async (req, res) => {
+r.get('/attendance/daily', async (req, res) => {
   try {
     const { date, classId, sectionId } = req.query;
     const { branchId } = ctx(req);
@@ -104,7 +113,7 @@ app.get('/attendance/daily', async (req, res) => {
 });
 
 // ── Get Student Attendance History ──
-app.get('/attendance/student/:studentId', async (req, res) => {
+r.get('/attendance/student/:studentId', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const where: any = { studentId: req.params.studentId };
@@ -123,10 +132,14 @@ app.get('/attendance/student/:studentId', async (req, res) => {
 });
 
 // ── Monthly Summary ──
-app.get('/attendance/summary', async (req, res) => {
+r.get('/attendance/summary', async (req, res) => {
   try {
     const { month, year, classId } = req.query;
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot compute summaries.' });
+      return;
+    }
     const m = parseInt(month as string);
     const y = parseInt(year as string);
     const startDate = new Date(y, m - 1, 1);
@@ -147,6 +160,9 @@ app.get('/attendance/summary', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-process.on('SIGTERM', async () => { await prisma.$disconnect(); process.exit(0); });
-app.listen(PORT, () => console.log(`📋 Attendance Service running on http://localhost:${PORT}`));
+mount('/', r);
+finalize();
+
+listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
 export { app, prisma };

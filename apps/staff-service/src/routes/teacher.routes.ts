@@ -99,6 +99,10 @@ teacherRoutes.post('/attendance', async (req: Request, res: Response) => {
     const prisma: PrismaClient = req.app.get('prisma');
     const { date, records, markedBy } = req.body;
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot mark attendance.' });
+      return;
+    }
     
     const results = await Promise.all(records.map((r: any) => 
       prisma.attendance.upsert({

@@ -2,31 +2,30 @@
 // School ERP — Staff & HR Service
 // ──────────────────────────────────────────────
 
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@school-erp/database';
+import { loadServiceEnv } from '@school-erp/config';
+import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { teacherRoutes } from './routes/teacher.routes';
+import { adminRoutes } from './routes/admin.routes';
 
-dotenv.config({ path: '../../.env' });
-
-const app = express();
+const SERVICE_NAME = 'staff-service';
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_STAFF_SERVICE');
 const prisma = new PrismaClient();
-const PORT = process.env.PORT_STAFF_SERVICE || 4002;
 
-app.use(cors());
-app.use(express.json());
-app.set('prisma', prisma);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'staff-service', timestamp: new Date().toISOString() });
+// No CORS, no dotenv, no per-service port fallback. Configuration comes from
+// @school-erp/config (missing var = crash at boot), and every non-health route
+// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
+const { app, mount, finalize } = createServiceApp({
+  serviceName: SERVICE_NAME,
+  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
-import { teacherRoutes } from './routes/teacher.routes';
-app.use('/teacher', teacherRoutes);
+mount('/teacher', teacherRoutes);
+mount('/admin', adminRoutes);
 
-import { adminRoutes } from './routes/admin.routes';
-import { ctx } from '@school-erp/auth';
-app.use('/admin', adminRoutes);
+const r = Router();
 
 // ── Staff CRUD (static /staff/* paths MUST be registered before /staff/:id) ──
 const listPayrollsHandler = async (req: Request, res: Response) => {
@@ -55,9 +54,13 @@ const generatePayrollsHandler = async (req: Request, res: Response) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 };
 
-app.get('/staff', async (req, res) => {
+r.get('/staff', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list staff.' });
+      return;
+    }
     const staff = await prisma.staff.findMany({
       where: { branchId, isActive: true },
       include: { user: { select: { email: true, role: true } } },
@@ -67,10 +70,10 @@ app.get('/staff', async (req, res) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.get('/staff/payroll', listPayrollsHandler);
-app.post('/staff/payroll/generate', generatePayrollsHandler);
+r.get('/staff/payroll', listPayrollsHandler);
+r.post('/staff/payroll/generate', generatePayrollsHandler);
 
-app.get('/staff/:id', async (req, res) => {
+r.get('/staff/:id', async (req, res) => {
   try {
     const staff = await prisma.staff.findUnique({
       where: { id: req.params.id },
@@ -86,10 +89,14 @@ app.get('/staff/:id', async (req, res) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.post('/staff', async (req, res) => {
+r.post('/staff', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const { tenantId: schoolId } = ctx(req);
+    if (!branchId || !schoolId) {
+      res.status(403).json({ detail: 'Account has no branch or tenant — cannot create staff.' });
+      return;
+    }
     const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.hash('staff123', 12);
     const user = await prisma.user.create({
@@ -100,7 +107,7 @@ app.post('/staff', async (req, res) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.put('/staff/:id', async (req, res) => {
+r.put('/staff/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { email, role, userId, user, payrolls, leaveRequests, attendances, subjectTeachers, ...staffFields } = req.body;
@@ -119,7 +126,7 @@ app.put('/staff/:id', async (req, res) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.delete('/staff/:id', async (req, res) => {
+r.delete('/staff/:id', async (req, res) => {
   try {
     const staff = await prisma.staff.findUnique({ where: { id: req.params.id } });
     if (!staff) { res.status(404).json({ detail: 'Not found' }); return; }
@@ -130,7 +137,7 @@ app.delete('/staff/:id', async (req, res) => {
 });
 
 // ── Leave Requests ──
-app.get('/leave-requests', async (req, res) => {
+r.get('/leave-requests', async (req, res) => {
   try {
     const requests = await prisma.leaveRequest.findMany({
       include: { staff: { select: { firstName: true, lastName: true, employeeId: true } } },
@@ -140,14 +147,14 @@ app.get('/leave-requests', async (req, res) => {
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.post('/leave-requests', async (req, res) => {
+r.post('/leave-requests', async (req, res) => {
   try {
     const request = await prisma.leaveRequest.create({ data: req.body });
     res.status(201).json(request);
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
-app.patch('/leave-requests/:id', async (req, res) => {
+r.patch('/leave-requests/:id', async (req, res) => {
   try {
     const request = await prisma.leaveRequest.update({ where: { id: req.params.id }, data: req.body });
     res.json(request);
@@ -155,13 +162,17 @@ app.patch('/leave-requests/:id', async (req, res) => {
 });
 
 // ── Payroll (root paths for direct service calls) ──
-app.get('/payroll', listPayrollsHandler);
-app.post('/payroll/generate', generatePayrollsHandler);
+r.get('/payroll', listPayrollsHandler);
+r.post('/payroll/generate', generatePayrollsHandler);
 
 // ── Transport ──
-app.get('/transport/routes', async (req, res) => {
+r.get('/transport/routes', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list routes.' });
+      return;
+    }
     const routes = await prisma.transportRoute.findMany({
       where: { branchId, isActive: true },
       include: {
@@ -185,9 +196,13 @@ app.get('/transport/routes', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.get('/transport/vehicles', async (req, res) => {
+r.get('/transport/vehicles', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list vehicles.' });
+      return;
+    }
     const vehicles = await prisma.vehicle.findMany({
       where: { branchId },
       orderBy: { vehicleNo: 'asc' },
@@ -196,6 +211,9 @@ app.get('/transport/vehicles', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-process.on('SIGTERM', async () => { await prisma.$disconnect(); process.exit(0); });
-app.listen(PORT, () => console.log(`👨‍💼 Staff Service running on http://localhost:${PORT}`));
+mount('/', r);
+finalize();
+
+listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
 export { app, prisma };

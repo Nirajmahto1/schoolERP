@@ -15,11 +15,11 @@ let otherPublicKey: string;
 let otherPrivateKey: string;
 
 beforeAll(() => {
-  const pair = generateKeyPairSync('ed25519');
+  const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   privateKey = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   publicKey = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
-  const other = generateKeyPairSync('ed25519');
+  const other = generateKeyPairSync('rsa', { modulusLength: 2048 });
   otherPrivateKey = other.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   otherPublicKey = other.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 });
@@ -106,7 +106,7 @@ describe('forged credentials are rejected', () => {
 
   it('rejects an HMAC-signed token even if the attacker guesses the public key as the secret', () => {
     // Classic algorithm-confusion attack: sign with HS256 using the PEM public
-    // key as the shared secret. Pinning `algorithms: ['EdDSA']` defeats it.
+    // key as the shared secret. Pinning `algorithms: ['RS256']` defeats it.
     const confused = jwt.sign(
       {
         sub: 'attacker',
@@ -145,7 +145,7 @@ describe('forged credentials are rejected', () => {
     const wrongIssuer = jwt.sign(
       { sub: 'u', email: 'a@b.test', tenantId: 't', roles: ['TEACHER'] },
       privateKey,
-      { algorithm: 'EdDSA', issuer: 'not-the-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
+      { algorithm: 'RS256', issuer: 'not-the-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
     );
     expect(() => verifyAssertion(wrongIssuer, publicKey, 'student-service')).toThrow(
       AssertionError,
@@ -156,7 +156,7 @@ describe('forged credentials are rejected', () => {
     const missingTenant = jwt.sign(
       { sub: 'u', email: 'a@b.test', roles: ['TEACHER'] },
       privateKey,
-      { algorithm: 'EdDSA', issuer: 'school-erp-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
+      { algorithm: 'RS256', issuer: 'school-erp-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
     );
     try {
       verifyAssertion(missingTenant, publicKey, 'student-service');
@@ -170,7 +170,7 @@ describe('forged credentials are rejected', () => {
     const noRoles = jwt.sign(
       { sub: 'u', email: 'a@b.test', tenantId: 't', roles: [] },
       privateKey,
-      { algorithm: 'EdDSA', issuer: 'school-erp-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
+      { algorithm: 'RS256', issuer: 'school-erp-gateway', audience: 'student-service', expiresIn: 60, jwtid: 'j' },
     );
     expect(() => verifyAssertion(noRoles, publicKey, 'student-service')).toThrow(AssertionError);
   });
@@ -191,7 +191,11 @@ describe('SPOOFABLE_IDENTITY_HEADERS', () => {
     }
   });
 
-  it('includes the assertion header itself so a client cannot supply one', () => {
-    expect(SPOOFABLE_IDENTITY_HEADERS).toContain(INTERNAL_ASSERTION_HEADER);
+  it('does NOT strip the assertion header on the service hop', () => {
+    // The gateway's proxy sets x-internal-assertion on its outbound request.
+    // If services stripped it (or a client could make it vanish), no request
+    // could ever authenticate. Forged assertions are defeated by signature
+    // verification (the tests above), not by header deletion.
+    expect(SPOOFABLE_IDENTITY_HEADERS).not.toContain(INTERNAL_ASSERTION_HEADER);
   });
 });

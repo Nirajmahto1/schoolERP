@@ -24,7 +24,19 @@
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { z } from 'zod';
 
-/** Identity headers a client must never be able to set. Stripped at the edge. */
+// RS256 (RSA-2048). The original design called for EdDSA, but jsonwebtoken —
+// the same library that signs the user tokens in tokens.ts — does not support
+// it, and introducing a second JWT library for one feature is not worth it.
+// RS256 is the plan's stated alternative (ADR-3: "EdDSA/RS256-signed JWT").
+
+/**
+ * Identity headers a client must never be able to set.
+ *
+ * Stripped by every app (gateway and services). NOTE: `x-internal-assertion`
+ * is deliberately NOT in this list — services receive it from the gateway's
+ * proxy on every hop and must not strip it before verifying. A forged copy is
+ * defeated by signature verification, not by header deletion.
+ */
 export const SPOOFABLE_IDENTITY_HEADERS = [
   'x-user-id',
   'x-user-email',
@@ -35,7 +47,6 @@ export const SPOOFABLE_IDENTITY_HEADERS = [
   'x-tenant-id',
   'x-tenant-slug',
   'x-permissions',
-  'x-internal-assertion',
   'x-impersonated-by',
 ] as const;
 
@@ -100,9 +111,9 @@ export interface AssertionSigner {
 /**
  * Mint an assertion for one downstream call. Gateway-only.
  *
- * We use EdDSA (Ed25519) rather than RS256: keys and signatures are far
- * smaller, signing is fast enough to do on every proxied request, and there is
- * no key-size footgun.
+ * Signed RS256 (RSA-2048): downstream services hold only the public key, so a
+ * compromised leaf service cannot mint credentials for its peers. Signing
+ * happens once per proxied request and is fast enough at gateway scale.
  */
 export function mintAssertion(input: MintAssertionInput, signer: AssertionSigner): string {
   const payload = {
@@ -116,7 +127,7 @@ export function mintAssertion(input: MintAssertionInput, signer: AssertionSigner
   };
 
   const options: SignOptions = {
-    algorithm: 'EdDSA',
+    algorithm: 'RS256',
     issuer: ISSUER,
     audience: input.audience,
     expiresIn: signer.ttlSeconds,
@@ -154,7 +165,7 @@ export function verifyAssertion(
   let decoded: unknown;
   try {
     decoded = jwt.verify(token, publicKey, {
-      algorithms: ['EdDSA'], // pinned: never accept `none`, never accept HMAC
+      algorithms: ['RS256'], // pinned: never accept `none`, never accept HMAC
       issuer: ISSUER,
       audience,
       clockTolerance: 5,

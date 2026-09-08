@@ -63,8 +63,10 @@ func BurstMarkAttendance(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"detail": "No attendance records provided"})
 	}
 
-	// Get branchId from header or use default
-	branchId := c.Get("X-Branch-ID", "branch-1")
+	// Phase 0: the X-Branch-ID header is no longer trusted (forged-header
+	// escalation). This stub writes no branch scope until Phase 6 replaces
+	// these handlers with assertion-derived context.
+	branchId := ""
 
 	log.Printf("Processing burst-mark attendance: Branch: %s, Records: %d, MarkedBy: %s", branchId, len(req.Records), req.MarkedBy)
 

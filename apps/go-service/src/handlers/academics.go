@@ -36,7 +36,7 @@ func SubmitBulkResults(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"detail": "ExamSubjectID is required"})
 	}
 
-	branchId := c.Get("X-Branch-ID", "branch-1")
+	branchId := ""
 
 	var batch []ExamResult
 	for _, res := range req.Results {

@@ -152,11 +152,12 @@ func main() {
 
 	// WebSocket endpoint
 	r.GET("/notifications/ws", func(c *gin.Context) {
-		userID := c.GetHeader("X-User-Id")
-		branchID := c.GetHeader("X-Branch-Id")
-		if userID == "" {
-			userID = c.Query("user_id")
-		}
+		// Phase 0: identity headers are no longer accepted (forged-header
+		// escalation). The user id comes from a query parameter only for this
+		// interim stub; Phase 6 rewrites the engine with assertion-based auth
+		// and WebSocket subprotocol authentication.
+		userID := c.Query("user_id")
+		branchID := ""
 
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {

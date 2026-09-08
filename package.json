@@ -13,8 +13,12 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "clean": "turbo run clean",
+    "doctor": "node scripts/doctor.mjs",
     "db:migrate": "turbo run db:migrate --filter=@school-erp/database",
+    "db:deploy": "turbo run db:deploy --filter=@school-erp/database",
+    "db:migrate:prod": "npm run build --workspace=@school-erp/database && npm run db:deploy",
     "db:seed": "turbo run db:seed --filter=@school-erp/database",
+    "keygen": "node scripts/dev/generate-keys.mjs",
     "docker:up": "docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d",
     "docker:down": "docker compose -f docker/docker-compose.yml down"
   },

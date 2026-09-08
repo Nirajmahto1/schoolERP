@@ -2,36 +2,42 @@
 // School ERP — Fee & Finance Service
 // ──────────────────────────────────────────────
 
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
-import { ctx } from '@school-erp/auth';
+import { loadServiceEnv } from '@school-erp/config';
+import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 
-dotenv.config({ path: '../../.env' });
-
-const app = express();
+const SERVICE_NAME = 'fee-service';
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_FEE_SERVICE');
 const prisma = new PrismaClient();
-const PORT = process.env.PORT_FEE_SERVICE || 4004;
 
-app.use(cors());
-app.use(express.json());
-app.set('prisma', prisma);
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'fee-service', timestamp: new Date().toISOString() });
+// No CORS, no dotenv, no per-service port fallback. Configuration comes from
+// @school-erp/config (missing var = crash at boot), and every non-health route
+// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
+const { app, mount, finalize } = createServiceApp({
+  serviceName: SERVICE_NAME,
+  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
+app.set('prisma', prisma);
+
+const r = Router();
+
 // ── Fee Structures ──
-app.get('/fee-structures', async (req, res) => {
+r.get('/fee-structures', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list fee structures.' });
+      return;
+    }
     const structures = await prisma.feeStructure.findMany({ where: { branchId, isActive: true } });
     res.json({ data: structures });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/fee-structures', async (req, res) => {
+r.post('/fee-structures', async (req, res) => {
   try {
     const { branchId } = ctx(req);
     const structure = await prisma.feeStructure.create({ data: { ...req.body, branchId } });
@@ -40,7 +46,7 @@ app.post('/fee-structures', async (req, res) => {
 });
 
 // ── Fee Invoices ──
-app.get('/invoices', async (req, res) => {
+r.get('/invoices', async (req, res) => {
   try {
     const { studentId, status, cursor, limit = '20' } = req.query;
     const take = Math.min(parseInt(limit as string), 100);
@@ -65,7 +71,7 @@ app.get('/invoices', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-app.post('/invoices', async (req, res) => {
+r.post('/invoices', async (req, res) => {
   try {
     const { studentId, items, dueDate } = req.body;
     const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount - (item.discount || 0), 0);
@@ -85,7 +91,7 @@ app.post('/invoices', async (req, res) => {
 });
 
 // ── Payments ──
-app.post('/payments', async (req, res) => {
+r.post('/payments', async (req, res) => {
   try {
     const { invoiceId, amount, method, transactionId } = req.body;
     const receiptNo = `REC-${Date.now()}`;
@@ -104,7 +110,7 @@ app.post('/payments', async (req, res) => {
 });
 
 // ── Defaulters ──
-app.get('/defaulters', async (req, res) => {
+r.get('/defaulters', async (req, res) => {
   try {
     const defaulters = await prisma.feeInvoice.findMany({
       where: { status: { in: ['OVERDUE', 'PENDING'] }, dueDate: { lt: new Date() } },
@@ -116,9 +122,13 @@ app.get('/defaulters', async (req, res) => {
 });
 
 // ── Financial Reports ──
-app.get('/reports', async (req, res) => {
+r.get('/reports', async (req, res) => {
   try {
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot compute reports.' });
+      return;
+    }
     
     // Income
     const invoices = await prisma.feeInvoice.findMany({
@@ -151,6 +161,9 @@ app.get('/reports', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-process.on('SIGTERM', async () => { await prisma.$disconnect(); process.exit(0); });
-app.listen(PORT, () => console.log(`💰 Fee Service running on http://localhost:${PORT}`));
+mount('/', r);
+finalize();
+
+listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
 export { app, prisma };

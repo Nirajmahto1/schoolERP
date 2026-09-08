@@ -36,17 +36,9 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
     headers['Authorization'] = `Bearer ${authToken}`;
   }
 
-  // Add branch & school headers from stored user
-  if (typeof window !== 'undefined') {
-    const userData = localStorage.getItem('erp_user');
-    if (userData) {
-      try {
-        const user = JSON.parse(userData);
-        if (user.branchId) headers['x-branch-id'] = user.branchId;
-        if (user.schoolId) headers['x-school-id'] = user.schoolId;
-      } catch { /* ignore */ }
-    }
-  }
+  // NOTE: branch/school are intentionally NOT sent as headers. The gateway
+  // mints an audience-bound assertion per request; the legacy x-branch-id /
+  // x-school-id headers are stripped at the edge and never trusted downstream.
 
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
 
@@ -74,11 +66,8 @@ export const authApi = {
       body: JSON.stringify({ email, password }),
     }),
 
-  register: (data: { email: string; password: string; role: string; branchId: string; schoolId: string }) =>
-    apiRequest<{ id: string; email: string; role: string }>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+  // NOTE: /auth/register was removed in Phase 0 — anyone could mint a
+  // SUPER_ADMIN. User creation is invite-only and lives behind auth.
 
   refresh: (refreshToken: string) =>
     apiRequest<{ accessToken: string }>('/auth/refresh', {

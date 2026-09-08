@@ -49,7 +49,7 @@ func SendBulkNotification(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"detail": "Title and content are required"})
 	}
 
-	branchId := c.Get("X-Branch-ID", "branch-1")
+	branchId := ""
 	annType := req.Type
 	if annType == "" {
 		annType = "GENERAL"
