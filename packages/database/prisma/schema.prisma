@@ -1,5 +1,11 @@
 // ──────────────────────────────────────────────
-// School ERP — Prisma Schema
+// School ERP — Prisma Schema (Phase 2 domain model)
+//
+// BUILD_PLAN 2.1–2.7: role-based identity, enrollment history, scoped
+// uniqueness, session-based attendance, a proper Indian fee ledger,
+// exam workflow, and cross-cutting audit/soft-delete/document models.
+// The schema is additive→backfill→remove against the Phase 0/1 baseline;
+// every table here has a matching migration in prisma/migrations/.
 // ──────────────────────────────────────────────
 
 generator client {
@@ -12,6 +18,9 @@ datasource db {
 }
 
 // ── Multi-tenancy ──
+// The School row lives inside the tenant database (one database per school).
+// ADR-1 moves it to the control plane when tenancy lands; until then the
+// tenant DB is the school.
 
 model School {
   id        String   @id @default(cuid())
@@ -47,47 +56,97 @@ model Branch {
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  users         User[]
-  students      Student[]
-  staff         Staff[]
-  classes       Class[]
-  feeStructures FeeStructure[]
-  attendances   Attendance[]
-  announcements Announcement[]
-  academicYears AcademicYear[]
-  examinations  Examination[]
-  books         Book[]
-  vehicles      Vehicle[]
-  routes        TransportRoute[]
+  userRoleAssignments    UserRoleAssignment[]
+  defaultBranchUsers     User[]              @relation("UserDefaultBranch")
+  students               Student[]
+  staff                  Staff[]
+  staffBranchAssignments StaffBranchAssignment[]
+  classes                Class[]
+  feeStructures          FeeStructure[]
+  attendanceSessions     AttendanceSession[]
+  staffAttendances       StaffAttendance[]
+  announcements          Announcement[]
+  academicYears          AcademicYear[]
+  examinations           Examination[]
+  books                  Book[]
+  vehicles               Vehicle[]
+  routes                 TransportRoute[]
+  enrollments            StudentEnrollment[]
+  feeHeads               FeeHead[]
+  invoices               Invoice[]
+  ledgerEntries          FeeLedger[]
+  sequences              Sequence[]
+  academicCalendar       AcademicCalendar[]
+  holidays               Holiday[]
+  settings               Setting[]
+  notificationLogs       NotificationLog[]
+  promotionBatches       PromotionBatch[]
+  auditLogs              AuditLog[]
+  gradingSchemes         GradingScheme[]
+  assessmentTypes        AssessmentType[]
+  reportCardTemplates    ReportCardTemplate[]
+  coScholasticAreas      CoScholasticArea[]
+  subjectGroups          SubjectGroup[]
+  attendanceSummaries    AttendanceMonthlySummary[]
 
   @@unique([schoolId, code])
   @@map("branches")
 }
 
-// ── Authentication & Authorization ──
+// ── Authentication & Authorization (BUILD_PLAN 2.1) ──
+//
+// Identity is role-based and branch-scoped:
+//   • `Role` is the grantable unit. System roles (isSystem) are seeded in every
+//     tenant database and cannot be renamed or deleted; tenants may add custom
+//     roles. `Permission` (module.action) is granted to roles, never to users.
+//   • `UserRoleAssignment(userId, roleId, branchId?)` gives a person a role in
+//     one branch — or school-wide when branchId is NULL. One person can be a
+//     TEACHER at Branch A and a COORDINATOR at Branch B.
+//   • `User.schoolId` and `User.branchId` are GONE: the tenant is the database,
+//     and the branch is derived from role assignments. `defaultBranchId` is a
+//     pure UX preference.
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  passwordHash String
-  role         UserRole
-  isActive     Boolean   @default(true)
-  branchId     String
-  schoolId     String
-  lastLogin    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  email           String    @unique // unique per tenant — the tenant IS the database
+  passwordHash    String
+  isActive        Boolean   @default(true)
+  // UX default branch. Authorization comes from role assignments; nothing is
+  // derived from this column.
+  defaultBranchId String?
+  // TOTP secret for admin/finance roles (BUILD_PLAN 2.1.5). NULL = no MFA.
+  mfaSecret       String?
+  lastLogin       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  branch Branch @relation(fields: [branchId], references: [id])
-
-  student     Student?
-  staff       Staff?
-  parent      Parent?
-  permissions RolePermission[]
+  defaultBranch Branch?              @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id])
+  roleAssignments UserRoleAssignment[]
+  student        Student?
+  staff          Staff?
+  guardians      Guardian[]
 
   @@index([email])
-  @@index([branchId])
   @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  // System role codes (TEACHER, BRANCH_ADMIN, ...) or tenant-chosen custom codes.
+  code        String   @unique
+  name        String
+  description String?
+  // System roles are seeded with every tenant and cannot be deleted.
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  assignments UserRoleAssignment[]
+
+  @@index([isActive])
+  @@map("roles")
 }
 
 model Permission {
@@ -104,36 +163,59 @@ model Permission {
 
 model RolePermission {
   id           String @id @default(cuid())
-  userId       String
+  roleId       String
   permissionId String
 
-  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, permissionId])
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
   @@map("role_permissions")
 }
 
-enum UserRole {
-  SUPER_ADMIN
-  BRANCH_ADMIN
-  PRINCIPAL
-  TEACHER
-  STUDENT
-  PARENT
-  ACCOUNTANT
-  LIBRARIAN
-  TRANSPORT_MANAGER
-  FINANCE
+model UserRoleAssignment {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  // NULL = school-wide role; otherwise the branch the role applies to.
+  branchId  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  // App code must treat NULL branchId as "school-wide" and keep it unique —
+  // Postgres treats NULLs as distinct in unique indexes, so this composite is
+  // enforced by the application layer for the (userId, roleId, NULL) case.
+  @@unique([userId, roleId, branchId])
+  @@index([roleId])
+  @@index([branchId])
+  @@map("user_role_assignments")
 }
 
-// ── Academic Year ──
+enum GuardianRelation {
+  FATHER
+  MOTHER
+  GUARDIAN
+  GRANDFATHER
+  GRANDMOTHER
+  OTHER
+}
+
+// ── Academic Year & calendar ──
 
 model AcademicYear {
   id        String   @id @default(cuid())
   name      String
   startDate DateTime
   endDate   DateTime
+  // Single-isCurrent guarantee per branch is enforced by a PARTIAL UNIQUE
+  // INDEX in the migration (Prisma cannot express partial indexes):
+  //   CREATE UNIQUE INDEX academic_years_one_current_per_branch
+  //     ON "academic_years"("branchId") WHERE "isCurrent" = true;
   isCurrent Boolean  @default(false)
   branchId  String
   createdAt DateTime @default(now())
@@ -142,25 +224,115 @@ model AcademicYear {
   branch       Branch        @relation(fields: [branchId], references: [id])
   classes      Class[]
   examinations Examination[]
+  terms        Term[]
+  enrollments  StudentEnrollment[]
+  feeStructures FeeStructure[]
+  calendarEntries AcademicCalendar[]
+  holidays     Holiday[]
+  attendanceSessions AttendanceSession[]
+  attendanceSummaries AttendanceMonthlySummary[]
+  studentSubjects StudentSubject[]
+  concessions Concession[]
+  invoices    Invoice[]
+  payments    Payment[]
+  ledgerEntries FeeLedger[]
+  gradingSchemes GradingScheme[]
+  reportCardTemplates ReportCardTemplate[]
+  coScholastics StudentCoScholastic[]
+  fromPromotionBatches PromotionBatch[] @relation("PromotionFromYear")
+  toPromotionBatches   PromotionBatch[] @relation("PromotionToYear")
 
+  @@unique([branchId, name])
+  @@index([branchId, isCurrent])
   @@map("academic_years")
 }
 
-// ── Student Management ──
+model Term {
+  id            String   @id @default(cuid())
+  name          String
+  academicYearId String
+  type          TermType @default(TERM)
+  startDate     DateTime
+  endDate       DateTime
+  createdAt     DateTime @default(now())
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@unique([academicYearId, name])
+  @@map("terms")
+}
+
+enum TermType {
+  TERM
+  SEMESTER
+}
+
+model AcademicCalendar {
+  id            String   @id @default(cuid())
+  branchId      String
+  academicYearId String
+  date          DateTime @db.Date
+  type          CalendarEntryType
+  title         String
+  description   String?
+  // NULL = applies to the whole school; otherwise class-scoped.
+  classId       String?
+  isWorkingDay  Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  class        Class?       @relation(fields: [classId], references: [id], onDelete: SetNull)
+
+  @@index([branchId, date])
+  @@index([academicYearId])
+  @@map("academic_calendar")
+}
+
+enum CalendarEntryType {
+  WORKING_DAY
+  HOLIDAY
+  EVENT
+  EXAM_WINDOW
+}
+
+model Holiday {
+  id            String   @id @default(cuid())
+  branchId      String
+  academicYearId String
+  date          DateTime @db.Date
+  name          String
+  type          HolidayType @default(SCHOOL)
+  createdAt     DateTime @default(now())
+
+  branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+
+  @@unique([branchId, date])
+  @@map("holidays")
+}
+
+enum HolidayType {
+  NATIONAL
+  REGIONAL
+  SCHOOL
+  EXAM
+  OTHER
+}
+
+// ── Student Management & enrollment history ──
 
 model Student {
   id             String    @id @default(cuid())
   userId         String    @unique
-  admissionNo    String    @unique
-  rollNo         String?
+  // Unique per branch (BUILD_PLAN 2.3.3): two branches may both admit
+  // "DPS/2026-27/00042". The global-unique constraint is gone.
+  admissionNo    String
   firstName      String
   lastName       String
   dateOfBirth    DateTime
   gender         Gender
   bloodGroup     String?
-  classId        String
-  sectionId      String
-  parentId       String
   address        String
   phone          String?
   photo          String?
@@ -168,47 +340,150 @@ model Student {
   admissionDate  DateTime
   isActive       Boolean   @default(true)
   branchId       String
+  deletedAt      DateTime?
+  deletedBy      String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id])
-  class       Class        @relation(fields: [classId], references: [id])
-  section     Section      @relation(fields: [sectionId], references: [id])
-  parent      Parent       @relation(fields: [parentId], references: [id])
-  branch      Branch       @relation(fields: [branchId], references: [id])
-  attendances Attendance[]
-  feeInvoices FeeInvoice[]
+  user        User             @relation(fields: [userId], references: [id])
+  branch      Branch           @relation(fields: [branchId], references: [id])
+  guardians   StudentGuardian[]
+  enrollments StudentEnrollment[]
+  subjects    StudentSubject[]
+  leaves      StudentLeave[]
+  attendanceRecords AttendanceRecord[]
+  invoices    Invoice[]
+  concessions Concession[]
+  ledgerEntries FeeLedger[]
   examResults ExamResult[]
+  coScholastics StudentCoScholastic[]
   bookIssues  BookIssue[]
+  documents   Document[]
+  attendanceSummaries AttendanceMonthlySummary[]
 
+  @@unique([branchId, admissionNo])
   @@index([branchId])
-  @@index([classId, sectionId])
-  @@index([admissionNo])
+  @@index([branchId, firstName])
+  @@index([branchId, lastName])
   @@map("students")
 }
 
-model Parent {
-  id            String @id @default(cuid())
-  userId        String? @unique
-  fatherName    String
-  fatherPhone   String
-  fatherEmail   String?
-  fatherOccupation String?
-  motherName    String
-  motherPhone   String?
-  motherEmail   String?
-  motherOccupation String?
-  guardianName  String?
-  guardianPhone String?
-  dateOfBirth   DateTime?
-  address       String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+model StudentEnrollment {
+  id            String           @id @default(cuid())
+  studentId     String
+  academicYearId String
+  branchId      String
+  classId       String
+  sectionId     String
+  rollNo        String?
+  status        EnrollmentStatus @default(ENROLLED)
+  fromDate      DateTime
+  toDate        DateTime?
+  // Set when this enrollment was created/closed by the promotion engine —
+  // the reversal path deletes the next-year rows and restores this row.
+  promotionBatchId String?
+  createdBy     String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
-  user     User?    @relation(fields: [userId], references: [id])
-  students Student[]
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  class        Class        @relation(fields: [classId], references: [id])
+  section      Section      @relation(fields: [sectionId], references: [id])
 
-  @@map("parents")
+  // One active enrollment per student per academic year — promotion CLOSES the
+  // old row (status → PROMOTED) and opens a new one for the next year.
+  @@unique([studentId, academicYearId])
+  @@index([branchId, academicYearId])
+  @@index([classId, sectionId])
+  @@index([status])
+  @@map("student_enrollments")
+}
+
+enum EnrollmentStatus {
+  ENROLLED
+  PROMOTED
+  DETAINED
+  TC_ISSUED
+  LEFT
+}
+
+// A promotion batch makes the March promotion preview → confirm → reversible.
+model PromotionBatch {
+  id                 String   @id @default(cuid())
+  branchId           String
+  fromAcademicYearId String
+  toAcademicYearId   String
+  classId            String
+  sectionId          String?
+  status             PromotionBatchStatus @default(EXECUTED)
+  stats              Json     // { promoted, detained, carriedForward, reversed }
+  createdBy          String?
+  createdAt          DateTime @default(now())
+  reversedAt         DateTime?
+  reversedBy         String?
+
+  branch           Branch       @relation(fields: [branchId], references: [id])
+  fromAcademicYear AcademicYear @relation("PromotionFromYear", fields: [fromAcademicYearId], references: [id])
+  toAcademicYear   AcademicYear @relation("PromotionToYear", fields: [toAcademicYearId], references: [id])
+  class            Class        @relation(fields: [classId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@map("promotion_batches")
+}
+
+enum PromotionBatchStatus {
+  EXECUTED
+  REVERSED
+}
+
+// Guardians: one row per real person (BUILD_PLAN 2.1.3). Divorced parents,
+// single guardians, grandparents, siblings sharing a guardian — all supported.
+
+model Guardian {
+  id          String   @id @default(cuid())
+  // A guardian is a real person and (in 2.1) has their own login. A user row
+  // can back at most one guardian.
+  userId      String?  @unique
+  fullName    String
+  phone       String?
+  email       String?
+  occupation  String?
+  dateOfBirth DateTime?
+  address     String?
+  isActive    Boolean  @default(true)
+  deletedAt   DateTime?
+  deletedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user     User?               @relation(fields: [userId], references: [id])
+  students StudentGuardian[]
+
+  @@index([fullName])
+  @@map("guardians")
+}
+
+model StudentGuardian {
+  id              String           @id @default(cuid())
+  studentId       String
+  guardianId      String
+  relation        GuardianRelation
+  // One guardian per student may be flagged primary for contact & pickup.
+  isPrimary       Boolean          @default(false)
+  canPickup       Boolean          @default(false)
+  receivesComms   Boolean          @default(true)
+  hasPortalAccess Boolean          @default(true)
+  verifiedAt      DateTime?
+  createdAt       DateTime         @default(now())
+
+  student  Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, guardianId])
+  @@index([guardianId])
+  @@map("student_guardians")
 }
 
 enum Gender {
@@ -222,7 +497,9 @@ enum Gender {
 model Staff {
   id            String   @id @default(cuid())
   userId        String   @unique
-  employeeId    String   @unique
+  // Unique per branch (the staff's home branch): two branches may both have
+  // "EMP-001" (BUILD_PLAN 2.3.3).
+  employeeId    String
   firstName     String
   lastName      String
   dateOfBirth   DateTime
@@ -237,20 +514,43 @@ model Staff {
   phone         String
   photo         String?
   isActive      Boolean  @default(true)
+  // Home (primary) branch. Shared teachers also have StaffBranchAssignment rows
+  // for every other branch they teach in.
   branchId      String
+  deletedAt     DateTime?
+  deletedBy     String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   user           User            @relation(fields: [userId], references: [id])
   branch         Branch          @relation(fields: [branchId], references: [id])
-  attendances    Attendance[]
+  branchAssignments StaffBranchAssignment[]
+  staffAttendances StaffAttendance[]
   leaveRequests  LeaveRequest[]
   subjectTeachers SubjectTeacher[]
   payrolls       Payroll[]
+  timetableSlots TimetableSlot[]
+  substitutionsAsOriginal  TimetableSubstitution[] @relation("TimetableOriginalStaff")
+  substitutionsAsSubstitute TimetableSubstitution[] @relation("TimetableSubstituteStaff")
+  documents      Document[]
 
+  @@unique([branchId, employeeId])
   @@index([branchId])
-  @@index([employeeId])
   @@map("staff")
+}
+
+model StaffBranchAssignment {
+  id        String   @id @default(cuid())
+  staffId   String
+  branchId  String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([staffId, branchId])
+  @@map("staff_branch_assignments")
 }
 
 model LeaveRequest {
@@ -305,6 +605,8 @@ model Class {
   numericOrder   Int
   branchId       String
   academicYearId String
+  deletedAt      DateTime?
+  deletedBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -312,7 +614,12 @@ model Class {
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
   sections     Section[]
   subjects     Subject[]
-  students     Student[]
+  enrollments  StudentEnrollment[]
+  subjectGroups SubjectGroup[]
+  feeStructureClasses FeeStructureClass[]
+  calendarEntries AcademicCalendar[]
+  attendanceSessions AttendanceSession[]
+  promotionBatches PromotionBatch[]
 
   @@unique([branchId, name, academicYearId])
   @@map("classes")
@@ -323,12 +630,15 @@ model Section {
   name     String
   classId  String
   capacity Int    @default(40)
+  deletedAt DateTime?
+  deletedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
-  students       Student[]
+  enrollments    StudentEnrollment[]
   timetableSlots TimetableSlot[]
+  attendanceSessions AttendanceSession[]
 
   @@unique([classId, name])
   @@map("sections")
@@ -339,17 +649,60 @@ model Subject {
   name     String
   code     String
   classId  String
-  type     String @default("THEORY") // THEORY, PRACTICAL, ELECTIVE
+  // THEORY, PRACTICAL, ELECTIVE, OPTIONAL (BUILD_PLAN 2.2.4)
+  type     String @default("THEORY")
+  groupId  String?
+  deletedAt DateTime?
+  deletedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
+  group          SubjectGroup?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
   teachers       SubjectTeacher[]
   timetableSlots TimetableSlot[]
   examSubjects   ExamSubject[]
+  studentSubjects StudentSubject[]
+  attendanceSessions AttendanceSession[]
 
   @@unique([classId, code])
+  @@index([groupId])
   @@map("subjects")
+}
+
+// Groups/streams: Science / Commerce / Humanities for XI–XII (2.2.4).
+model SubjectGroup {
+  id        String   @id @default(cuid())
+  name      String
+  classId   String
+  branchId  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  class    Class     @relation(fields: [classId], references: [id], onDelete: Cascade)
+  branch   Branch    @relation(fields: [branchId], references: [id])
+  subjects Subject[]
+
+  @@unique([classId, name])
+  @@map("subject_groups")
+}
+
+// Per-student optional/elective subject selection (2.2.4).
+model StudentSubject {
+  id            String @id @default(cuid())
+  studentId     String
+  subjectId     String
+  academicYearId String
+  isOptional    Boolean @default(false)
+  createdAt     DateTime @default(now())
+
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject      Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, subjectId, academicYearId])
+  @@map("student_subjects")
 }
 
 model SubjectTeacher {
@@ -365,27 +718,148 @@ model SubjectTeacher {
   @@map("subject_teachers")
 }
 
-// ── Attendance (Daily) ──
+// ── Attendance (BUILD_PLAN 2.4) ──
+//
+// A session is one marking pass: daily (class+section, no period) or
+// period-wise (subject + period number). Records hang off the session.
+// After lockedAt only a principal can amend, and every amendment is logged.
 
-model Attendance {
+model AttendanceSession {
+  id        String   @id @default(cuid())
+  branchId  String
+  date      DateTime @db.Date
+  classId   String
+  sectionId String
+  academicYearId String
+  // Period-wise marking: subject + period number; NULL for daily marking.
+  subjectId String?
+  period    Int?
+  markedBy  String
+  lockedAt  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  class        Class        @relation(fields: [classId], references: [id])
+  section      Section      @relation(fields: [sectionId], references: [id])
+  subject      Subject?     @relation(fields: [subjectId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  records      AttendanceRecord[]
+
+  @@unique([branchId, date, classId, sectionId, subjectId, period])
+  @@index([branchId, date])
+  @@index([classId, sectionId, date])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
   id        String           @id @default(cuid())
+  sessionId String
+  studentId String
+  status    AttendanceStatus
+  reason    String?
+  // Linked leave when status is ON_LEAVE (2.4.3).
+  leaveId   String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  session       AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student       Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  leave         StudentLeave?     @relation(fields: [leaveId], references: [id], onDelete: SetNull)
+  amendments    AttendanceAmendment[]
+
+  @@unique([sessionId, studentId])
+  @@index([studentId, createdAt])
+  @@map("attendance_records")
+}
+
+// Every post-lock amendment is append-only (2.4.4) — the trail answers
+// "who changed my child's attendance, from what, to what, when".
+model AttendanceAmendment {
+  id          String   @id @default(cuid())
+  recordId    String
+  beforeStatus AttendanceStatus
+  afterStatus  AttendanceStatus
+  changedBy   String
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  record AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_amendments")
+}
+
+model StaffAttendance {
+  id        String           @id @default(cuid())
+  staffId   String
+  branchId  String
   date      DateTime         @db.Date
   status    AttendanceStatus
-  studentId String?
-  staffId   String?
   remarks   String?
   markedBy  String
-  branchId  String
   createdAt DateTime         @default(now())
 
-  student Student? @relation(fields: [studentId], references: [id])
-  staff   Staff?   @relation(fields: [staffId], references: [id])
-  branch  Branch   @relation(fields: [branchId], references: [id])
+  staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id])
 
-  @@unique([date, studentId])
-  @@unique([date, staffId])
+  @@unique([staffId, date])
   @@index([branchId, date])
-  @@map("attendances")
+  @@map("staff_attendances")
+}
+
+// Denormalised monthly summary (2.4.6): rebuilt by a job, never computed by
+// scanning raw rows at request time.
+model AttendanceMonthlySummary {
+  id            String @id @default(cuid())
+  studentId     String
+  branchId      String
+  academicYearId String
+  year          Int
+  month         Int
+  workingDays   Int     @default(0)
+  presentDays   Int     @default(0)
+  absentDays    Int     @default(0)
+  lateDays      Int     @default(0)
+  halfDays      Int     @default(0)
+  leaveDays     Int     @default(0)
+  medicalDays   Int     @default(0)
+  excusedDays   Int     @default(0)
+  percentage    Decimal @default(0) @db.Decimal(5, 2)
+  rebuiltAt     DateTime @default(now())
+
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+
+  @@unique([studentId, year, month])
+  @@index([branchId, year, month])
+  @@map("attendance_monthly_summaries")
+}
+
+model StudentLeave {
+  id        String   @id @default(cuid())
+  studentId String
+  leaveType String
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  reason    String
+  status    StudentLeaveStatus @default(PENDING)
+  approvedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  records AttendanceRecord[]
+
+  @@index([studentId, startDate])
+  @@map("student_leaves")
+}
+
+enum StudentLeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
 }
 
 enum AttendanceStatus {
@@ -394,100 +868,483 @@ enum AttendanceStatus {
   LATE
   HALF_DAY
   ON_LEAVE
+  MEDICAL
+  EXCUSED
 }
 
-// ── Fee Management ──
+// ── Fees (BUILD_PLAN 2.5) ──
+//
+// FeeHead → FeeStructure → FeeStructureLine/FeeStructureClass. Demands,
+// payments, concessions, late fees and write-offs all post to the append-only
+// FeeLedger; a student's balance is the SUM of ledger entries, never a
+// mutable column. Invoice carries the period + totals; Payment is a state
+// machine with an idempotency key and deterministic allocation.
+
+model FeeHead {
+  id            String   @id @default(cuid())
+  code          String
+  name          String
+  branchId      String
+  type          FeeHeadType @default(TUITION)
+  isRecurring   Boolean  @default(true)
+  isRefundable  Boolean  @default(false)
+  gstApplicable Boolean  @default(false)
+  gstRate       Decimal? @db.Decimal(5, 2)
+  isActive      Boolean  @default(true)
+  deletedAt     DateTime?
+  deletedBy     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch          Branch             @relation(fields: [branchId], references: [id])
+  structureLines  FeeStructureLine[]
+  invoiceLines    InvoiceLine[]
+  ledgerEntries   FeeLedger[]
+  concessions     Concession[]
+
+  @@unique([branchId, code])
+  @@index([branchId, type])
+  @@map("fee_heads")
+}
+
+enum FeeHeadType {
+  TUITION
+  TRANSPORT
+  ADMISSION
+  EXAM
+  LAB
+  ANNUAL
+  DEVELOPMENT
+  LATE_FEE
+  MISCELLANEOUS
+  OTHER
+}
 
 model FeeStructure {
-  id       String @id @default(cuid())
-  name     String
-  branchId String
-  classIds String[] // applicable classes
-  amount   Decimal @db.Decimal(12, 2)
-  frequency String @default("MONTHLY") // MONTHLY, QUARTERLY, YEARLY, ONE_TIME
-  dueDay   Int     @default(10)
-  isActive Boolean @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  branch Branch @relation(fields: [branchId], references: [id])
-  feeItems FeeItem[]
-
-  @@map("fee_structures")
-}
-
-model FeeInvoice {
-  id         String    @id @default(cuid())
-  invoiceNo  String    @unique
-  studentId  String
-  totalAmount Decimal  @db.Decimal(12, 2)
-  paidAmount  Decimal  @default(0) @db.Decimal(12, 2)
-  dueDate    DateTime
-  status     FeeStatus @default(PENDING)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-
-  student Student   @relation(fields: [studentId], references: [id])
-  items   FeeItem[]
-  payments Payment[]
-
-  @@index([studentId])
-  @@index([status])
-  @@map("fee_invoices")
-}
-
-model FeeItem {
-  id             String @id @default(cuid())
-  invoiceId      String
-  feeStructureId String
-  amount         Decimal @db.Decimal(12, 2)
-  discount       Decimal @default(0) @db.Decimal(12, 2)
-
-  invoice      FeeInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id])
-
-  @@map("fee_items")
-}
-
-model Payment {
-  id            String  @id @default(cuid())
-  invoiceId     String
-  amount        Decimal @db.Decimal(12, 2)
-  method        String  // CASH, ONLINE, CHEQUE, UPI
-  transactionId String?
-  receiptNo     String  @unique
-  paidAt        DateTime @default(now())
-
-  invoice FeeInvoice @relation(fields: [invoiceId], references: [id])
-
-  @@map("payments")
-}
-
-enum FeeStatus {
-  PENDING
-  PARTIAL
-  PAID
-  OVERDUE
-  WAIVED
-}
-
-// ── Examination ──
-
-model Examination {
-  id             String @id @default(cuid())
+  id             String   @id @default(cuid())
   name           String
-  academicYearId String
   branchId       String
-  startDate      DateTime
-  endDate        DateTime
+  academicYearId String
+  // Optional student category (e.g. "RTE", "STAFF_WARD") the structure applies to.
+  studentCategory String?
+  isActive       Boolean  @default(true)
+  deletedAt      DateTime?
+  deletedBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  branch       Branch             @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear       @relation(fields: [academicYearId], references: [id])
+  lines        FeeStructureLine[]
+  classes      FeeStructureClass[]
+
+  @@index([branchId, academicYearId])
+  @@map("fee_structures")
+}
+
+model FeeStructureLine {
+  id               String   @id @default(cuid())
+  feeStructureId   String
+  feeHeadId        String
+  amount           Decimal  @db.Decimal(12, 2)
+  frequency        FeeFrequency @default(MONTHLY)
+  dueDay           Int      @default(10)
+  createdAt        DateTime @default(now())
+
+  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+  feeHead      FeeHead      @relation(fields: [feeHeadId], references: [id])
+
+  @@map("fee_structure_lines")
+}
+
+// Applicability join — the old unnormalised `classIds String[]` is gone (2.5.2).
+model FeeStructureClass {
+  id             String @id @default(cuid())
+  feeStructureId String
+  classId        String
+  createdAt      DateTime @default(now())
+
+  feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+  class        Class        @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([feeStructureId, classId])
+  @@map("fee_structure_classes")
+}
+
+enum FeeFrequency {
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  YEARLY
+  ONE_TIME
+}
+
+model Concession {
+  id            String            @id @default(cuid())
+  studentId     String
+  academicYearId String
+  // NULL = applies to the whole invoice; otherwise one fee head.
+  feeHeadId     String?
+  category      ConcessionCategory @default(OTHER)
+  type          ConcessionType     @default(FLAT)
+  // Percentage (0-100) when type = PERCENTAGE, else an amount.
+  value         Decimal            @db.Decimal(12, 2)
+  reason        String?
+  status        ConcessionStatus   @default(PENDING)
+  approvedBy    String?
+  approvedAt    DateTime?
+  validFrom     DateTime?
+  validTo       DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  feeHead      FeeHead?     @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
+  invoiceLines InvoiceLine[]
+
+  @@index([studentId, academicYearId])
+  @@map("concessions")
+}
+
+enum ConcessionCategory {
+  SCHOLARSHIP
+  SIBLING_DISCOUNT
+  STAFF_WARD
+  RTE
+  MERIT
+  NEED_BASED
+  OTHER
+}
+
+enum ConcessionType {
+  PERCENTAGE
+  FLAT
+}
+
+enum ConcessionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+// Append-only. Never UPDATE or DELETE a row; corrections are ADJUSTMENT or
+// WRITE_OFF entries. Balance = SUM(amount) over the student's entries.
+model FeeLedger {
+  id            String        @id @default(cuid())
+  studentId     String
+  branchId      String
+  academicYearId String
+  type          FeeLedgerType
+  // Signed: DEMAND +, PAYMENT −, CONCESSION −, LATE_FEE +, ADJUSTMENT ±,
+  // REFUND +, WRITE_OFF −.
+  amount        Decimal       @db.Decimal(12, 2)
+  feeHeadId     String?
+  invoiceId     String?
+  paymentId     String?
+  description   String?
+  reference     String?
+  createdBy     String?
+  createdAt     DateTime      @default(now())
+
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  feeHead      FeeHead?     @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
+  invoice      Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  payment      Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([studentId, academicYearId])
+  @@index([branchId, createdAt])
+  @@index([invoiceId])
+  @@index([paymentId])
+  @@map("fee_ledger")
+}
+
+enum FeeLedgerType {
+  DEMAND
+  PAYMENT
+  CONCESSION
+  LATE_FEE
+  ADJUSTMENT
+  REFUND
+  WRITE_OFF
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  invoiceNo      String
+  studentId      String
+  branchId       String
+  academicYearId String
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  dueDate        DateTime
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  discountAmount Decimal       @default(0) @db.Decimal(12, 2)
+  paidAmount     Decimal       @default(0) @db.Decimal(12, 2)
+  status         InvoiceStatus @default(ISSUED)
+  deletedAt      DateTime?
+  deletedBy      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  student      Student           @relation(fields: [studentId], references: [id])
+  branch       Branch            @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear      @relation(fields: [academicYearId], references: [id])
+  lines        InvoiceLine[]
+  payments     Payment[]
+  allocations  PaymentAllocation[]
+  ledgerEntries FeeLedger[]
+
+  @@unique([branchId, invoiceNo])
+  @@index([studentId])
+  @@index([branchId, status])
+  @@index([branchId, dueDate])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  feeHeadId    String
+  description  String?
+  amount       Decimal  @db.Decimal(12, 2)
+  discount     Decimal  @default(0) @db.Decimal(12, 2)
+  concessionId String?
+  createdAt    DateTime @default(now())
+
+  invoice    Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  feeHead    FeeHead    @relation(fields: [feeHeadId], references: [id])
+  concession Concession? @relation(fields: [concessionId], references: [id], onDelete: SetNull)
+
+  @@index([invoiceId])
+  @@map("invoice_lines")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+  CANCELLED
+  WAIVED
+}
+
+model Payment {
+  id               String            @id @default(cuid())
+  studentId        String
+  branchId         String
+  academicYearId   String
+  invoiceId        String?
+  amount           Decimal           @db.Decimal(12, 2)
+  method           PaymentMethod
+  status           PaymentStatus     @default(INITIATED)
+  idempotencyKey   String?           @unique
+  gatewayOrderId   String?
+  gatewayPaymentId String?
+  gatewayProvider  String?
+  rawWebhook       Json?
+  allocationMode   PaymentAllocationMode @default(OLDEST_DUES_FIRST)
+  receiptNo        String?
+  paidAt           DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  invoice    Invoice?           @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  academicYear AcademicYear     @relation(fields: [academicYearId], references: [id])
+  allocations PaymentAllocation[]
+  ledgerEntries FeeLedger[]
+
+  @@unique([branchId, receiptNo])
+  @@index([studentId])
+  @@index([branchId, status])
+  @@index([idempotencyKey])
+  @@map("payments")
+}
+
+// Deterministic allocation of a payment across invoices (2.5.6).
+model PaymentAllocation {
+  id        String   @id @default(cuid())
+  paymentId String
+  invoiceId String
+  amount    Decimal  @db.Decimal(12, 2)
+  allocatedAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+  @@map("payment_allocations")
+}
+
+enum PaymentStatus {
+  INITIATED
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentMethod {
+  CASH
+  CHEQUE
+  UPI
+  ONLINE
+  NEFT
+  CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+enum PaymentAllocationMode {
+  OLDEST_DUES_FIRST
+  HEAD_PRIORITY
+  MANUAL
+}
+
+// ── Examinations & report cards (BUILD_PLAN 2.6) ──
+
+model AssessmentType {
+  id            String   @id @default(cuid())
+  name          String
+  code          String
+  branchId      String
+  weightage     Decimal  @default(0) @db.Decimal(5, 2)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  examinations Examination[]
+
+  @@unique([branchId, code])
+  @@map("assessment_types")
+}
+
+model GradingScheme {
+  id          String   @id @default(cuid())
+  name        String
+  branchId    String
+  academicYearId String
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  bands        GradeBand[]
+
+  @@index([branchId, academicYearId])
+  @@map("grading_schemes")
+}
+
+model GradeBand {
+  id          String   @id @default(cuid())
+  schemeId    String
+  grade       String
+  minPercent  Decimal  @db.Decimal(5, 2)
+  maxPercent  Decimal  @db.Decimal(5, 2)
+  points      Decimal? @db.Decimal(4, 2)
+  description String?
+  createdAt   DateTime @default(now())
+
+  scheme GradingScheme @relation(fields: [schemeId], references: [id], onDelete: Cascade)
+
+  @@unique([schemeId, grade])
+  @@map("grade_bands")
+}
+
+// Co-scholastic areas on CBSE-style report cards (2.6.3).
+model CoScholasticArea {
+  id        String   @id @default(cuid())
+  name      String
+  code      String
+  branchId  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  branch     Branch              @relation(fields: [branchId], references: [id])
+  grades     StudentCoScholastic[]
+
+  @@unique([branchId, code])
+  @@map("co_scholastic_areas")
+}
+
+model StudentCoScholastic {
+  id            String   @id @default(cuid())
+  areaId        String
+  studentId     String
+  academicYearId String
+  grade         String
+  remarks       String?
+  enteredBy     String?
+  createdAt     DateTime @default(now())
+
+  area         CoScholasticArea @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  student      Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear     @relation(fields: [academicYearId], references: [id])
+
+  @@unique([areaId, studentId, academicYearId])
+  @@map("student_co_scholastics")
+}
+
+model ReportCardTemplate {
+  id            String   @id @default(cuid())
+  name          String
+  board         String   @default("CBSE")
+  branchId      String
+  classId       String?
+  academicYearId String
+  // weightage rules, best-of-N, term aggregation, rankEnabled, sections…
+  config        Json
+  isActive      Boolean  @default(true)
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  branch       Branch       @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+
+  @@index([branchId, academicYearId])
+  @@map("report_card_templates")
+}
+
+model Examination {
+  id             String    @id @default(cuid())
+  name           String
+  academicYearId String
+  branchId       String
+  assessmentTypeId String?
+  startDate      DateTime
+  endDate        DateTime
+  // Publication workflow (2.6.5): ENTRY → SUBMITTED → VERIFIED → PUBLISHED.
+  // Nothing is parent-visible until PUBLISHED.
+  status         ExamStatus @default(ENTRY)
+  publishedAt    DateTime?
+  publishedBy    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
   academicYear AcademicYear  @relation(fields: [academicYearId], references: [id])
   branch       Branch        @relation(fields: [branchId], references: [id])
+  assessmentType AssessmentType? @relation(fields: [assessmentTypeId], references: [id], onDelete: SetNull)
   subjects     ExamSubject[]
 
   @@map("examinations")
+}
+
+enum ExamStatus {
+  ENTRY
+  SUBMITTED
+  VERIFIED
+  PUBLISHED
 }
 
 model ExamSubject {
@@ -510,20 +1367,42 @@ model ExamSubject {
 }
 
 model ExamResult {
-  id            String @id @default(cuid())
+  id            String    @id @default(cuid())
   examSubjectId String
   studentId     String
-  marksObtained Decimal @db.Decimal(5, 2)
+  marksObtained Decimal   @db.Decimal(5, 2)
+  moderatedMarks Decimal? @db.Decimal(5, 2)
   grade         String?
+  isAbsent      Boolean   @default(false)
+  isExempt      Boolean   @default(false)
+  attemptNo     Int       @default(1)
+  enteredBy     String?
+  verifiedBy    String?
   remarks       String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  examSubject ExamSubject @relation(fields: [examSubjectId], references: [id], onDelete: Cascade)
-  student     Student     @relation(fields: [studentId], references: [id])
+  examSubject ExamSubject    @relation(fields: [examSubjectId], references: [id], onDelete: Cascade)
+  student     Student        @relation(fields: [studentId], references: [id])
+  auditTrail  MarkEntryAudit[]
 
   @@unique([examSubjectId, studentId])
   @@map("exam_results")
+}
+
+// Mark-entry audit: who changed a mark, from what, to what, when, why (2.6.8).
+model MarkEntryAudit {
+  id           String   @id @default(cuid())
+  examResultId String
+  beforeMarks  Decimal? @db.Decimal(5, 2)
+  afterMarks   Decimal? @db.Decimal(5, 2)
+  changedBy    String
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  examResult ExamResult @relation(fields: [examResultId], references: [id], onDelete: Cascade)
+
+  @@map("mark_entry_audits")
 }
 
 // ── Timetable ──
@@ -532,6 +1411,8 @@ model TimetableSlot {
   id        String @id @default(cuid())
   sectionId String
   subjectId String
+  // The teacher taking the slot — the clash constraint input (2.7.6).
+  staffId   String?
   day       String // MONDAY, TUESDAY, etc.
   startTime String
   endTime   String
@@ -539,11 +1420,31 @@ model TimetableSlot {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  subject Subject @relation(fields: [subjectId], references: [id])
+  section       Section                @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject       Subject                @relation(fields: [subjectId], references: [id])
+  staff         Staff?                 @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  substitutions TimetableSubstitution[]
 
   @@unique([sectionId, day, startTime])
   @@map("timetable_slots")
+}
+
+model TimetableSubstitution {
+  id            String   @id @default(cuid())
+  slotId        String
+  originalStaffId String
+  substituteStaffId String
+  date          DateTime @db.Date
+  reason        String?
+  approvedBy    String?
+  createdAt     DateTime @default(now())
+
+  slot         TimetableSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  originalStaff Staff        @relation("TimetableOriginalStaff", fields: [originalStaffId], references: [id])
+  substituteStaff Staff      @relation("TimetableSubstituteStaff", fields: [substituteStaffId], references: [id])
+
+  @@index([slotId, date])
+  @@map("timetable_substitutions")
 }
 
 // ── Communication ──
@@ -553,7 +1454,9 @@ model Announcement {
   title     String
   content   String
   type      String   @default("GENERAL") // GENERAL, CIRCULAR, EVENT, NOTICE
-  targetRoles UserRole[]
+  // Role CODES (system + custom), matching Role.code. The old UserRole enum no
+  // longer exists; roles are rows in the roles table (BUILD_PLAN 2.1).
+  targetRoles String[]
   branchId  String
   createdBy String
   isActive  Boolean  @default(true)
@@ -573,20 +1476,23 @@ model Book {
   id        String @id @default(cuid())
   title     String
   author    String
-  isbn      String? @unique
+  // Unique per branch (2.3.3): two branches may both stock the same ISBN.
+  isbn      String?
   publisher String?
   category  String
   totalCopies Int   @default(1)
   availableCopies Int @default(1)
   shelfLocation String?
   branchId  String
+  deletedAt DateTime?
+  deletedBy String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   branch Branch      @relation(fields: [branchId], references: [id])
   issues BookIssue[]
 
-  @@index([isbn])
+  @@unique([branchId, isbn])
   @@index([branchId])
   @@map("books")
 }
@@ -613,7 +1519,8 @@ model BookIssue {
 
 model Vehicle {
   id              String @id @default(cuid())
-  vehicleNo       String @unique
+  // Unique per branch (2.3.3): two branches may both run "DL-01-AB-1234".
+  vehicleNo       String
   type            String
   capacity        Int
   driverName      String
@@ -622,12 +1529,15 @@ model Vehicle {
   insuranceExpiry DateTime?
   isActive        Boolean @default(true)
   branchId        String
+  deletedAt       DateTime?
+  deletedBy       String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   branch Branch           @relation(fields: [branchId], references: [id])
   routes TransportRoute[]
 
+  @@unique([branchId, vehicleNo])
   @@map("vehicles")
 }
 
@@ -660,4 +1570,174 @@ model RouteStop {
   route TransportRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
 
   @@map("route_stops")
+}
+
+// ── Number sequences (BUILD_PLAN 2.3.1) ──
+//
+// nextval lives in @school-erp/domain (sequences.ts): a transaction with
+// SELECT … FOR UPDATE, gap-tolerant, formatting via the `format` string
+// tokens {SEQ} {YYYY} {YY} {AY} (academic year label like "2026-27").
+model Sequence {
+  id           String   @id @default(cuid())
+  branchId     String
+  // e.g. ADMISSION, RECEIPT, INVOICE, TC, EMPLOYEE, BONAFIDE
+  code         String
+  format       String?  // "DPS/{AY}/{SEQ}" — NULL falls back to "{CODE}-{SEQ}"
+  currentValue Int      @default(0)
+  padding      Int      @default(5)
+  updatedAt    DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, code])
+  @@map("sequences")
+}
+
+// ── Cross-cutting (BUILD_PLAN 2.7) ──
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  branchId  String?
+  actorId   String?
+  actorRole String?
+  entity    String
+  entityId  String
+  action    String
+  before    Json?
+  after     Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([branchId, createdAt])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
+model Document {
+  id              String         @id @default(cuid())
+  studentId       String?
+  staffId         String?
+  type            DocumentType
+  title           String
+  s3Key           String
+  checksum        String?
+  mimeType        String
+  sizeBytes       Int?
+  virusScanStatus VirusScanStatus @default(PENDING)
+  retentionUntil  DateTime?
+  isVerified      Boolean        @default(false)
+  uploadedBy      String?
+  deletedAt       DateTime?
+  deletedBy       String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  student     Student?           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  staff       Staff?             @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  accessLogs  DocumentAccessLog[]
+
+  @@index([studentId])
+  @@index([staffId])
+  @@map("documents")
+}
+
+enum DocumentType {
+  BIRTH_CERTIFICATE
+  AADHAAR
+  TC
+  CASTE_CERTIFICATE
+  PHOTO
+  MEDICAL
+  ID_PROOF
+  ADDRESS_PROOF
+  REPORT_CARD
+  OTHER
+}
+
+enum VirusScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  ERROR
+}
+
+// Who viewed a child's document, when, and why (2.7.3) — child data access
+// must be accountable.
+model DocumentAccessLog {
+  id         String   @id @default(cuid())
+  documentId String
+  accessedBy String
+  purpose    String?
+  accessedAt DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("document_access_logs")
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  // NULL = tenant-wide setting; otherwise branch-scoped. Uniqueness of the
+  // NULL case is enforced in app code (Postgres treats NULLs as distinct).
+  branchId  String?
+  key       String
+  value     Json
+  dataType  String   @default("string") // string, number, boolean, json
+  description String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, key])
+  @@map("settings")
+}
+
+model NotificationLog {
+  id              String   @id @default(cuid())
+  branchId        String
+  channel         NotificationChannel
+  template        String?
+  recipientType   String   // STUDENT, STAFF, GUARDIAN, USER
+  recipientId     String
+  recipient       String?  // address/phone/whatsapp number
+  subject         String?
+  body            String?
+  status          NotificationStatus @default(QUEUED)
+  provider        String?
+  providerMessageId String?
+  cost            Decimal? @db.Decimal(10, 4)
+  error           String?
+  sentAt          DateTime?
+  createdAt       DateTime @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@index([status])
+  @@index([recipientType, recipientId])
+  @@map("notification_logs")
+}
+
+enum NotificationChannel {
+  SMS
+  EMAIL
+  WHATSAPP
+  PUSH
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  DEAD_LETTERED
 }

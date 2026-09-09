@@ -45,11 +45,17 @@ teacherRoutes.get('/students', async (req: Request, res: Response) => {
     const { className, sectionName } = req.query;
     if (!className || !sectionName) { return res.status(400).json({ detail: 'className and sectionName required' }); }
 
+    // Class/section live on the CURRENT enrollment (Phase 2).
     const students = await prisma.student.findMany({
-      where: { 
-        class: { name: { contains: className as string, mode: 'insensitive' } }, 
-        section: { name: sectionName as string }, 
-        isActive: true 
+      where: {
+        deletedAt: null,
+        enrollments: {
+          some: {
+            status: 'ENROLLED',
+            class: { name: { contains: className as string, mode: 'insensitive' } },
+            section: { name: sectionName as string },
+          },
+        },
       },
       orderBy: { firstName: 'asc' },
     });
@@ -83,13 +89,21 @@ teacherRoutes.get('/attendance', async (req: Request, res: Response) => {
     const { date, className, sectionName } = req.query;
     if (!date) { return res.status(400).json({ detail: 'date required' }); }
 
-    const records = await prisma.attendance.findMany({
-      where: { 
+    const sessions = await prisma.attendanceSession.findMany({
+      where: {
         date: new Date(date as string),
-        student: { class: { name: { contains: className as string, mode: 'insensitive' } }, section: { name: sectionName as string } }
-      }
+        ...(className || sectionName
+          ? {
+              class: {
+                name: className ? { contains: className as string, mode: 'insensitive' } : undefined,
+                ...(sectionName ? { sections: { some: { name: sectionName as string } } } : {}),
+              },
+            }
+          : {}),
+      },
+      include: { records: true },
     });
-    res.json({ data: records });
+    res.json({ data: sessions.flatMap((s) => s.records) });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
@@ -97,19 +111,40 @@ teacherRoutes.get('/attendance', async (req: Request, res: Response) => {
 teacherRoutes.post('/attendance', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
-    const { date, records, markedBy } = req.body;
-    const { branchId } = ctx(req);
+    const { date, records, markedBy, classId, sectionId } = req.body;
+    const { branchId, userId } = ctx(req);
     if (!branchId) {
       res.status(403).json({ detail: 'Account has no branch — cannot mark attendance.' });
       return;
     }
-    
-    const results = await Promise.all(records.map((r: any) => 
-      prisma.attendance.upsert({
-        where: { date_studentId: { date: new Date(date), studentId: r.studentId } },
-        create: { date: new Date(date), status: r.status, studentId: r.studentId, markedBy, branchId },
-        update: { status: r.status, markedBy }
-      })
+    if (!classId || !sectionId) {
+      return res.status(400).json({ detail: 'classId and sectionId required' });
+    }
+
+    const day = new Date(date);
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { branchId, startDate: { lte: day }, endDate: { gte: day } },
+    });
+    if (!academicYear) {
+      return res.status(400).json({ detail: 'Date falls outside any academic year.' });
+    }
+
+    const session = await prisma.attendanceSession.upsert({
+      where: {
+        branchId_date_classId_sectionId_subjectId_period: {
+          branchId, date: day, classId, sectionId, subjectId: null as unknown as string, period: null as unknown as number,
+        },
+      },
+      create: { branchId, date: day, classId, sectionId, academicYearId: academicYear.id, markedBy: markedBy ?? userId },
+      update: { markedBy: markedBy ?? userId },
+    });
+
+    const results = await Promise.all(records.map((r: any) =>
+      prisma.attendanceRecord.upsert({
+        where: { sessionId_studentId: { sessionId: session.id, studentId: r.studentId } },
+        create: { sessionId: session.id, studentId: r.studentId, status: r.status, reason: r.remarks ?? null },
+        update: { status: r.status, reason: r.remarks ?? null },
+      }),
     ));
 
     res.json({ message: 'Saved successfully', count: results.length });
@@ -121,9 +156,20 @@ teacherRoutes.get('/marks', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
     const { className, sectionName } = req.query;
-    
+
     const records = await prisma.examResult.findMany({
-      where: { student: { class: { name: { contains: className as string, mode: 'insensitive' } }, section: { name: sectionName as string } } }
+      where: {
+        student: {
+          deletedAt: null,
+          enrollments: {
+            some: {
+              status: 'ENROLLED',
+              class: { name: { contains: className as string, mode: 'insensitive' } },
+              ...(sectionName ? { section: { name: sectionName as string } } : {}),
+            },
+          },
+        },
+      },
     });
     res.json({ data: records });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
@@ -140,17 +186,18 @@ teacherRoutes.post('/marks', async (req: Request, res: Response) => {
 
     let examSubjectId = bodyExamSubjectId as string | undefined;
     if (!examSubjectId && className && sectionName) {
-      const student = await prisma.student.findFirst({
+      const enrollment = await prisma.studentEnrollment.findFirst({
         where: {
-          isActive: true,
+          status: 'ENROLLED',
           class: { name: { contains: className as string, mode: 'insensitive' } },
           section: { name: sectionName as string },
         },
         select: { classId: true },
       });
-      if (!student) return res.status(400).json({ detail: 'No students found for class/section' });
+      if (!enrollment) return res.status(400).json({ detail: 'No students found for class/section' });
+      const classId = enrollment.classId;
 
-      const subjectWhere: any = { classId: student.classId };
+      const subjectWhere: any = { classId };
       if (subjectName) subjectWhere.name = { contains: subjectName as string, mode: 'insensitive' };
       const subject = await prisma.subject.findFirst({ where: subjectWhere, orderBy: { name: 'asc' } });
       if (!subject) return res.status(400).json({ detail: 'No subject found for this class' });

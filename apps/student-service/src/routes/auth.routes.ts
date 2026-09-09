@@ -76,9 +76,10 @@ function controlPlane(req: Request): ControlPlaneClient | null {
 /**
  * Load the authoritative user record.
  *
- * Roles come from the DB on every login *and* every refresh. Until Phase 2.1
- * introduces the Role tables, `User.role` is the single source; the array shape
- * here is what the rest of the system already expects.
+ * Roles come from the DB on every login *and* every refresh. Since Phase 2.1
+ * identity lives in User + UserRoleAssignment: role codes resolve from active
+ * role assignments, and the working branch comes from the assignments (with
+ * `defaultBranchId` as the UX fallback).
  */
 async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser | null> {
   const user = await prisma.user.findUnique({
@@ -87,21 +88,30 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
       id: true,
       email: true,
       isActive: true,
-      role: true,
-      branchId: true,
-      schoolId: true,
+      defaultBranchId: true,
+      roleAssignments: {
+        where: { isActive: true },
+        select: {
+          branchId: true,
+          role: { select: { code: true } },
+        },
+      },
     },
   });
   if (!user) return null;
+
+  const roles = user.roleAssignments.map((a) => a.role.code);
+  const branchId =
+    user.roleAssignments.find((a) => a.branchId)?.branchId ?? user.defaultBranchId;
 
   return {
     id: user.id,
     email: user.email,
     isActive: user.isActive,
-    tenantId: user.schoolId,
-    schoolId: user.schoolId,
-    branchId: user.branchId,
-    roles: [user.role],
+    tenantId: '',
+    schoolId: null,
+    branchId: branchId ?? null,
+    roles,
   };
 }
 
@@ -202,9 +212,14 @@ router.post('/login', async (req: Request, res: Response) => {
         email: true,
         passwordHash: true,
         isActive: true,
-        role: true,
-        branchId: true,
-        schoolId: true,
+        defaultBranchId: true,
+        roleAssignments: {
+          where: { isActive: true },
+          select: {
+            branchId: true,
+            role: { select: { code: true } },
+          },
+        },
       },
     });
 
@@ -231,6 +246,10 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
+    const roles = record.roleAssignments.map((a) => a.role.code);
+    const branchId =
+      record.roleAssignments.find((a) => a.branchId)?.branchId ?? record.defaultBranchId;
+
     const user: LiveUser = {
       id: record.id,
       email: record.email,
@@ -238,18 +257,17 @@ router.post('/login', async (req: Request, res: Response) => {
       // Routing key vs write key: `tenantId` names the control-plane tenant
       // (which database); `schoolId` names the School row inside it (what
       // handlers scope by). Equal in dev single-DB mode.
-      tenantId: routed.tenantId || record.schoolId,
-      schoolId: record.schoolId,
-      branchId: record.branchId,
-      roles: [record.role],
+      tenantId: routed.tenantId,
+      schoolId: null,
+      branchId: branchId ?? null,
+      roles,
     };
 
     // Keep the directory index fresh: a login is the cheapest moment to repair
     // a drifted entry (idempotent upsert on the email hash).
     const cp = controlPlane(req);
-    const routedTenantId = routed.tenantId || record.schoolId;
-    if (cp) {
-      await indexTenantUser(cp, routedTenantId, { id: record.id, email: record.email }).catch(() =>
+    if (cp && routed.tenantId) {
+      await indexTenantUser(cp, routed.tenantId, { id: record.id, email: record.email }).catch(() =>
         undefined,
       );
     }

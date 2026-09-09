@@ -57,7 +57,7 @@ r.get('/classes', async (req, res) => {
     }
     const classes = await prisma.class.findMany({
       where: { branchId },
-      include: { sections: true, subjects: true, _count: { select: { students: true } } },
+      include: { sections: true, subjects: true, _count: { select: { enrollments: true } } },
       orderBy: { numericOrder: 'asc' },
     });
     res.json({ data: classes });
@@ -93,7 +93,7 @@ r.get('/sections', async (req, res) => {
     const { classId } = req.query;
     const sections = await prisma.section.findMany({
       where: { ...(classId && { classId: classId as string }) },
-      include: { _count: { select: { students: true } } },
+      include: { _count: { select: { enrollments: true } } },
     });
     res.json({ data: sections });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }

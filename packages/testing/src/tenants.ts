@@ -13,6 +13,7 @@ export interface TenantSeed {
   studentId: string;
   studentUserId: string;
   adminUserId: string;
+  guardianUserId: string;
 }
 
 export async function seedTenant(
@@ -71,30 +72,27 @@ export async function seedTenant(
     data: {
       email: `admin@${seed.code}.example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
-      role: 'BRANCH_ADMIN',
-      branchId: branch.id,
-      schoolId: school.id,
+      defaultBranchId: branch.id,
+      roleAssignments: { create: { roleId: 'sys_branch_admin', branchId: branch.id } },
     },
   });
 
-  // A student + their parent + user accounts.
-  const parentUser = await prisma.user.create({
+  // A guardian with portal access.
+  const guardianUser = await prisma.user.create({
     data: {
       email: `parent@${seed.code}.example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
-      role: 'PARENT',
-      branchId: branch.id,
-      schoolId: school.id,
+      defaultBranchId: branch.id,
+      roleAssignments: { create: { roleId: 'sys_parent', branchId: branch.id } },
     },
   });
 
-  const parent = await prisma.parent.create({
+  const guardian = await prisma.guardian.create({
     data: {
-      userId: parentUser.id,
-      fatherName: 'Test Father',
-      fatherPhone: `90000000${seed.code.slice(0, 2)}`,
-      motherName: 'Test Mother',
-      address: 'Test Address',
+      userId: guardianUser.id,
+      fullName: 'Test Father',
+      phone: `90000000${seed.code.slice(0, 2)}`,
+      email: `parent@${seed.code}.example.test`,
     },
   });
 
@@ -102,9 +100,8 @@ export async function seedTenant(
     data: {
       email: `${seed.code}-student@example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
-      role: 'STUDENT',
-      branchId: branch.id,
-      schoolId: school.id,
+      defaultBranchId: branch.id,
+      roleAssignments: { create: { roleId: 'sys_student', branchId: branch.id } },
     },
   });
 
@@ -112,17 +109,25 @@ export async function seedTenant(
     data: {
       userId: studentUser.id,
       admissionNo: `ADM-${seed.code}`,
-      rollNo: '1',
       firstName: seed.name,
       lastName: 'Student',
       dateOfBirth: new Date('2013-05-10'),
       gender: 'MALE',
-      classId: cls.id,
-      sectionId: section.id,
-      parentId: parent.id,
       address: 'Test Address',
       admissionDate: new Date('2026-04-01'),
       branchId: branch.id,
+      guardians: { create: { guardianId: guardian.id, relation: 'FATHER', isPrimary: true } },
+      enrollments: {
+        create: {
+          academicYearId: academicYear.id,
+          branchId: branch.id,
+          classId: cls.id,
+          sectionId: section.id,
+          rollNo: '1',
+          status: 'ENROLLED',
+          fromDate: new Date('2026-04-01'),
+        },
+      },
     },
   });
 
@@ -135,5 +140,6 @@ export async function seedTenant(
     studentId: student.id,
     studentUserId: studentUser.id,
     adminUserId: adminUser.id,
+    guardianUserId: guardianUser.id,
   };
 }

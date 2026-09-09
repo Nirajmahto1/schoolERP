@@ -1,5 +1,15 @@
 // ──────────────────────────────────────────────
 // Student CRUD Routes
+//
+// Phase 2 shapes:
+//   • A student's class/section comes from StudentEnrollment (history is a
+//     feature, not a column) — every read resolves the CURRENT enrollment.
+//   • Guardians are people (Guardian) linked via StudentGuardian; the old
+//     embedded Parent row is gone.
+//   • Attendance is session/record based; monthly percentages come from
+//     AttendanceMonthlySummary.
+//   • Invoices are Invoice + InvoiceLine + FeeHead (no FeeInvoice/FeeItem).
+//   • User carries no role/branchId/schoolId — identity is User + roles.
 // ──────────────────────────────────────────────
 
 import { Router, Request, Response } from 'express';
@@ -8,6 +18,32 @@ import { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
 
 const router = Router();
+
+/** The branch's current academic year — the anchor for "live" class/section. */
+async function currentYear(prisma: PrismaClient, branchId: string) {
+  return prisma.academicYear.findFirst({ where: { branchId, isCurrent: true } });
+}
+
+/** A student's enrollment for a year (defaults to the branch's current year). */
+async function enrollmentFor(
+  prisma: PrismaClient,
+  studentId: string,
+  branchId: string,
+  academicYearId?: string | null,
+) {
+  const yearId =
+    academicYearId ??
+    (await currentYear(prisma, branchId))?.id ??
+    null;
+  return prisma.studentEnrollment.findFirst({
+    where: { studentId, ...(yearId ? { academicYearId: yearId } : {}) },
+    include: {
+      class: { select: { id: true, name: true } },
+      section: { select: { id: true, name: true } },
+    },
+    orderBy: { fromDate: 'desc' },
+  });
+}
 
 // ── Validation ──
 const createStudentSchema = z.object({
@@ -21,12 +57,13 @@ const createStudentSchema = z.object({
   sectionId: z.string(),
   studentPassword: z.string().optional(),
   parentPassword: z.string().optional(),
-  parentId: z.string().optional(),
-  parent: z.object({
-    fatherName: z.string().min(1),
-    fatherPhone: z.string().min(1),
-    dateOfBirth: z.string().optional().transform(s => s ? new Date(s) : null),
-    address: z.string().min(1),
+  guardianId: z.string().optional(),
+  guardian: z.object({
+    fullName: z.string().min(1),
+    phone: z.string().min(1),
+    email: z.string().email().optional(),
+    occupation: z.string().optional(),
+    relation: z.enum(['FATHER', 'MOTHER', 'GUARDIAN', 'GRANDFATHER', 'GRANDMOTHER']).default('FATHER'),
   }).optional(),
   address: z.string(),
   phone: z.string().optional(),
@@ -39,13 +76,20 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
     const { branchId } = ctx(req);
-    const { cursor, limit = '20', classId, sectionId, search } = req.query;
+    if (!branchId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch.' });
+      return;
+    }
+    const { cursor, limit = '20', classId, sectionId, search, academicYearId } = req.query;
 
     const take = Math.min(parseInt(limit as string), 100);
 
-    const where: any = { branchId, isActive: true };
-    if (classId) where.classId = classId;
-    if (sectionId) where.sectionId = sectionId;
+    const where: any = { branchId, deletedAt: null };
+    const enrollmentWhere: any = { status: 'ENROLLED' };
+    if (academicYearId) enrollmentWhere.academicYearId = academicYearId;
+    if (classId) enrollmentWhere.classId = classId;
+    if (sectionId) enrollmentWhere.sectionId = sectionId;
+    where.enrollments = { some: enrollmentWhere };
     if (search) {
       where.OR = [
         { firstName: { contains: search as string, mode: 'insensitive' } },
@@ -59,9 +103,19 @@ router.get('/', async (req: Request, res: Response) => {
       take: take + 1,
       ...(cursor ? { cursor: { id: cursor as string }, skip: 1 } : {}),
       include: {
-        class: { select: { name: true } },
-        section: { select: { name: true } },
-        parent: { select: { fatherName: true, fatherPhone: true } },
+        enrollments: {
+          where: enrollmentWhere,
+          include: {
+            class: { select: { name: true } },
+            section: { select: { name: true } },
+          },
+          take: 1,
+        },
+        guardians: {
+          where: { isPrimary: true },
+          include: { guardian: { select: { fullName: true, phone: true } } },
+          take: 1,
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -96,10 +150,15 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     const student = await prisma.student.findUnique({
       where: { userId },
       include: {
-        class: { select: { name: true } },
-        section: { select: { name: true } },
-        attendances: { take: 30, orderBy: { date: 'desc' } },
-        feeInvoices: { where: { status: 'PENDING' } },
+        branch: { select: { id: true, name: true } },
+        enrollments: {
+          orderBy: { fromDate: 'desc' },
+          take: 1,
+          include: {
+            class: { select: { name: true } },
+            section: { select: { name: true } },
+          },
+        },
         bookIssues: { where: { status: 'ISSUED' }, include: { book: true } },
         examResults: { take: 5, orderBy: { createdAt: 'desc' }, include: { examSubject: { include: { subject: true } } } },
       },
@@ -110,20 +169,45 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       return;
     }
 
-    // Calculate overall attendance percentage efficiently for the student
-    const totalAttendances = await prisma.attendance.count({ where: { studentId: student.id } });
-    const presentCount = await prisma.attendance.count({ where: { studentId: student.id, status: 'PRESENT' } });
-    const attendancePercentage = totalAttendances > 0 ? Math.round((presentCount / totalAttendances) * 100) : 100;
+    // Attendance percentage from the denormalised monthly summary (never
+    // recomputed from raw rows per request).
+    const summaries = await prisma.attendanceMonthlySummary.aggregate({
+      where: { studentId: student.id },
+      _sum: { workingDays: true, presentDays: true, lateDays: true, halfDays: true },
+    });
+    const workingDays = Number(summaries._sum.workingDays ?? 0);
+    const attendedDays =
+      Number(summaries._sum.presentDays ?? 0) +
+      Number(summaries._sum.lateDays ?? 0) +
+      Number(summaries._sum.halfDays ?? 0);
+    const attendancePercentage = workingDays > 0 ? Math.round((attendedDays / workingDays) * 100) : 100;
+
+    // Open dues: ISSUED / PARTIALLY_PAID / OVERDUE invoices.
+    const openInvoices = await prisma.invoice.findMany({
+      where: {
+        studentId: student.id,
+        status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] },
+        deletedAt: null,
+      },
+      select: { totalAmount: true, paidAmount: true },
+    });
+    const pendingFeesTotal = openInvoices.reduce(
+      (sum, inv) => sum + Number(inv.totalAmount) - Number(inv.paidAmount), 0,
+    );
+
+    const enrollment = student.enrollments[0];
 
     // Get today's timetable
     const days = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
     const today = days[new Date().getDay()];
-    
-    const timetable = await prisma.timetableSlot.findMany({
-      where: { sectionId: student.sectionId, day: today },
-      include: { subject: { include: { teachers: { include: { staff: true } } } } },
-      orderBy: { startTime: 'asc' },
-    });
+
+    const timetable = enrollment
+      ? await prisma.timetableSlot.findMany({
+          where: { sectionId: enrollment.sectionId, day: today },
+          include: { subject: { include: { teachers: { include: { staff: true } } } } },
+          orderBy: { startTime: 'asc' },
+        })
+      : [];
 
     // Get recent announcements
     const announcements = await prisma.announcement.findMany({
@@ -132,12 +216,13 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       take: 3,
     });
 
+    const { enrollments: _e, ...studentPlain } = student;
     res.json({
-      student,
+      student: { ...studentPlain, enrollment },
       stats: {
         attendancePercentage,
-        pendingFeesCount: student.feeInvoices.length,
-        pendingFeesTotal: student.feeInvoices.reduce((sum, inv) => sum + Number(inv.totalAmount) - Number(inv.paidAmount), 0),
+        pendingFeesCount: openInvoices.length,
+        pendingFeesTotal,
         issuedBooksCount: student.bookIssues.length,
       },
       timetable,
@@ -173,10 +258,7 @@ router.get('/profile', async (req: Request, res: Response) => {
 
     const student = await prisma.student.findUnique({
       where: { userId },
-      include: {
-        class: { select: { name: true } },
-        section: { select: { name: true } },
-      },
+      include: { branch: { select: { id: true, name: true } } },
     });
 
     if (!student) {
@@ -184,7 +266,8 @@ router.get('/profile', async (req: Request, res: Response) => {
       return;
     }
 
-    res.json(student);
+    const enrollment = await enrollmentFor(prisma, student.id, student.branchId);
+    res.json({ ...student, enrollment });
   } catch (error) {
     res.status(500).json({ type: 'internal-error', title: 'Server Error', status: 500, detail: (error as Error).message });
   }
@@ -203,7 +286,7 @@ router.get('/my-classes', async (req: Request, res: Response) => {
 
     const student = await prisma.student.findUnique({
       where: { userId },
-      select: { id: true, classId: true, sectionId: true, attendances: true },
+      select: { id: true, branchId: true },
     });
 
     if (!student) {
@@ -211,26 +294,40 @@ router.get('/my-classes', async (req: Request, res: Response) => {
       return;
     }
 
+    const enrollment = await enrollmentFor(prisma, student.id, student.branchId);
+    if (!enrollment) {
+      res.status(404).json({ detail: 'Student has no active enrollment' });
+      return;
+    }
+
     const subjects = await prisma.subject.findMany({
-      where: { classId: student.classId },
+      where: { classId: enrollment.classId, deletedAt: null },
       include: {
         teachers: { include: { staff: true } },
-        timetableSlots: { where: { sectionId: student.sectionId } },
+        timetableSlots: { where: { sectionId: enrollment.sectionId } },
       },
     });
 
-    const totalDays = student.attendances.length;
-    const presentDays = student.attendances.filter(a => a.status === 'PRESENT' || a.status === 'LATE').length;
-    const attendancePercentage = totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 100;
+    // Attendance percentage from the monthly summaries.
+    const summaries = await prisma.attendanceMonthlySummary.aggregate({
+      where: { studentId: student.id },
+      _sum: { workingDays: true, presentDays: true, lateDays: true, halfDays: true },
+    });
+    const workingDays = Number(summaries._sum.workingDays ?? 0);
+    const attendedDays =
+      Number(summaries._sum.presentDays ?? 0) +
+      Number(summaries._sum.lateDays ?? 0) +
+      Number(summaries._sum.halfDays ?? 0);
+    const attendancePercentage = workingDays > 0 ? Math.round((attendedDays / workingDays) * 100) : 100;
 
     const classesData = subjects.map(sub => {
       const teacherName = sub.teachers.length > 0 ? `${sub.teachers[0].staff.firstName} ${sub.teachers[0].staff.lastName}` : 'Unassigned';
-      
+
       const slots = sub.timetableSlots;
-      const schedStr = slots.length > 0 
+      const schedStr = slots.length > 0
         ? `${slots.map(s => s.day.substring(0, 3)).join(', ')} • ${slots[0].startTime}`
         : 'Not Scheduled';
-      
+
       const roomStr = slots.length > 0 && slots[0].room ? slots[0].room : 'TBA';
 
       return {
@@ -258,7 +355,12 @@ router.get('/my-attendance', async (req: Request, res: Response) => {
 
     const student = await prisma.student.findUnique({
       where: { userId },
-      include: { attendances: { orderBy: { date: 'asc' } } },
+      include: {
+        attendanceRecords: {
+          orderBy: { createdAt: 'asc' },
+          include: { session: { select: { date: true } } },
+        },
+      },
     });
 
     if (!student) { return res.status(404).json({ detail: 'Student not found' }); }
@@ -267,18 +369,20 @@ router.get('/my-attendance', async (req: Request, res: Response) => {
     const targetMonth = date.getMonth();
     const targetYear = date.getFullYear();
 
-    const currentMonthData = student.attendances.filter(a => {
-      const d = new Date(a.date);
-      return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
-    }).map(a => ({
-      date: a.date,
-      status: a.status.toLowerCase(),
-    }));
+    const currentMonthData = student.attendanceRecords
+      .filter(a => {
+        const d = new Date(a.session.date);
+        return d.getMonth() === targetMonth && d.getFullYear() === targetYear;
+      })
+      .map(a => ({
+        date: a.session.date,
+        status: a.status.toLowerCase(),
+      }));
 
     const monthlyGroups: Record<string, { w: number, p: number, a: number, l: number, sortKey: string }> = {};
-    
-    student.attendances.forEach(a => {
-      const d = new Date(a.date);
+
+    student.attendanceRecords.forEach(a => {
+      const d = new Date(a.session.date);
       const monthName = d.toLocaleString('en-US', { month: 'long' });
       const year = d.getFullYear();
       const key = `${monthName}`;
@@ -288,7 +392,7 @@ router.get('/my-attendance', async (req: Request, res: Response) => {
         monthlyGroups[key] = { w: 0, p: 0, a: 0, l: 0, sortKey };
       }
       monthlyGroups[key].w += 1;
-      
+
       if (a.status === 'PRESENT' || a.status === 'HALF_DAY') monthlyGroups[key].p += 1;
       if (a.status === 'ABSENT' || a.status === 'ON_LEAVE') monthlyGroups[key].a += 1;
       if (a.status === 'LATE') monthlyGroups[key].l += 1;
@@ -375,19 +479,23 @@ router.get('/my-fees', async (req: Request, res: Response) => {
     const student = await prisma.student.findUnique({ where: { userId } });
     if (!student) { return res.status(404).json({ detail: 'Student not found' }); }
 
-    const invoices = await prisma.feeInvoice.findMany({
-      where: { studentId: student.id },
-      include: { items: { include: { feeStructure: true } } },
+    const invoices = await prisma.invoice.findMany({
+      where: { studentId: student.id, deletedAt: null },
+      include: { lines: { include: { feeHead: true } } },
       orderBy: { dueDate: 'desc' },
     });
 
     const formattedInvoices = invoices.map(inv => ({
       id: inv.id,
       inv: inv.invoiceNo,
-      type: inv.items.length > 0 ? inv.items[0].feeStructure.name : 'General Fee',
+      type: inv.lines.length > 0 ? inv.lines[0].feeHead.name : 'General Fee',
       amt: `₹${Number(inv.totalAmount).toLocaleString()}`,
       due: inv.dueDate.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      status: inv.status === 'PAID' ? 'Paid' : inv.status === 'PENDING' ? 'Pending' : inv.status === 'OVERDUE' ? 'Overdue' : inv.status,
+      status:
+        inv.status === 'PAID' ? 'Paid'
+        : inv.status === 'ISSUED' || inv.status === 'DRAFT' ? 'Pending'
+        : inv.status === 'OVERDUE' ? 'Overdue'
+        : inv.status,
     }));
 
     res.json(formattedInvoices);
@@ -401,15 +509,18 @@ router.get('/my-timetable', async (req: Request, res: Response) => {
     const { userId } = ctx(req);
     if (!userId) { return res.status(401).json({ detail: 'Unauthorized' }); }
 
-    const student = await prisma.student.findUnique({ where: { userId }, include: { section: true } });
+    const student = await prisma.student.findUnique({ where: { userId } });
     if (!student) { return res.status(404).json({ detail: 'Student not found' }); }
 
+    const enrollment = await enrollmentFor(prisma, student.id, student.branchId);
+    if (!enrollment) { return res.status(404).json({ detail: 'Student has no active enrollment' }); }
+
     const slots = await prisma.timetableSlot.findMany({
-      where: { sectionId: student.sectionId },
+      where: { sectionId: enrollment.sectionId },
       include: { subject: true },
       orderBy: { startTime: 'asc' },
     });
-    
+
     // Group by time
     const timeGroups: Record<string, any> = {};
     slots.forEach(s => {
@@ -421,7 +532,7 @@ router.get('/my-timetable', async (req: Request, res: Response) => {
       }
     });
 
-    res.json({ className: student.section.name, timetable: Object.values(timeGroups) });
+    res.json({ className: enrollment.section.name, timetable: Object.values(timeGroups) });
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
 
@@ -456,7 +567,7 @@ router.get('/my-announcements', async (req: Request, res: Response) => {
     if (!student) { return res.status(404).json({ detail: 'Student not found' }); }
 
     const announcements = await prisma.announcement.findMany({
-      where: { 
+      where: {
         branchId: student.branchId,
         isActive: true,
       },
@@ -520,7 +631,6 @@ router.put('/profile', async (req: Request, res: Response) => {
         lastName: data.lastName,
         phone: data.phone,
       },
-      include: { class: { select: { name: true } }, section: { select: { name: true } } }
     });
 
     res.json(student);
@@ -589,12 +699,18 @@ router.get('/:id', async (req: Request, res: Response) => {
     const student = await prisma.student.findFirst({
       where: { id: req.params.id, branchId },
       include: {
-        user: { select: { email: true, role: true } },
-        class: true,
-        section: true,
-        parent: true,
-        attendances: { take: 30, orderBy: { date: 'desc' } },
-        feeInvoices: { take: 10, orderBy: { createdAt: 'desc' } },
+        user: { select: { email: true, roleAssignments: { include: { role: { select: { code: true } } } } } },
+        enrollments: {
+          orderBy: { fromDate: 'desc' },
+          include: { class: true, section: true },
+        },
+        guardians: { include: { guardian: true } },
+        attendanceRecords: {
+          take: 30,
+          orderBy: { createdAt: 'desc' },
+          include: { session: { select: { date: true } } },
+        },
+        invoices: { take: 10, orderBy: { createdAt: 'desc' }, where: { deletedAt: null } },
       },
     });
 
@@ -612,82 +728,109 @@ router.get('/:id', async (req: Request, res: Response) => {
 // ── POST /students ──
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { parentId, parent, studentPassword, parentPassword, ...studentData } = createStudentSchema.parse(req.body);
+    const { guardianId, guardian, studentPassword, parentPassword, classId, sectionId, ...studentData } = createStudentSchema.parse(req.body);
     const prisma: PrismaClient = req.app.get('prisma');
     const { branchId } = ctx(req);
-    const { tenantId: schoolId } = ctx(req);
-    if (!branchId || !schoolId) {
-      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch or tenant.' });
+    if (!branchId) {
+      res.status(403).json({ type: 'authorization-error', title: 'Forbidden', status: 403, detail: 'Account has no branch.' });
       return;
     }
     const bcrypt = await import('bcryptjs');
 
-    let finalParentId = parentId;
-    if (!finalParentId && parent) {
-      let parentUserId = null;
-
-      if (parentPassword && parent.fatherPhone) {
-        const pHash = await bcrypt.hash(parentPassword, 12);
-        const pUser = await prisma.user.create({
-          data: {
-            email: `${parent.fatherPhone}@parent.school-erp.local`,
-            passwordHash: pHash,
-            role: 'PARENT',
-            branchId,
-            schoolId,
-          }
-        });
-        parentUserId = pUser.id;
-      }
-
-      const newParent = await prisma.parent.create({
-        data: {
-          userId: parentUserId,
-          fatherName: parent.fatherName,
-          fatherPhone: parent.fatherPhone,
-          dateOfBirth: parent.dateOfBirth || null,
-          motherName: '',
-          address: parent.address
-        }
-      });
-      finalParentId = newParent.id;
-    }
-
-    if (!finalParentId) {
-      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Either parentId or parent details must be provided.' });
+    const year = await currentYear(prisma, branchId);
+    if (!year) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Branch has no current academic year.' });
       return;
     }
 
-    // Create user account for the student
-    const passwordHash = await bcrypt.hash(studentPassword || 'student123', 12);
+    // Section must belong to the class.
+    const section = await prisma.section.findFirst({ where: { id: sectionId, classId } });
+    if (!section) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Section does not belong to the given class.' });
+      return;
+    }
 
-    const user = await prisma.user.create({
-      data: {
-        email: `${studentData.admissionNo}@student.school-erp.local`,
-        passwordHash,
-        role: 'STUDENT',
-        branchId,
-        schoolId,
-      },
-    });
+    const student = await prisma.$transaction(async (tx) => {
+      // Link (or create) the guardian. Guardians are people, shared across
+      // siblings via StudentGuardian — never embedded per student.
+      let finalGuardianId = guardianId;
+      if (!finalGuardianId && guardian) {
+        let guardianUserId: string | null = null;
 
-    const student = await prisma.student.create({
-      data: {
-        ...studentData,
-        parentId: finalParentId,
-        userId: user.id,
-        branchId,
-      },
-      include: {
-        class: { select: { name: true } },
-        section: { select: { name: true } },
-      },
+        if (parentPassword) {
+          const pHash = await bcrypt.hash(parentPassword, 12);
+          const pUser = await tx.user.create({
+            data: {
+              email: guardian.email ?? `${guardian.phone}@parent.school-erp.local`,
+              passwordHash: pHash,
+              defaultBranchId: branchId,
+              roleAssignments: { create: { roleId: 'sys_parent', branchId } },
+            },
+          });
+          guardianUserId = pUser.id;
+        }
+
+        const newGuardian = await tx.guardian.create({
+          data: {
+            userId: guardianUserId,
+            fullName: guardian.fullName,
+            phone: guardian.phone,
+            email: guardian.email ?? `${guardian.phone}@parent.school-erp.local`,
+            occupation: guardian.occupation,
+          },
+        });
+        finalGuardianId = newGuardian.id;
+      }
+
+      if (!finalGuardianId) {
+        throw Object.assign(new Error('Either guardianId or guardian details must be provided.'), { status: 400 });
+      }
+
+      // User account for the student (identity: User + role assignment).
+      const passwordHash = await bcrypt.hash(studentPassword || 'student123', 12);
+      const user = await tx.user.create({
+        data: {
+          email: `${studentData.admissionNo}@student.school-erp.local`,
+          passwordHash,
+          defaultBranchId: branchId,
+          roleAssignments: { create: { roleId: 'sys_student', branchId } },
+        },
+      });
+
+      const created = await tx.student.create({
+        data: {
+          ...studentData,
+          userId: user.id,
+          branchId,
+          guardians: {
+            create: { guardianId: finalGuardianId, relation: guardian?.relation ?? 'FATHER', isPrimary: true },
+          },
+          enrollments: {
+            create: {
+              academicYearId: year.id,
+              branchId,
+              classId,
+              sectionId,
+              status: 'ENROLLED',
+              fromDate: studentData.admissionDate,
+              createdBy: ctx(req).userId,
+            },
+          },
+        },
+      });
+
+      return created;
     });
 
     res.status(201).json(student);
   } catch (error) {
+    const status = (error as { status?: number }).status;
     if (error instanceof z.ZodError) {
       res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, errors: error.flatten().fieldErrors });
+      return;
+    }
+    if (status) {
+      res.status(status).json({ type: 'validation-error', title: 'Invalid Input', status, detail: (error as Error).message });
       return;
     }
     res.status(500).json({ type: 'internal-error', title: 'Server Error', status: 500, detail: (error as Error).message });
@@ -711,6 +854,11 @@ router.put('/:id', async (req: Request, res: Response) => {
     delete data.id;
     delete data.branchId;
     delete data.userId;
+    // Class/section changes go through enrollment/promotion, not a column.
+    delete data.classId;
+    delete data.sectionId;
+    delete data.enrollments;
+    delete data.guardians;
 
     const updated = await prisma.student.updateMany({
       where: { id: req.params.id, branchId },
@@ -724,10 +872,6 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     const student = await prisma.student.findUnique({
       where: { id: req.params.id },
-      include: {
-        class: { select: { name: true } },
-        section: { select: { name: true } },
-      },
     });
 
     res.json(student);
@@ -749,7 +893,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
     const updated = await prisma.student.updateMany({
       where: { id: req.params.id, branchId },
-      data: { isActive: false },
+      data: { isActive: false, deletedAt: new Date(), deletedBy: ctx(req).userId },
     });
 
     if (updated.count === 0) {

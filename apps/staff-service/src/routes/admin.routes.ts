@@ -15,34 +15,37 @@ adminRoutes.get('/dashboard', async (req: Request, res: Response) => {
     }
 
     const [totalStudents, totalStaff] = await Promise.all([
-      prisma.student.count({ where: { branchId, isActive: true } }),
-      prisma.staff.count({ where: { branchId, isActive: true } })
+      prisma.student.count({ where: { branchId, deletedAt: null } }),
+      prisma.staff.count({ where: { branchId, isActive: true } }),
     ]);
 
-    // Calculate approximate attendance rate for today
+    // Today's attendance from the session/record model.
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const attendances = await prisma.attendance.findMany({
-      where: { date: today, branchId }
+    const sessions = await prisma.attendanceSession.findMany({
+      where: { branchId, date: today },
+      include: { records: { select: { status: true } } },
     });
-    
+
     let attendanceRate = 100;
-    if (attendances.length > 0) {
-      const present = attendances.filter(a => a.status === 'PRESENT' || a.status === 'LATE').length;
-      attendanceRate = Math.round((present / attendances.length) * 100);
+    const records = sessions.flatMap((s) => s.records);
+    if (records.length > 0) {
+      const present = records.filter((a) => a.status === 'PRESENT' || a.status === 'LATE').length;
+      attendanceRate = Math.round((present / records.length) * 100);
     }
 
-    // Fee collection
-    const invoices = await prisma.feeInvoice.findMany({
-      where: { student: { branchId } }
+    // Fee collection = payments collected in this branch.
+    const payments = await prisma.payment.aggregate({
+      where: { branchId, status: 'SUCCESS' },
+      _sum: { amount: true },
     });
-    const feeCollection = invoices.reduce((sum, inv) => sum + Number(inv.paidAmount || 0), 0);
+    const feeCollection = Number(payments._sum.amount ?? 0);
 
     res.json({
       totalStudents,
       totalStaff,
       attendanceRate,
-      feeCollection
+      feeCollection,
     });
   } catch (error: any) {
     res.status(500).json({ detail: error.message });

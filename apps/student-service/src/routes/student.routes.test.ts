@@ -159,10 +159,10 @@ describe('student endpoints', () => {
         ...newStudent,
         classId: alpha.classId,
         sectionId: alpha.sectionId,
-        parent: {
-          fatherName: 'Father',
-          fatherPhone: '9876500001',
-          address: 'Test Road',
+        guardian: {
+          fullName: 'Test Father',
+          phone: '9876500001',
+          relation: 'FATHER' as const,
         },
       });
 

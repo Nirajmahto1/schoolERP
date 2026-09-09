@@ -107,28 +107,34 @@ describe('tenant lifecycle', () => {
     });
     const section = await client.section.create({ data: { name: 'A', classId: cls.id, capacity: 40 } });
     const user = await client.user.create({
-      data: { email: 's@life.test', passwordHash: 'x', role: 'STUDENT', branchId: branch.id, schoolId: school.id },
-    });
-    const parent = await client.parent.create({
       data: {
-        fatherName: 'F', fatherPhone: '9000000000', motherName: 'M', address: 'Delhi',
+        email: 's@life.test',
+        passwordHash: 'x',
+        roleAssignments: { create: { roleId: 'sys_student' } },
       },
     });
     await client.student.create({
       data: {
         userId: user.id,
         admissionNo: 'ADM-1',
-        rollNo: '1',
         firstName: 'A',
         lastName: 'B',
         dateOfBirth: new Date('2013-01-01'),
         gender: 'MALE',
-        classId: cls.id,
-        sectionId: section.id,
-        parentId: parent.id,
         address: 'Delhi',
         admissionDate: new Date('2026-04-01'),
         branchId: branch.id,
+        enrollments: {
+          create: {
+            academicYearId: year.id,
+            branchId: branch.id,
+            classId: cls.id,
+            sectionId: section.id,
+            rollNo: '1',
+            status: 'ENROLLED',
+            fromDate: new Date('2026-04-01'),
+          },
+        },
       },
     });
     await client.$disconnect();

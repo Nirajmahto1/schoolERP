@@ -1,10 +1,16 @@
 // ──────────────────────────────────────────────
 // School ERP — Attendance Service (Daily only)
+//
+// Phase 2 shape: marking creates/updates an AttendanceSession per
+// (branch, date, class, section) plus one AttendanceRecord per student.
+// Percentages are read from AttendanceMonthlySummary (rebuilt here after
+// marking), never recomputed from raw rows at request time.
 // ──────────────────────────────────────────────
 
 import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
+import { rebuildMonthlySummary } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { logger } from './utils/logger';
 
@@ -27,27 +33,78 @@ app.set('prisma', prisma);
 const r = Router();
 
 // ── Mark Daily Attendance (bulk) ──
+// records: [{ studentId: string, status: "PRESENT" | "ABSENT" | "LATE" | "HALF_DAY" | "ON_LEAVE" | "MEDICAL" | "EXCUSED", remarks?: string }]
 r.post('/attendance/mark', async (req, res) => {
   try {
     const { date, records, markedBy } = req.body;
-    const { branchId } = ctx(req);
+    const { branchId, userId } = ctx(req);
     if (!branchId) {
       res.status(403).json({ detail: 'Account has no branch — cannot mark attendance.' });
       return;
     }
-    // records: [{ studentId: string, status: "PRESENT" | "ABSENT" | "LATE" | "HALF_DAY" | "ON_LEAVE", remarks?: string }]
+    const { classId, sectionId } = req.body;
+    if (!classId || !sectionId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'classId and sectionId are required.' });
+      return;
+    }
 
-    const result = await Promise.all(
-      records.map((r: any) =>
-        prisma.attendance.upsert({
-          where: { date_studentId: { date: new Date(date), studentId: r.studentId } },
-          create: { date: new Date(date), status: r.status, studentId: r.studentId, remarks: r.remarks, markedBy, branchId },
-          update: { status: r.status, remarks: r.remarks, markedBy },
-        })
-      )
-    );
+    const day = new Date(date);
+    const year = day.getUTCFullYear();
+    const month = day.getUTCMonth() + 1;
 
-    res.json({ count: result.length, message: 'Attendance marked successfully' });
+    // The academic year the date belongs to.
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { branchId, startDate: { lte: day }, endDate: { gte: day } },
+    });
+    if (!academicYear) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Date falls outside any academic year.' });
+      return;
+    }
+
+    // One session per (branch, date, class, section) — re-marking reuses it.
+    const session = await prisma.attendanceSession.upsert({
+      where: {
+        branchId_date_classId_sectionId_subjectId_period: {
+          branchId,
+          date: day,
+          classId,
+          sectionId,
+          subjectId: null as unknown as string,
+          period: null as unknown as number,
+        },
+      },
+      create: { branchId, date: day, classId, sectionId, academicYearId: academicYear.id, markedBy: markedBy ?? userId },
+      update: { markedBy: markedBy ?? userId },
+    });
+
+    const result = await prisma.$transaction(async (tx) => {
+      const rows = [];
+      for (const rec of records) {
+        rows.push(
+          tx.attendanceRecord.upsert({
+            where: { sessionId_studentId: { sessionId: session.id, studentId: rec.studentId } },
+            create: {
+              sessionId: session.id,
+              studentId: rec.studentId,
+              status: rec.status,
+              reason: rec.remarks ?? null,
+            },
+            update: { status: rec.status, reason: rec.remarks ?? null },
+          }),
+        );
+      }
+      return Promise.all(rows);
+    });
+
+    // Refresh the denormalised monthly summary for the affected month.
+    await rebuildMonthlySummary(prisma, {
+      branchId,
+      academicYearId: academicYear.id,
+      year,
+      month,
+    });
+
+    res.json({ count: result.length, sessionId: session.id, message: 'Attendance marked successfully' });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
@@ -62,13 +119,13 @@ r.post('/attendance/staff/mark', async (req, res) => {
     }
 
     const result = await Promise.all(
-      records.map((r: any) =>
-        prisma.attendance.upsert({
-          where: { date_staffId: { date: new Date(date), staffId: r.staffId } },
-          create: { date: new Date(date), status: r.status, staffId: r.staffId, remarks: r.remarks, markedBy, branchId },
-          update: { status: r.status, remarks: r.remarks, markedBy },
-        })
-      )
+      records.map((rec: any) =>
+        prisma.staffAttendance.upsert({
+          where: { staffId_date: { date: new Date(date), staffId: rec.staffId } },
+          create: { date: new Date(date), status: rec.status, staffId: rec.staffId, remarks: rec.remarks, markedBy: markedBy ?? ctx(req).userId, branchId },
+          update: { status: rec.status, remarks: rec.remarks, markedBy: markedBy ?? ctx(req).userId },
+        }),
+      ),
     );
 
     res.json({ count: result.length, message: 'Staff attendance marked successfully' });
@@ -80,35 +137,60 @@ r.get('/attendance/daily', async (req, res) => {
   try {
     const { date, classId, sectionId } = req.query;
     const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot read attendance.' });
+      return;
+    }
 
-    const where: any = { branchId, date: new Date(date as string), studentId: { not: null } };
-
-    const records = await prisma.attendance.findMany({
-      where,
+    const sessions = await prisma.attendanceSession.findMany({
+      where: {
+        branchId,
+        date: new Date(date as string),
+        ...(classId ? { classId: classId as string } : {}),
+        ...(sectionId ? { sectionId: sectionId as string } : {}),
+      },
       include: {
-        student: {
-          select: { firstName: true, lastName: true, admissionNo: true, rollNo: true, classId: true, sectionId: true },
+        records: {
+          include: {
+            student: { select: { firstName: true, lastName: true, admissionNo: true } },
+          },
         },
       },
-      orderBy: { student: { rollNo: 'asc' } },
     });
 
-    // Filter by class/section if provided
-    const filtered = records.filter(r => {
-      if (classId && r.student?.classId !== classId) return false;
-      if (sectionId && r.student?.sectionId !== sectionId) return false;
-      return true;
+    // Flatten records across sessions with roll numbers from the enrollment.
+    const enrollments = await prisma.studentEnrollment.findMany({
+      where: {
+        branchId,
+        classId: classId ? (classId as string) : undefined,
+        sectionId: sectionId ? (sectionId as string) : undefined,
+        status: 'ENROLLED',
+      },
+      select: { studentId: true, rollNo: true },
     });
+    const rollByStudent = new Map(enrollments.map((e) => [e.studentId, e.rollNo]));
+
+    const data = sessions
+      .flatMap((s) => s.records)
+      .map((rec) => ({
+        studentId: rec.studentId,
+        status: rec.status,
+        reason: rec.reason,
+        rollNo: rollByStudent.get(rec.studentId) ?? null,
+        student: rec.student,
+        sessionId: rec.sessionId,
+      }))
+      .sort((a, b) => String(a.rollNo ?? '').localeCompare(String(b.rollNo ?? ''), undefined, { numeric: true }));
 
     const summary = {
-      total: filtered.length,
-      present: filtered.filter(r => r.status === 'PRESENT').length,
-      absent: filtered.filter(r => r.status === 'ABSENT').length,
-      late: filtered.filter(r => r.status === 'LATE').length,
-      onLeave: filtered.filter(r => r.status === 'ON_LEAVE').length,
+      total: data.length,
+      present: data.filter((r) => r.status === 'PRESENT').length,
+      absent: data.filter((r) => r.status === 'ABSENT').length,
+      late: data.filter((r) => r.status === 'LATE').length,
+      onLeave: data.filter((r) => r.status === 'ON_LEAVE').length,
     };
 
-    res.json({ data: filtered, summary });
+    res.json({ data, summary });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
@@ -116,25 +198,34 @@ r.get('/attendance/daily', async (req, res) => {
 r.get('/attendance/student/:studentId', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const where: any = { studentId: req.params.studentId };
-    if (startDate && endDate) {
-      where.date = { gte: new Date(startDate as string), lte: new Date(endDate as string) };
-    }
+    const where: any = {
+      studentId: req.params.studentId,
+      ...(startDate && endDate
+        ? { session: { date: { gte: new Date(startDate as string), lte: new Date(endDate as string) } } }
+        : {}),
+    };
 
-    const records = await prisma.attendance.findMany({ where, orderBy: { date: 'desc' } });
+    const records = await prisma.attendanceRecord.findMany({
+      where,
+      include: { session: { select: { date: true } } },
+      orderBy: { session: { date: 'desc' } },
+    });
 
     const total = records.length;
-    const present = records.filter(r => r.status === 'PRESENT' || r.status === 'LATE').length;
+    const present = records.filter((r) => ['PRESENT', 'LATE', 'HALF_DAY'].includes(r.status)).length;
     const percentage = total > 0 ? Math.round((present / total) * 100 * 10) / 10 : 0;
 
-    res.json({ data: records, stats: { total, present, absent: total - present, percentage } });
+    res.json({
+      data: records.map((r) => ({ date: r.session.date, status: r.status, reason: r.reason })),
+      stats: { total, present, absent: total - present, percentage },
+    });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-// ── Monthly Summary ──
+// ── Monthly Summary ── (reads the denormalised summaries)
 r.get('/attendance/summary', async (req, res) => {
   try {
-    const { month, year, classId } = req.query;
+    const { month, year, classId, academicYearId } = req.query;
     const { branchId } = ctx(req);
     if (!branchId) {
       res.status(403).json({ detail: 'Account has no branch — cannot compute summaries.' });
@@ -142,21 +233,33 @@ r.get('/attendance/summary', async (req, res) => {
     }
     const m = parseInt(month as string);
     const y = parseInt(year as string);
-    const startDate = new Date(y, m - 1, 1);
-    const endDate = new Date(y, m, 0);
 
-    const records = await prisma.attendance.findMany({
-      where: { branchId, date: { gte: startDate, lte: endDate }, studentId: { not: null } },
-      include: { student: { select: { classId: true, sectionId: true } } },
+    const summaries = await prisma.attendanceMonthlySummary.findMany({
+      where: { branchId, year: y, month: m },
     });
 
-    const filtered = classId ? records.filter(r => r.student?.classId === classId) : records;
-    const totalDays = endDate.getDate();
-    const avgRate = filtered.length > 0
-      ? Math.round((filtered.filter(r => r.status === 'PRESENT').length / filtered.length) * 100 * 10) / 10
-      : 0;
+    let rows = summaries;
+    if (classId) {
+      const enrolled = await prisma.studentEnrollment.findMany({
+        where: { branchId, classId: classId as string, status: 'ENROLLED' },
+        select: { studentId: true },
+      });
+      const ids = new Set(enrolled.map((e) => e.studentId));
+      rows = summaries.filter((s) => ids.has(s.studentId));
+    }
 
-    res.json({ month: m, year: y, totalRecords: filtered.length, workingDays: totalDays, averageAttendanceRate: avgRate });
+    const workingDays = rows.reduce((sum, s) => sum + s.workingDays, 0);
+    const attended = rows.reduce((sum, s) => sum + s.presentDays + s.lateDays + s.halfDays, 0);
+    const avgRate = workingDays > 0 ? Math.round((attended / workingDays) * 100 * 10) / 10 : 0;
+
+    res.json({
+      month: m,
+      year: y,
+      totalStudents: rows.length,
+      totalRecords: rows.reduce((sum, s) => sum + s.workingDays, 0),
+      workingDays,
+      averageAttendanceRate: avgRate,
+    });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

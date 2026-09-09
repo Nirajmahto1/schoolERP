@@ -60,7 +60,9 @@ export async function recountSeats(
   if (!datastore) throw new Error(`Tenant ${tenantId} has no datastore.`);
   const client = new PrismaClient({ datasourceUrl: datastore.connRef });
   try {
-    const count = await client.student.count({ where: { isActive: true } });
+    // Phase 2: Student has no isActive column — an active student is one
+    // without a soft-delete marker.
+    const count = await client.student.count({ where: { deletedAt: null } });
     const active = await controlPlane.subscription.findFirst({
       where: { tenantId, status: { in: ['ACTIVE', 'TRIAL'] } },
       orderBy: { periodStart: 'desc' },
@@ -158,9 +160,11 @@ export async function exportTenant(
 
   const client = new PrismaClient({ datasourceUrl: tenant.datastore.connRef });
   try {
+    // current_schema() — not a hardcoded 'public' — so schema-isolated test
+    // "databases" (and any non-default search_path) export the right tables.
     const tables = await client.$queryRaw<Array<{ table_name: string }>>`
       SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
       ORDER BY table_name`;
     const dump: TenantExport = {
       tenantId,

@@ -98,7 +98,9 @@ describe('provisionTenant', () => {
     expect(school?.name).toBe('DPS Noida');
     const classes = await tenantClient.class.count();
     expect(classes).toBe(15); // Nursery → XII
-    const admin = await tenantClient.user.findFirst({ where: { role: 'BRANCH_ADMIN' } });
+    const admin = await tenantClient.user.findFirst({
+      where: { roleAssignments: { some: { role: { code: 'BRANCH_ADMIN' }, isActive: true } } },
+    });
     expect(admin?.passwordHash).toMatch(/^\$setup\$/);
     await tenantClient.$disconnect();
   }, 60_000);

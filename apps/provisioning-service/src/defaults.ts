@@ -116,24 +116,52 @@ export async function seedIndiaDefaults(
     void created;
   }
 
-  // Fee structures a front-office expects out of the box.
-  await tenant.feeStructure.createMany({
-    data: [
-      { name: 'Tuition Fee', branchId: branch.id, classIds: [], amount: 1500, frequency: 'MONTHLY', dueDay: 10 },
-      { name: 'Annual Fee', branchId: branch.id, classIds: [], amount: 3000, frequency: 'ONE_TIME', dueDay: 5 },
-      { name: 'Examination Fee', branchId: branch.id, classIds: [], amount: 500, frequency: 'ONE_TIME', dueDay: 5 },
-    ],
-  });
+  // Fee heads + structures a front-office expects out of the box. Phase 2
+  // shape: a FeeStructure groups FeeStructureLines (head × amount ×
+  // frequency × dueDay) and is linked to classes via FeeStructureClass.
+  const feeHeads = [
+    { id: `fh_${branch.id}_TUITION`, code: 'TUITION', name: 'Tuition Fee', type: 'TUITION' as const, isRecurring: true },
+    { id: `fh_${branch.id}_ANNUAL`, code: 'ANNUAL', name: 'Annual Fee', type: 'ANNUAL' as const, isRecurring: false },
+    { id: `fh_${branch.id}_EXAM`, code: 'EXAM', name: 'Examination Fee', type: 'EXAM' as const, isRecurring: false },
+  ];
+  await tenant.feeHead.createMany({ data: feeHeads.map((h) => ({ ...h, branchId: branch.id })), skipDuplicates: true });
 
-  // First BRANCH_ADMIN with a one-time setup token.
+  const headId = (code: string) => feeHeads.find((h) => h.code === code)!.id;
+  const structures: Array<{
+    id: string; name: string; headCode: string; amount: number; frequency: 'MONTHLY' | 'ONE_TIME'; dueDay: number;
+  }> = [
+    { id: `fs_${branch.id}_TUITION`, name: 'Tuition Fee', headCode: 'TUITION', amount: 1500, frequency: 'MONTHLY', dueDay: 10 },
+    { id: `fs_${branch.id}_ANNUAL`, name: 'Annual Fee', headCode: 'ANNUAL', amount: 3000, frequency: 'ONE_TIME', dueDay: 5 },
+    { id: `fs_${branch.id}_EXAM`, name: 'Examination Fee', headCode: 'EXAM', amount: 500, frequency: 'ONE_TIME', dueDay: 5 },
+  ];
+  const classRows = await tenant.class.findMany({
+    where: { branchId: branch.id, academicYearId: academicYear.id },
+    select: { id: true },
+  });
+  for (const s of structures) {
+    await tenant.feeStructure.create({
+      data: {
+        id: s.id,
+        name: s.name,
+        branchId: branch.id,
+        academicYearId: academicYear.id,
+        lines: {
+          create: [{ feeHeadId: headId(s.headCode), amount: s.amount, frequency: s.frequency, dueDay: s.dueDay }],
+        },
+        classes: { create: classRows.map((c) => ({ classId: c.id })) },
+      },
+    });
+  }
+
+  // First BRANCH_ADMIN with a one-time setup token. Identity lives in User +
+  // UserRoleAssignment (Phase 2): no role/branchId/schoolId columns on User.
   const setupToken = randomBytes(24).toString('hex');
   const adminUser = await tenant.user.create({
     data: {
       email: `admin@${input.slug}.example.in`,
       passwordHash: `$setup$${setupToken}`,
-      role: 'BRANCH_ADMIN',
-      branchId: branch.id,
-      schoolId: school.id,
+      defaultBranchId: branch.id,
+      roleAssignments: { create: { roleId: 'sys_branch_admin' } },
     },
   });
 

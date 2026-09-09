@@ -63,7 +63,17 @@ r.get('/staff', async (req, res) => {
     }
     const staff = await prisma.staff.findMany({
       where: { branchId, isActive: true },
-      include: { user: { select: { email: true, role: true } } },
+      include: {
+        user: {
+          select: {
+            email: true,
+            roleAssignments: {
+              where: { isActive: true },
+              select: { role: { select: { code: true } } },
+            },
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     res.json({ data: staff });
@@ -78,8 +88,16 @@ r.get('/staff/:id', async (req, res) => {
     const staff = await prisma.staff.findUnique({
       where: { id: req.params.id },
       include: {
-        user: { select: { email: true, role: true } },
-        attendances: { take: 30, orderBy: { date: 'desc' } },
+        user: {
+          select: {
+            email: true,
+            roleAssignments: {
+              where: { isActive: true },
+              select: { role: { select: { code: true } } },
+            },
+          },
+        },
+        staffAttendances: { take: 30, orderBy: { date: 'desc' } },
         leaveRequests: { take: 10, orderBy: { createdAt: 'desc' } },
         payrolls: { take: 12, orderBy: [{ year: 'desc' }, { month: 'desc' }] },
       },
@@ -92,17 +110,24 @@ r.get('/staff/:id', async (req, res) => {
 r.post('/staff', async (req, res) => {
   try {
     const { branchId } = ctx(req);
-    const { tenantId: schoolId } = ctx(req);
-    if (!branchId || !schoolId) {
-      res.status(403).json({ detail: 'Account has no branch or tenant — cannot create staff.' });
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot create staff.' });
       return;
     }
     const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.hash('staff123', 12);
+    // Identity = User + role assignment (Phase 2); no role/schoolId columns.
     const user = await prisma.user.create({
-      data: { email: req.body.email, passwordHash, role: req.body.role || 'TEACHER', branchId, schoolId },
+      data: {
+        email: req.body.email,
+        passwordHash,
+        defaultBranchId: branchId,
+        roleAssignments: { create: { roleId: 'sys_teacher', branchId } },
+      },
     });
-    const staff = await prisma.staff.create({ data: { ...req.body, userId: user.id, branchId } });
+    const { email, role, ...staffFields } = req.body;
+    void email; void role;
+    const staff = await prisma.staff.create({ data: { ...staffFields, userId: user.id, branchId } });
     res.status(201).json(staff);
   } catch (error) { res.status(500).json({ detail: (error as Error).message }); }
 });
@@ -114,12 +139,34 @@ r.put('/staff/:id', async (req, res) => {
     const staff = await prisma.staff.update({
       where: { id },
       data: staffFields,
-      include: { user: { select: { email: true, role: true } } },
+      include: {
+        user: {
+          select: {
+            email: true,
+            roleAssignments: {
+              where: { isActive: true },
+              select: { role: { select: { code: true } } },
+            },
+          },
+        },
+      },
     });
-    if (email || role) {
-      await prisma.user.update({
-        where: { id: staff.userId },
-        data: { ...(email && { email }), ...(role && { role }) },
+    if (email) {
+      await prisma.user.update({ where: { id: staff.userId }, data: { email } });
+    }
+    // Role changes swap the active role assignment (roles are rows, not enums).
+    if (role) {
+      const target = await prisma.role.findUnique({ where: { code: role } });
+      if (!target) {
+        res.status(400).json({ detail: `Unknown role code ${role}.` });
+        return;
+      }
+      await prisma.userRoleAssignment.updateMany({
+        where: { userId: staff.userId, isActive: true },
+        data: { isActive: false },
+      });
+      await prisma.userRoleAssignment.create({
+        data: { userId: staff.userId, roleId: target.id, branchId: staff.branchId },
       });
     }
     res.json(staff);

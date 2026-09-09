@@ -1,10 +1,15 @@
 // ──────────────────────────────────────────────
 // School ERP — Fee & Finance Service
+//
+// Phase 2 shapes: Invoice + InvoiceLine + FeeHead (no FeeInvoice/FeeItem),
+// PaymentAllocation, and the append-only FeeLedger. Demands and payments go
+// through the domain engine so the ledger always ties out with the invoices.
 // ──────────────────────────────────────────────
 
 import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
+import { postDemand, postPayment, ledgerBalance } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 
 const SERVICE_NAME = 'fee-service';
@@ -32,7 +37,10 @@ r.get('/fee-structures', async (req, res) => {
       res.status(403).json({ detail: 'Account has no branch — cannot list fee structures.' });
       return;
     }
-    const structures = await prisma.feeStructure.findMany({ where: { branchId, isActive: true } });
+    const structures = await prisma.feeStructure.findMany({
+      where: { branchId, isActive: true, deletedAt: null },
+      include: { lines: { include: { feeHead: true } }, classes: true },
+    });
     res.json({ data: structures });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
@@ -40,27 +48,56 @@ r.get('/fee-structures', async (req, res) => {
 r.post('/fee-structures', async (req, res) => {
   try {
     const { branchId } = ctx(req);
-    const structure = await prisma.feeStructure.create({ data: { ...req.body, branchId } });
+    const { lines, classes, ...data } = req.body ?? {};
+    void lines; void classes;
+    const structure = await prisma.feeStructure.create({
+      data: {
+        ...data,
+        branchId,
+        academicYearId: data.academicYearId,
+        lines: lines ? { create: lines } : undefined,
+        classes: classes ? { create: classes } : undefined,
+      },
+      include: { lines: true, classes: true },
+    });
     res.status(201).json(structure);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-// ── Fee Invoices ──
+// ── Fee Heads ──
+r.get('/fee-heads', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list fee heads.' });
+      return;
+    }
+    const heads = await prisma.feeHead.findMany({ where: { branchId, deletedAt: null } });
+    res.json({ data: heads });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Invoices ──
 r.get('/invoices', async (req, res) => {
   try {
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list invoices.' });
+      return;
+    }
     const { studentId, status, cursor, limit = '20' } = req.query;
     const take = Math.min(parseInt(limit as string), 100);
-    const where: any = {};
+    const where: any = { branchId, deletedAt: null };
     if (studentId) where.studentId = studentId;
     if (status) where.status = status;
 
-    const invoices = await prisma.feeInvoice.findMany({
+    const invoices = await prisma.invoice.findMany({
       where,
       take: take + 1,
       ...(cursor ? { cursor: { id: cursor as string }, skip: 1 } : {}),
       include: {
         student: { select: { firstName: true, lastName: true, admissionNo: true } },
-        items: { include: { feeStructure: { select: { name: true } } } },
+        lines: { include: { feeHead: { select: { name: true } } } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -71,49 +108,97 @@ r.get('/invoices', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// Post a demand (invoice + one ledger entry per line) via the domain engine.
 r.post('/invoices', async (req, res) => {
   try {
-    const { studentId, items, dueDate } = req.body;
-    const totalAmount = items.reduce((sum: number, item: any) => sum + item.amount - (item.discount || 0), 0);
-    const invoiceNo = `INV-${Date.now()}`;
-    const invoice = await prisma.feeInvoice.create({
-      data: {
-        invoiceNo,
-        studentId,
-        totalAmount,
-        dueDate: new Date(dueDate),
-        items: { create: items },
-      },
-      include: { items: true },
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot post a demand.' });
+      return;
+    }
+    const { studentId, academicYearId, lines, dueDate, periodStart, periodEnd, createdBy } = req.body;
+    if (!academicYearId || !Array.isArray(lines) || lines.length === 0) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'academicYearId and at least one line are required.' });
+      return;
+    }
+    const invoice = await postDemand(prisma, {
+      branchId,
+      academicYearId,
+      studentId,
+      lines,
+      dueDate: new Date(dueDate),
+      periodStart: periodStart ? new Date(periodStart) : null,
+      periodEnd: periodEnd ? new Date(periodEnd) : null,
+      createdBy: createdBy ?? ctx(req).userId,
     });
     res.status(201).json(invoice);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
 // ── Payments ──
+// Allocates oldest-due-first, updates invoice totals, posts the PAYMENT ledger
+// entry and honours the idempotency key (duplicate webhooks never double-credit).
 r.post('/payments', async (req, res) => {
   try {
-    const { invoiceId, amount, method, transactionId } = req.body;
-    const receiptNo = `REC-${Date.now()}`;
-    const payment = await prisma.payment.create({ data: { invoiceId, amount, method, transactionId, receiptNo } });
-
-    // Update invoice paid amount and status
-    const invoice = await prisma.feeInvoice.findUnique({ where: { id: invoiceId } });
-    if (invoice) {
-      const newPaidAmount = Number(invoice.paidAmount) + amount;
-      const status = newPaidAmount >= Number(invoice.totalAmount) ? 'PAID' : 'PARTIAL';
-      await prisma.feeInvoice.update({ where: { id: invoiceId }, data: { paidAmount: newPaidAmount, status } });
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot record a payment.' });
+      return;
     }
+    const { studentId, academicYearId, amount, method, invoiceIds, idempotencyKey, createdBy } = req.body;
+    if (!studentId || !academicYearId || !amount || !method) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'studentId, academicYearId, amount and method are required.' });
+      return;
+    }
+    const result = await postPayment(prisma, {
+      branchId,
+      academicYearId,
+      studentId,
+      amount,
+      method,
+      invoiceIds,
+      idempotencyKey: idempotencyKey ?? null,
+      createdBy: createdBy ?? ctx(req).userId,
+    });
+    res.status(201).json(result);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
 
-    res.status(201).json(payment);
+// ── Ledger ──
+r.get('/ledger', async (req, res) => {
+  try {
+    const { studentId, academicYearId } = req.query;
+    if (!studentId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'studentId is required.' });
+      return;
+    }
+    const entries = await prisma.feeLedger.findMany({
+      where: { studentId: studentId as string, ...(academicYearId ? { academicYearId: academicYearId as string } : {}) },
+      orderBy: { createdAt: 'asc' },
+    });
+    const balance = await ledgerBalance(prisma, {
+      studentId: studentId as string,
+      ...(academicYearId ? { academicYearId: academicYearId as string } : {}),
+    });
+    res.json({ data: entries, balance });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
 // ── Defaulters ──
 r.get('/defaulters', async (req, res) => {
   try {
-    const defaulters = await prisma.feeInvoice.findMany({
-      where: { status: { in: ['OVERDUE', 'PENDING'] }, dueDate: { lt: new Date() } },
+    const { branchId } = ctx(req);
+    if (!branchId) {
+      res.status(403).json({ detail: 'Account has no branch — cannot list defaulters.' });
+      return;
+    }
+    const defaulters = await prisma.invoice.findMany({
+      where: {
+        branchId,
+        status: { in: ['OVERDUE', 'ISSUED', 'PARTIALLY_PAID'] },
+        dueDate: { lt: new Date() },
+        deletedAt: null,
+      },
       include: { student: { select: { firstName: true, lastName: true, admissionNo: true, phone: true } } },
       orderBy: { dueDate: 'asc' },
     });
@@ -129,16 +214,17 @@ r.get('/reports', async (req, res) => {
       res.status(403).json({ detail: 'Account has no branch — cannot compute reports.' });
       return;
     }
-    
-    // Income
-    const invoices = await prisma.feeInvoice.findMany({
-      where: { status: { in: ['PAID', 'PARTIAL'] }, student: { branchId } }
+
+    // Income = payments actually collected (ledger is the source of truth).
+    const payments = await prisma.payment.findMany({
+      where: { branchId, status: 'SUCCESS' },
+      select: { amount: true },
     });
-    const totalIncome = invoices.reduce((sum, inv) => sum + Number(inv.paidAmount || 0), 0);
+    const totalIncome = payments.reduce((sum, p) => sum + Number(p.amount), 0);
 
     // Expenses (Payroll)
     const payrolls = await prisma.payroll.findMany({
-      where: { status: 'PAID', staff: { branchId } }
+      where: { status: 'PAID', staff: { branchId } },
     });
     const totalExpenses = payrolls.reduce((sum, p) => sum + Number(p.netSalary || 0), 0);
     const netProfit = totalIncome - totalExpenses;
@@ -149,14 +235,14 @@ r.get('/reports', async (req, res) => {
       netProfit,
       ytdRevenue: totalIncome,
       incomeBreakdown: [
-        { cat: 'Collected Fees', amt: totalIncome, pct: 100 }
+        { cat: 'Collected Fees', amt: totalIncome, pct: 100 },
       ],
       expenseBreakdown: [
-        { cat: 'Staff Salaries', amt: totalExpenses, pct: 100 }
+        { cat: 'Staff Salaries', amt: totalExpenses, pct: 100 },
       ],
       monthlyData: [
-        { month: new Date().toLocaleString('default', { month: 'short', year: 'numeric' }), income: totalIncome, expense: totalExpenses, profit: netProfit }
-      ]
+        { month: new Date().toLocaleString('default', { month: 'short', year: 'numeric' }), income: totalIncome, expense: totalExpenses, profit: netProfit },
+      ],
     });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });

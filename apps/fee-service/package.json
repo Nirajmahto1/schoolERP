@@ -17,7 +17,8 @@
     "@school-erp/shared-types": "*",
     "@school-erp/database": "*",
     "@school-erp/auth": "*",
-    "@school-erp/config": "*"
+    "@school-erp/config": "*",
+    "@school-erp/domain": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -15,7 +15,8 @@
     "generate": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^5.20.0"
+    "@prisma/client": "^5.20.0",
+    "@school-erp/domain": "*"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
