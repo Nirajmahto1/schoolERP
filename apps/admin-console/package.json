@@ -12,7 +12,7 @@
     "@school-erp/control-plane": "*",
     "@school-erp/provisioning-service": "*",
     "next": "16.1.6",
-    "react": "19.2.3",
+    "react": "19.2.8",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
