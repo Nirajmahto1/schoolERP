@@ -23,7 +23,10 @@ import {
 export interface GatewayIdentity {
   userId: string;
   email: string;
+  /** Control-plane tenant id (database routing). */
   tenantId: string;
+  /** School row id inside the tenant database. */
+  schoolId: string | null;
   branchId: string | null;
   roles: string[];
 }
@@ -83,6 +86,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
         userId: claims.sub,
         email: claims.email,
         tenantId: claims.tenantId,
+        schoolId: claims.schoolId ?? null,
         branchId: claims.branchId,
         roles: claims.roles,
       };
@@ -96,6 +100,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
             userId: identity.userId,
             email: identity.email,
             tenantId: identity.tenantId,
+            schoolId: identity.schoolId,
             branchId: identity.branchId,
             roles: identity.roles,
             audience,

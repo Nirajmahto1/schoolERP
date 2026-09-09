@@ -6,12 +6,20 @@
 // attacker-chosen branchId/schoolId, so anyone on the internet could mint a
 // super-admin for any school. User creation is invite-only and lives behind
 // authentication (Phase 1 provisioning + Phase 3 identity-service).
+//
+// Phase 1 tenancy: with one database per school, the login request must first
+// be routed to the right database. The client says which school it is reaching
+// via `X-Tenant-Slug` (subdomain requests are normalized to the same header by
+// the gateway). The service consults the control-plane `user_directory` (an
+// email-hash → tenant index, never the address) to resolve or verify the
+// tenant before opening the user's database.
 // ──────────────────────────────────────────────
 
 import { Router, type Request, type Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { PrismaClient } from '@school-erp/database';
+import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import type { IdentityEnv } from '@school-erp/config';
 import {
   MemoryTokenStore,
@@ -23,13 +31,13 @@ import {
   type TokenConfig,
   type TokenStore,
 } from '@school-erp/auth';
+import { findUserTenant, indexTenantUser } from '@school-erp/tenant';
 import { logger } from '../utils/logger';
 
 const router = Router();
 
-// Single process-wide store. Phase 1 swaps this for RedisTokenStore so that
-// revocation is shared across instances — an in-memory denylist behind a load
-// balancer silently fails to revoke on the other instances.
+// Single process-wide store. Swap for RedisTokenStore behind a load balancer —
+// an in-memory denylist across instances silently fails to revoke.
 const store: TokenStore = new MemoryTokenStore();
 
 const loginSchema = z.object({
@@ -60,6 +68,11 @@ function tokenConfig(env: IdentityEnv): TokenConfig {
   };
 }
 
+/** The control-plane client every route shares (set on the app in app.ts). */
+function controlPlane(req: Request): ControlPlaneClient | null {
+  return (req.app.get('controlPlane') as ControlPlaneClient | undefined) ?? null;
+}
+
 /**
  * Load the authoritative user record.
  *
@@ -86,14 +99,82 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
     email: user.email,
     isActive: user.isActive,
     tenantId: user.schoolId,
+    schoolId: user.schoolId,
     branchId: user.branchId,
     roles: [user.role],
   };
 }
 
+/**
+ * Resolve the tenant database for a login.
+ *
+ * Priority:
+ *   1. `X-Tenant-Slug` — which school the client is reaching (subdomain via
+ *      the gateway, or the mobile header). Resolved against the control plane.
+ *   2. `user_directory` — where this email lives. Repairs routing when the
+ *      client is a browser on the apex domain with no slug available.
+ *
+ * The two must agree. A mismatch (credentials of school A aimed at school B)
+ * is refused before any password work happens.
+ */
+async function resolveLoginTenant(
+  req: Request,
+  email: string,
+): Promise<{ prisma: PrismaClient; tenantId: string } | { error: [number, string, string, string] }> {
+  const cp = controlPlane(req);
+  const prismaDefault = req.app.get('prisma') as PrismaClient | undefined;
+  if (!cp || !prismaDefault) {
+    // No control plane wired (older deployments/tests): single-database mode.
+    return { prisma: prismaDefault as PrismaClient, tenantId: '' };
+  }
+
+  const slugHeader = req.header('x-tenant-slug')?.toLowerCase();
+  const directory = await findUserTenant(cp, email);
+
+  let prisma: PrismaClient | null = null;
+  let tenantId = '';
+
+  if (slugHeader) {
+    const record = await cp.tenant.findUnique({
+      where: { slug: slugHeader },
+      include: { datastore: true },
+    });
+    if (!record) {
+      return { error: [404, 'tenant-not-found', 'Unknown School', 'No school matches this address.'] };
+    }
+    if (!record.datastore) {
+      return { error: [503, 'tenant-unavailable', 'School Not Ready', 'This school is still being provisioned. Try again shortly.'] };
+    }
+    prisma = new PrismaClient({ datasourceUrl: record.datastore.connRef });
+    tenantId = record.id;
+
+    if (directory && directory.tenantId !== tenantId) {
+      // Credentials of school A aimed at school B: refuse before any password
+      // work. Same generic message as a bad password — never confirm which
+      // emails exist in which school.
+      return { error: [401, 'authentication-error', 'Invalid Credentials', 'Email or password is incorrect.'] };
+    }
+  } else if (directory) {
+    const record = await cp.tenant.findUnique({
+      where: { id: directory.tenantId },
+      include: { datastore: true },
+    });
+    if (record?.datastore) {
+      prisma = new PrismaClient({ datasourceUrl: record.datastore.connRef });
+      tenantId = record.id;
+    }
+  }
+
+  if (!prisma) {
+    // No hint and no directory entry: fall back to the ambient DATABASE_URL
+    // (the dev / single-tenant deployment shape).
+    return { prisma: prismaDefault, tenantId: '' };
+  }
+  return { prisma, tenantId };
+}
+
 // ── POST /auth/login ──
 router.post('/login', async (req: Request, res: Response) => {
-  const prisma: PrismaClient = req.app.get('prisma');
   const env: IdentityEnv = req.app.get('env');
 
   let credentials: z.infer<typeof loginSchema>;
@@ -107,6 +188,13 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 
   try {
+    const routed = await resolveLoginTenant(req, credentials.email);
+    if ('error' in routed) {
+      problem(res, ...routed.error);
+      return;
+    }
+    const { prisma } = routed;
+
     const record = await prisma.user.findUnique({
       where: { email: credentials.email.toLowerCase() },
       select: {
@@ -147,10 +235,24 @@ router.post('/login', async (req: Request, res: Response) => {
       id: record.id,
       email: record.email,
       isActive: record.isActive,
-      tenantId: record.schoolId,
+      // Routing key vs write key: `tenantId` names the control-plane tenant
+      // (which database); `schoolId` names the School row inside it (what
+      // handlers scope by). Equal in dev single-DB mode.
+      tenantId: routed.tenantId || record.schoolId,
+      schoolId: record.schoolId,
       branchId: record.branchId,
       roles: [record.role],
     };
+
+    // Keep the directory index fresh: a login is the cheapest moment to repair
+    // a drifted entry (idempotent upsert on the email hash).
+    const cp = controlPlane(req);
+    const routedTenantId = routed.tenantId || record.schoolId;
+    if (cp) {
+      await indexTenantUser(cp, routedTenantId, { id: record.id, email: record.email }).catch(() =>
+        undefined,
+      );
+    }
 
     const pair = await issueTokenPair(user, tokenConfig(env), store);
 

@@ -94,10 +94,26 @@ export const gatewayEnvSchema = baseSchema
 
     UPSTREAM_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(15_000),
     UPSTREAM_HOST: z.string().default('localhost'),
+
+    /**
+     * Apex domain tenants get subdomains of (`dps-noida.yourapp.in` → slug
+     * `dps-noida`, BUILD_PLAN 1.3.1). Optional: when unset the gateway only
+     * forwards the mobile app's explicit `X-Tenant-Slug` hint.
+     */
+    TENANT_BASE_DOMAIN: z.string().min(1).optional(),
   });
 
 export type GatewayEnv = z.infer<typeof gatewayEnvSchema>;
 export const loadGatewayEnv = () => parseEnv(gatewayEnvSchema, 'api-gateway');
+
+/**
+ * The platform registry database (Phase 1). Every tenant-aware service needs
+ * it to resolve school → database, even though it never reads school data
+ * from it.
+ */
+const controlPlaneSchema = z.object({
+  CONTROL_PLANE_DATABASE_URL: connectionString(['postgresql', 'postgres']),
+});
 
 // ── identity (auth lives in student-service today; extracted in Phase 3) ──
 
@@ -106,6 +122,7 @@ export const identityEnvSchema = baseSchema
   .merge(redisSchema)
   .merge(jwtSchema)
   .merge(assertionVerifierSchema)
+  .merge(controlPlaneSchema)
   .extend({
     PORT_STUDENT_SERVICE: port(4001),
 
@@ -132,6 +149,7 @@ export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'student-servic
 export const serviceEnvSchema = baseSchema
   .merge(databaseSchema)
   .merge(assertionVerifierSchema)
+  .merge(controlPlaneSchema)
   .extend({
     PORT: port(4000),
   });

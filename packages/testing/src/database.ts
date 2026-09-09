@@ -3,10 +3,25 @@ import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { PrismaClient } from '@school-erp/database';
 
+/** Every Prisma project the harness can migrate (BUILD_PLAN 0.9 / 1.1). */
+export type PrismaProject = 'database' | 'control-plane';
+
+interface ProjectSpec {
+  /** Directory name under packages/. */
+  dir: string;
+  /** The env var that project's datasource block reads. */
+  envVar: string;
+}
+
+const PROJECTS: Record<PrismaProject, ProjectSpec> = {
+  database: { dir: 'database', envVar: 'DATABASE_URL' },
+  'control-plane': { dir: 'control-plane', envVar: 'CONTROL_PLANE_DATABASE_URL' },
+};
+
 /** Resolve the Prisma CLI entry so we never shell out to `npx` (Windows needs npx.cmd). */
-function prismaCli(): string {
-  const databaseDir = path.resolve(__dirname, '..', '..', 'database');
-  return require.resolve('prisma/build/index.js', { paths: [databaseDir] });
+function prismaCli(project: PrismaProject): string {
+  const projectDir = path.resolve(__dirname, '..', '..', PROJECTS[project].dir);
+  return require.resolve('prisma/build/index.js', { paths: [projectDir] });
 }
 
 /**
@@ -40,8 +55,11 @@ export class TestDatabase {
     this.url = url;
   }
 
-  /** Create the schema and apply every committed migration. */
-  static async create(baseUrl: string | undefined): Promise<TestDatabase> {
+  /** Create the schema and apply every committed migration for a project. */
+  static async create(
+    baseUrl: string | undefined,
+    options: { project?: PrismaProject } = {},
+  ): Promise<TestDatabase> {
     if (!baseUrl) {
       throw new Error(
         'DATABASE_URL is not set. Point it at a scratch Postgres before running ' +
@@ -49,30 +67,32 @@ export class TestDatabase {
         'comes from the workflow env on the test job.',
       );
     }
+    const project = options.project ?? 'database';
     const schema = `test_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const db = new TestDatabase(schema, withSchema(baseUrl, schema));
-    await db.migrate();
+    await db.migrate(project);
     return db;
   }
 
-  async migrate(): Promise<void> {
-    const databaseDir = path.resolve(__dirname, '..', '..', 'database');
+  async migrate(project: PrismaProject = 'database'): Promise<void> {
+    const spec = PROJECTS[project];
+    const projectDir = path.resolve(__dirname, '..', '..', spec.dir);
     // Call the CLI via node directly — `npx` is npx.cmd on Windows (ENOENT with
     // execFileSync) and `spawn().output()` needs Node >= 20.12. stderr is
     // captured for the error report.
     try {
       execFileSync(
         process.execPath,
-        [prismaCli(), 'migrate', 'deploy'],
+        [prismaCli(project), 'migrate', 'deploy'],
         {
-          cwd: databaseDir,
-          env: { ...process.env, DATABASE_URL: this.url },
+          cwd: projectDir,
+          env: { ...process.env, [spec.envVar]: this.url },
           stdio: 'pipe',
         },
       );
     } catch (err) {
       const stderr = (err as Error & { stderr?: Buffer }).stderr?.toString() ?? (err as Error).message;
-      throw new Error(`prisma migrate deploy failed for schema ${this.schema}: ${stderr}`);
+      throw new Error(`prisma migrate deploy (${project}) failed for schema ${this.schema}: ${stderr}`);
     }
   }
 

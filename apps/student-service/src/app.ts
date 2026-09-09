@@ -8,6 +8,7 @@
 
 import express, { type Express } from 'express';
 import type { PrismaClient } from '@school-erp/database';
+import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders } from '@school-erp/auth';
 import type { IdentityEnv } from '@school-erp/config';
 import { authRoutes } from './routes/auth.routes';
@@ -21,9 +22,14 @@ export const SERVICE_NAME = 'student-service';
 export interface IdentityAppOptions {
   env: IdentityEnv;
   prisma: PrismaClient;
+  /**
+   * Control-plane client for login routing (user_directory). When omitted —
+   * as in unit tests — login runs in single-database mode.
+   */
+  controlPlane?: ControlPlaneClient;
 }
 
-export function createIdentityApp({ env, prisma }: IdentityAppOptions): Express {
+export function createIdentityApp({ env, prisma, controlPlane }: IdentityAppOptions): Express {
   const app = express();
 
   app.disable('x-powered-by');
@@ -39,6 +45,7 @@ export function createIdentityApp({ env, prisma }: IdentityAppOptions): Express 
 
   app.set('prisma', prisma);
   app.set('env', env);
+  if (controlPlane) app.set('controlPlane', controlPlane);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: SERVICE_NAME, timestamp: new Date().toISOString() });

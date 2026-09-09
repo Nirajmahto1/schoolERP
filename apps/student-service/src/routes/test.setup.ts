@@ -23,6 +23,7 @@ export function makeIdentityTestEnv(
     NODE_ENV: 'test',
     LOG_LEVEL: 'error',
     DATABASE_URL: databaseUrl,
+    CONTROL_PLANE_DATABASE_URL: databaseUrl,
     REDIS_URL: 'redis://localhost:6379',
     JWT_SECRET: testSecret(),
     JWT_REFRESH_SECRET: testSecret(),

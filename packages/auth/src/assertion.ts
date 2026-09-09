@@ -36,6 +36,12 @@ import { z } from 'zod';
  * is deliberately NOT in this list — services receive it from the gateway's
  * proxy on every hop and must not strip it before verifying. A forged copy is
  * defeated by signature verification, not by header deletion.
+ *
+ * `x-tenant-slug` is also NOT here: it is a routing hint (which school's login
+ * a mobile client is reaching), not an identity. It carries no privilege —
+ * credentials are still verified against the routed tenant's own database —
+ * and the gateway normalizes it (subdomain first, mobile header second)
+ * before forwarding. `x-tenant-id` stays stripped: that one IS an identity.
  */
 export const SPOOFABLE_IDENTITY_HEADERS = [
   'x-user-id',
@@ -45,7 +51,6 @@ export const SPOOFABLE_IDENTITY_HEADERS = [
   'x-branch-id',
   'x-school-id',
   'x-tenant-id',
-  'x-tenant-slug',
   'x-permissions',
   'x-impersonated-by',
 ] as const;
@@ -58,8 +63,17 @@ export const assertionClaimsSchema = z.object({
   /** User ID. */
   sub: z.string().min(1),
   email: z.string().email(),
-  /** Tenant (school) the request operates within. */
+  /**
+   * Tenant (school) the request operates within — the CONTROL-PLANE tenant id,
+   * which is what @school-erp/tenant resolves to a database connection.
+   */
   tenantId: z.string().min(1),
+  /**
+   * The School row id INSIDE the tenant database (the data-level tenant).
+   * Distinct from tenantId: one names the platform registry row, the other
+   * names the school record the handlers write against.
+   */
+  schoolId: z.string().min(1).nullable().optional(),
   /** Branch scope for this request, when the user acts in a single branch. */
   branchId: z.string().min(1).nullable().optional(),
   /** All roles held by the user, not a single role string. */
@@ -83,7 +97,10 @@ export type AssertionClaims = z.infer<typeof assertionClaimsSchema>;
 export interface RequestContext {
   userId: string;
   email: string;
+  /** Control-plane tenant id — routing key for @school-erp/tenant. */
   tenantId: string;
+  /** School row id inside the tenant database — the handlers' write key. */
+  schoolId: string | null;
   branchId: string | null;
   roles: string[];
   permissions: string[];
@@ -95,6 +112,8 @@ export interface MintAssertionInput {
   userId: string;
   email: string;
   tenantId: string;
+  /** School row id inside the tenant database, when known. */
+  schoolId?: string | null;
   branchId?: string | null;
   roles: string[];
   permissions?: string[];
@@ -120,6 +139,7 @@ export function mintAssertion(input: MintAssertionInput, signer: AssertionSigner
     sub: input.userId,
     email: input.email,
     tenantId: input.tenantId,
+    schoolId: input.schoolId ?? null,
     branchId: input.branchId ?? null,
     roles: input.roles,
     ...(input.permissions ? { permissions: input.permissions } : {}),
@@ -202,6 +222,7 @@ export function verifyAssertion(
     userId: claims.sub,
     email: claims.email,
     tenantId: claims.tenantId,
+    schoolId: claims.schoolId ?? null,
     branchId: claims.branchId ?? null,
     roles: claims.roles,
     permissions: claims.permissions ?? [],

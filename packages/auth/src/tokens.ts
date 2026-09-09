@@ -37,7 +37,10 @@ export interface TokenStore {
 export interface AccessTokenClaims {
   sub: string;
   email: string;
+  /** Control-plane tenant id (routes to a database via @school-erp/tenant). */
   tenantId: string;
+  /** School row id inside the tenant database (handlers' write key). */
+  schoolId: string | null;
   branchId: string | null;
   roles: string[];
   jti: string;
@@ -49,6 +52,7 @@ const accessClaimsSchema = z.object({
   sub: z.string().min(1),
   email: z.string().email(),
   tenantId: z.string().min(1),
+  schoolId: z.string().min(1).nullable().default(null),
   branchId: z.string().nullable(),
   roles: z.array(z.string()).min(1),
   jti: z.string().min(1),
@@ -70,7 +74,10 @@ export interface LiveUser {
   id: string;
   email: string;
   isActive: boolean;
+  /** Control-plane tenant id (database routing key). */
   tenantId: string;
+  /** School row id inside that database; equals tenantId in dev single-DB mode. */
+  schoolId?: string | null;
   branchId: string | null;
   roles: string[];
 }
@@ -169,6 +176,7 @@ export async function issueTokenPair(
       sub: user.id,
       email: user.email,
       tenantId: user.tenantId,
+      schoolId: user.schoolId ?? null,
       branchId: user.branchId,
       roles: user.roles,
     },

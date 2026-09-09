@@ -12,8 +12,11 @@
   },
   "dependencies": {
     "@school-erp/database": "*",
+    "@school-erp/control-plane": "*",
+    "@school-erp/tenant": "*",
     "@school-erp/shared-types": "*",
     "@school-erp/auth": "*",
+    "@school-erp/http": "*",
     "@school-erp/config": "*",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

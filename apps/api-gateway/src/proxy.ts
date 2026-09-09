@@ -10,6 +10,7 @@
 import type { RequestHandler } from 'express';
 import { createProxyMiddleware, type Options } from 'http-proxy-middleware';
 import { INTERNAL_ASSERTION_HEADER } from '@school-erp/auth';
+import { TENANT_SLUG_HEADER } from './middleware/tenant';
 import { logger } from './utils/logger';
 
 export interface UpstreamRoute {
@@ -66,6 +67,14 @@ export function createUpstreamProxy(
 
         const requestId = (req as { id?: string }).id;
         if (requestId) proxyReq.setHeader('x-request-id', requestId);
+
+        // Forward the resolved tenant hint (see middleware/tenant.ts). The
+        // client's copy was stripped at the edge and re-set only when the
+        // gateway itself resolved it.
+        const tenantSlug = req.headers[TENANT_SLUG_HEADER];
+        if (typeof tenantSlug === 'string' && tenantSlug) {
+          proxyReq.setHeader(TENANT_SLUG_HEADER, tenantSlug);
+        }
       },
       error: (err, req, res) => {
         logger.error(

@@ -20,6 +20,7 @@ import type { GatewayEnv } from '@school-erp/config';
 import { createAuthMiddleware } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
 import { authLimiter, methodAwareLimiter } from './middleware/rateLimit';
+import { createTenantHintResolver, TENANT_SLUG_HEADER } from './middleware/tenant';
 import { createUpstreamProxy } from './proxy';
 import { buildRoutes } from './routes';
 import { logger } from './utils/logger';
@@ -94,6 +95,10 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
       skip: (req) => req.path === '/health',
     }),
   );
+
+  // Tenant hint: resolve subdomain / mobile slug header BEFORE the proxy so
+  // every downstream hop (public /auth included) knows which school this is.
+  app.use(createTenantHintResolver(env.TENANT_BASE_DOMAIN));
 
   // Body is intentionally NOT parsed globally: http-proxy-middleware needs the
   // raw stream, and parsing first makes proxied POSTs hang. The auth limiter

@@ -35,6 +35,7 @@ coverage/
 
 # Prisma
 packages/database/prisma/*.db
+packages/control-plane/generated/
 
 # Docker volumes
 docker/volumes/

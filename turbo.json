@@ -6,6 +6,9 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
+    "@school-erp/control-plane#build": {
+      "outputs": ["generated/**"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

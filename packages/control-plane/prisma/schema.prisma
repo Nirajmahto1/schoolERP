@@ -1,0 +1,241 @@
+// ──────────────────────────────────────────────
+// School ERP — Control Plane Schema (BUILD_PLAN 1.1)
+//
+// One separate database for platform-owned data. Per-school data lives in N
+// tenant databases (packages/database schema); this schema is the registry
+// that knows those databases exist, who owns them, and their billing state.
+// ──────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CONTROL_PLANE_DATABASE_URL")
+}
+
+// ── Core ──
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CHURNED
+  DELETING
+}
+
+enum DatastoreKind {
+  POSTGRES
+  S3_PREFIX
+}
+
+model Tenant {
+  id          String       @id @default(cuid())
+  slug        String       @unique // subdomain: dps-noida.yourapp.in
+  legalName   String
+  status      TenantStatus @default(TRIAL)
+  planId      String?
+  region      String       @default("ap-south-1")
+  trialEndsAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  plan           Plan?          @relation(fields: [planId], references: [id])
+  datastore      TenantDatastore?
+  subscriptions  Subscription[]
+  invoices       SaasInvoice[]
+  userDirectory  UserDirectory[]
+  migrationRuns  MigrationRun[]
+  auditEvents    ProvisionAudit[]
+  supportGrants  SupportGrant[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+model TenantDatastore {
+  id             String        @id @default(cuid())
+  tenantId       String        @unique
+  kind           DatastoreKind @default(POSTGRES)
+  // KMS-encrypted connection reference in production (Phase 11/12); for now the
+  // raw Postgres connection string. NEVER surfaced in API responses.
+  connRef        String
+  schemaVersion  Int           @default(0)
+  lastMigratedAt DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_datastores")
+}
+
+// ── Plans & billing ──
+
+model Plan {
+  id                  String  @id @default(cuid())
+  code                String  @unique
+  name                String
+  pricePerStudentYear Decimal @db.Decimal(10, 2)
+  maxBranches         Int
+  maxStudents         Int
+  featureFlags        Json    @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenants       Tenant[]
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+model Subscription {
+  id           String             @id @default(cuid())
+  tenantId     String
+  planId       String
+  periodStart  DateTime
+  periodEnd    DateTime
+  seats        Int
+  status       SubscriptionStatus @default(TRIAL)
+  billingAnchor DateTime
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@unique([tenantId, periodStart])
+  @@index([planId])
+  @@map("subscriptions")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model SaasInvoice {
+  id              String        @id @default(cuid())
+  tenantId        String
+  amount          Decimal       @db.Decimal(12, 2)
+  gstAmount       Decimal       @default(0) @db.Decimal(12, 2)
+  status          InvoiceStatus @default(DRAFT)
+  razorpayOrderId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@map("saas_invoices")
+}
+
+// ── Login routing ──
+
+model UserDirectory {
+  id        String   @id @default(cuid())
+  // A hash of the email, never the address — this is a cross-tenant index and
+  // must not become a customer list leak (BUILD_PLAN 1.1).
+  emailHash String   @unique
+  tenantId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("user_directory")
+}
+
+// ── Platform staff ──
+
+enum PlatformAdminRole {
+  SUPER_ADMIN
+  SUPPORT
+  FINANCE
+}
+
+model PlatformAdmin {
+  id           String            @id @default(cuid())
+  email        String            @unique
+  passwordHash String
+  totpSecret   String?
+  role         PlatformAdminRole @default(SUPER_ADMIN)
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  supportGrants SupportGrant[]
+
+  @@map("platform_admins")
+}
+
+// ── Operations ──
+
+enum MigrationRunStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  ROLLED_BACK
+}
+
+model MigrationRun {
+  id          String             @id @default(cuid())
+  tenantId    String
+  fromVersion String
+  toVersion   String
+  status      MigrationRunStatus @default(PENDING)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  error       String?
+  createdAt   DateTime           @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@map("migration_runs")
+}
+
+model ProvisionAudit {
+  id       String   @id @default(cuid())
+  actor    String
+  action   String
+  tenantId String?
+  payload  Json     @default("{}")
+  at       DateTime @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([at])
+  @@map("provision_audit")
+}
+
+model SupportGrant {
+  id              String   @id @default(cuid())
+  tenantId        String
+  platformAdminId String
+  reason          String
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  admin  PlatformAdmin @relation(fields: [platformAdminId], references: [id])
+
+  @@index([tenantId])
+  @@index([expiresAt])
+  @@map("support_grants")
+}

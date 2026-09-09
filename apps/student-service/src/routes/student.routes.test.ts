@@ -31,14 +31,18 @@ describe('student endpoints', () => {
   let keypair: ReturnType<typeof testKeypair>;
   let alpha: TenantSeed;
   let beta: TenantSeed;
+  let gamma: TenantSeed;
 
   beforeAll(async () => {
     db = await TestDatabase.create(process.env.DATABASE_URL as string);
     prisma = db.client();
     keypair = testKeypair();
     app = createIdentityApp({ env: makeIdentityTestEnv(db.url, keypair), prisma });
+    // Three fully disjoint tenants (GATE 1: "the isolation suite passes
+    // against all three"). Every assertion below must hold for every pair.
     alpha = await seedTenant(prisma, { code: 'ALPHA', name: 'Alpha School' });
     beta = await seedTenant(prisma, { code: 'BETA', name: 'Beta School' });
+    gamma = await seedTenant(prisma, { code: 'GAMMA', name: 'Gamma School' });
   });
 
   afterAll(async () => {
@@ -53,6 +57,17 @@ describe('student endpoints', () => {
       email: 'admin@alpha.example.test',
       tenantId: alpha.schoolId,
       branchId: alpha.branchId,
+      roles: ['BRANCH_ADMIN'],
+      ...overrides,
+    });
+  }
+
+  function asGamma(overrides?: Partial<TestIdentity>): string {
+    return assertionFor(keypair, SERVICE, {
+      userId: gamma.adminUserId,
+      email: 'admin@gamma.example.test',
+      tenantId: gamma.schoolId,
+      branchId: gamma.branchId,
       roles: ['BRANCH_ADMIN'],
       ...overrides,
     });
@@ -212,13 +227,65 @@ describe('student endpoints', () => {
   });
 
   it('isolation: listing as tenant A never returns tenant B students', async () => {
-    // The create above added a third student to Alpha; Beta's student must
-    // never appear in Alpha's list regardless.
+    // The create above added a third student to Alpha; Beta's and Gamma's
+    // students must never appear in Alpha's list regardless.
     const res = await request(app).get('/students').set('x-internal-assertion', asAlpha());
 
     expect(res.status).toBe(200);
     for (const s of res.body.data as Array<{ admissionNo: string }>) {
       expect(s.admissionNo).not.toBe('ADM-BETA');
+      expect(s.admissionNo).not.toBe('ADM-GAMMA');
     }
+  });
+
+  // ── Third tenant (GATE 1): the suite must pass against all three ──
+  it('isolation: reading tenant C student as tenant A returns 404', async () => {
+    const res = await request(app)
+      .get(`/students/${gamma.studentId}`)
+      .set('x-internal-assertion', asAlpha());
+
+    expect(res.status).toBe(404);
+  });
+
+  it('isolation: updating tenant C student as tenant A returns 404', async () => {
+    const res = await request(app)
+      .put(`/students/${gamma.studentId}`)
+      .set('x-internal-assertion', asAlpha())
+      .send({ firstName: 'Hacked' });
+
+    expect(res.status).toBe(404);
+    const stillIntact = await prisma.student.findUnique({ where: { id: gamma.studentId } });
+    expect(stillIntact?.firstName).toBe('Gamma School');
+  });
+
+  it('isolation: deleting tenant C student as tenant A returns 404', async () => {
+    const res = await request(app)
+      .delete(`/students/${gamma.studentId}`)
+      .set('x-internal-assertion', asAlpha());
+
+    expect(res.status).toBe(404);
+    const stillActive = await prisma.student.findUnique({
+      where: { id: gamma.studentId },
+      select: { isActive: true },
+    });
+    expect(stillActive?.isActive).toBe(true);
+  });
+
+  it('isolation: reverse direction — tenant C cannot touch tenant A', async () => {
+    const res = await request(app)
+      .get(`/students/${alpha.studentId}`)
+      .set('x-internal-assertion', asGamma());
+
+    expect(res.status).toBe(404);
+  });
+
+  it('isolation: listing as tenant C only ever returns C students', async () => {
+    const res = await request(app).get('/students').set('x-internal-assertion', asGamma());
+
+    expect(res.status).toBe(200);
+    const admissionNos = res.body.data.map((s: { admissionNo: string }) => s.admissionNo);
+    expect(admissionNos).toContain('ADM-GAMMA');
+    expect(admissionNos).not.toContain('ADM-ALPHA');
+    expect(admissionNos).not.toContain('ADM-BETA');
   });
 });
