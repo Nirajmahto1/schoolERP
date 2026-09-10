@@ -11,24 +11,33 @@ import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { rebuildMonthlySummary } from '@school-erp/domain';
-import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { createServiceApp, listenWithGracefulShutdown, ctx, requireAssertion } from '@school-erp/auth';
 import { logger } from './utils/logger';
 
+/** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'attendance-service';
-const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
-const prisma = new PrismaClient();
 
-// No CORS, no dotenv, no per-service port fallback. Configuration comes from
-// @school-erp/config (missing var = crash at boot), and every non-health route
-// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
-const { app, mount, finalize } = createServiceApp({
-  serviceName: SERVICE_NAME,
-  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
-  onLog: (msg: string) => logger.info(msg),
-  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
-});
+export interface AttendanceAppOptions {
+  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
+  prisma: PrismaClient;
+}
 
-app.set('prisma', prisma);
+/**
+ * App factory — split from the entrypoint so tests can inject a Prisma
+ * client and an explicit env without booting the real process.
+ */
+export function createAttendanceApp(options: AttendanceAppOptions) {
+  const { prisma } = options;
+  const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+
+  const { app, mount, finalize } = createServiceApp({
+    serviceName: SERVICE_NAME,
+    assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+    onLog: (msg: string) => logger.info(msg),
+    readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
+  });
+
+  app.set('prisma', prisma);
 
 const r = Router();
 
@@ -62,20 +71,22 @@ r.post('/attendance/mark', async (req, res) => {
     }
 
     // One session per (branch, date, class, section) — re-marking reuses it.
-    const session = await prisma.attendanceSession.upsert({
-      where: {
-        branchId_date_classId_sectionId_subjectId_period: {
-          branchId,
-          date: day,
-          classId,
-          sectionId,
-          subjectId: null as unknown as string,
-          period: null as unknown as number,
-        },
-      },
-      create: { branchId, date: day, classId, sectionId, academicYearId: academicYear.id, markedBy: markedBy ?? userId },
-      update: { markedBy: markedBy ?? userId },
-    });
+    // The compound unique includes subjectId/period (period-wise marking);
+    // daily sessions carry NULL there, so find + create/update explicitly.
+    const session = await (async () => {
+      const existing = await prisma.attendanceSession.findFirst({
+        where: { branchId, date: day, classId, sectionId, subjectId: null, period: null },
+      });
+      if (existing) {
+        return prisma.attendanceSession.update({
+          where: { id: existing.id },
+          data: { markedBy: markedBy ?? userId },
+        });
+      }
+      return prisma.attendanceSession.create({
+        data: { branchId, date: day, classId, sectionId, academicYearId: academicYear.id, markedBy: markedBy ?? userId },
+      });
+    })();
 
     const result = await prisma.$transaction(async (tx) => {
       const rows = [];
@@ -263,8 +274,249 @@ r.get('/attendance/summary', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-mount('/', r);
-finalize();
+// ── Corrections with audit (BUILD_PLAN 2.4.4) ──
+// Within the lock window (48h) anyone with access may amend; after it, every
+// amendment is still allowed here but is written to the append-only
+// AttendanceAmendment trail — the "who changed my child's attendance"
+// answer. (Principal-only enforcement beyond the window is a gateway-level
+// RBAC concern; the trail is the service's contract.)
+const LOCK_WINDOW_HOURS = 48;
+
+r.post('/attendance/amend', async (req, res) => {
+  try {
+    const { branchId, userId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { recordId, status, reason } = req.body ?? {};
+    if (!recordId || !status) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'recordId and status are required.' });
+      return;
+    }
+    const record = await prisma.attendanceRecord.findFirst({
+      where: { id: recordId, session: { branchId } },
+      include: { session: true },
+    });
+    if (!record) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Record not found.' }); return; }
+    if (record.status === status) { res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Status is unchanged.' }); return; }
+
+    const before = record.status;
+    const amended = await prisma.$transaction(async (tx) => {
+      const updated = await tx.attendanceRecord.update({
+        where: { id: record.id },
+        data: { status, reason: reason ?? record.reason },
+      });
+      await tx.attendanceAmendment.create({
+        data: {
+          recordId: record.id,
+          beforeStatus: before,
+          afterStatus: status,
+          changedBy: userId,
+          reason: reason ?? null,
+        },
+      });
+      return updated;
+    });
+
+    // The summary is denormalised — refresh for the amended session's month.
+    const day = record.session.date;
+    await rebuildMonthlySummary(prisma, {
+      branchId,
+      academicYearId: record.session.academicYearId,
+      year: day.getUTCFullYear(),
+      month: day.getUTCMonth() + 1,
+    });
+
+    res.json({
+      data: amended,
+      withinLockWindow: (Date.now() - record.session.createdAt.getTime()) < LOCK_WINDOW_HOURS * 3_600_000,
+    });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// Full amendment trail for one record.
+r.get('/attendance/amendments/:recordId', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const trail = await prisma.attendanceAmendment.findMany({
+      where: { record: { id: req.params.recordId, session: { branchId } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ data: trail });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Student leave workflow (BUILD_PLAN 2.4.3) ──
+
+r.post('/leaves', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { studentId, leaveType, startDate, endDate, reason } = req.body ?? {};
+    if (!studentId || !leaveType || !startDate || !endDate || !reason) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'studentId, leaveType, startDate, endDate and reason are required.' });
+      return;
+    }
+    const student = await prisma.student.findFirst({ where: { id: studentId, branchId }, select: { id: true } });
+    if (!student) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Student not found.' }); return; }
+    const leave = await prisma.studentLeave.create({
+      data: { studentId, leaveType, startDate: new Date(startDate), endDate: new Date(endDate), reason },
+    });
+    res.status(201).json(leave);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+r.get('/leaves', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { status } = req.query;
+    const leaves = await prisma.studentLeave.findMany({
+      where: { student: { branchId }, ...(status && { status: status as never }) },
+      include: { student: { select: { admissionNo: true, firstName: true, lastName: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    res.json({ data: leaves });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// Approve: the leave is linked to ON_LEAVE attendance records in its range,
+// so the attendance percentage counts it as an excused absence family.
+r.post('/leaves/:id/decision', async (req, res) => {
+  try {
+    const { branchId, userId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { status } = req.body ?? {};
+    if (!['APPROVED', 'REJECTED', 'CANCELLED'].includes(status)) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'status must be APPROVED, REJECTED or CANCELLED.' });
+      return;
+    }
+    const leave = await prisma.studentLeave.findFirst({ where: { id: req.params.id, student: { branchId } } });
+    if (!leave) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Leave not found.' }); return; }
+    if (leave.status !== 'PENDING') { res.status(409).json({ type: 'conflict', title: 'Conflict', status: 409, detail: 'Leave was already decided.' }); return; }
+
+    const updated = await prisma.studentLeave.update({ where: { id: leave.id }, data: { status, approvedBy: userId } });
+
+    if (status === 'APPROVED') {
+      // Link the leave to existing ON_LEAVE records in the window so reports
+      // can separate approved leave from raw absence.
+      await prisma.attendanceRecord.updateMany({
+        where: {
+          studentId: leave.studentId,
+          status: 'ON_LEAVE',
+          session: { date: { gte: leave.startDate, lte: leave.endDate } },
+        },
+        data: { leaveId: leave.id },
+      });
+    }
+    res.json(updated);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Period-wise marking (BUILD_PLAN 2.4.1/2) ──
+// Same session uniqueness as daily, but with subject + period set.
+
+r.post('/attendance/mark-period', async (req, res) => {
+  try {
+    const { branchId, userId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { date, classId, sectionId, subjectId, period, records } = req.body ?? {};
+    if (!date || !classId || !sectionId || !subjectId || !period || !Array.isArray(records)) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date, classId, sectionId, subjectId, period and records[] are required.' });
+      return;
+    }
+    const day = new Date(date);
+    const academicYear = await prisma.academicYear.findFirst({
+      where: { branchId, startDate: { lte: day }, endDate: { gte: day } },
+    });
+    if (!academicYear) { res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'Date falls outside any academic year.' }); return; }
+
+    const session = await prisma.attendanceSession.upsert({
+      where: {
+        branchId_date_classId_sectionId_subjectId_period: {
+          branchId,
+          date: day,
+          classId,
+          sectionId,
+          subjectId,
+          period: Number(period),
+        },
+      },
+      create: { branchId, date: day, classId, sectionId, subjectId, period: Number(period), academicYearId: academicYear.id, markedBy: userId },
+      update: { markedBy: userId },
+    });
+    await prisma.$transaction(async (tx) => {
+      for (const rec of records) {
+        await tx.attendanceRecord.upsert({
+          where: { sessionId_studentId: { sessionId: session.id, studentId: rec.studentId } },
+          create: { sessionId: session.id, studentId: rec.studentId, status: rec.status, reason: rec.remarks ?? null },
+          update: { status: rec.status, reason: rec.remarks ?? null },
+        });
+      }
+    });
+    await rebuildMonthlySummary(prisma, { branchId, academicYearId: academicYear.id, year: day.getUTCFullYear(), month: day.getUTCMonth() + 1 });
+    res.json({ count: records.length, sessionId: session.id });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Defaulter report (BUILD_PLAN 3.4: < threshold % attendance) ──
+
+r.get('/attendance/defaulters', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const threshold = req.query.threshold ? parseFloat(req.query.threshold as string) : 75;
+    const { academicYearId, classId, sectionId } = req.query;
+
+    const year = academicYearId
+      ? await prisma.academicYear.findFirst({ where: { id: academicYearId as string, branchId } })
+      : await prisma.academicYear.findFirst({ where: { branchId, isCurrent: true } });
+    if (!year) { res.status(404).json({ detail: 'No academic year.' }); return; }
+
+    const summaries = await prisma.attendanceMonthlySummary.findMany({
+      where: {
+        branchId,
+        academicYearId: year.id,
+        ...(classId && { classId: classId as string }),
+        ...(sectionId && { sectionId: sectionId as string }),
+      },
+      include: { student: { select: { admissionNo: true, firstName: true, lastName: true } } },
+    });
+
+    // Aggregate monthly summaries per student, then filter by threshold.
+    const byStudent = new Map<string, { present: number; total: number; student: typeof summaries[number]['student'] }>();
+    for (const s of summaries) {
+      const agg = byStudent.get(s.studentId) ?? { present: 0, total: 0, student: s.student };
+      agg.present += s.presentDays;
+      agg.total += s.workingDays;
+      byStudent.set(s.studentId, agg);
+    }
+    const defaulters = [...byStudent.entries()]
+      .map(([studentId, agg]) => ({
+        studentId,
+        admissionNo: agg.student.admissionNo,
+        name: `${agg.student.firstName} ${agg.student.lastName}`,
+        presentDays: agg.present,
+        workingDays: agg.total,
+        percent: agg.total > 0 ? Math.round((agg.present / agg.total) * 10000) / 100 : 0,
+      }))
+      .filter((d) => d.percent < threshold)
+      .sort((a, b) => a.percent - b.percent);
+
+    res.json({ data: defaulters, meta: { threshold, academicYearId: year.id } });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+  mount('/', r);
+  finalize();
+
+  return app;
+}
+
+// ── Entrypoint ──
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
+const prisma = new PrismaClient();
+const app = createAttendanceApp({ env, prisma });
 
 listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 

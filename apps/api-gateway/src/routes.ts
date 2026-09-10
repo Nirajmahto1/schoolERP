@@ -13,15 +13,15 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
   const host = env.UPSTREAM_HOST;
 
   return [
-    // ── Public: login / refresh / logout / password reset only ──
+    // ── Public: login / refresh / logout / MFA verify / password reset only ──
     // NOTE: `/auth/register` was removed. It allowed anyone on the internet to
     // create a SUPER_ADMIN for an arbitrary schoolId. User creation is now
-    // invite-only and lives behind auth on /api/v1/users.
+    // invite-only and lives behind auth on identity-service.
     {
       path: '/api/v1/auth',
-      service: 'student-service',
+      service: 'identity-service',
       host,
-      port: env.PORT_STUDENT_SERVICE,
+      port: env.PORT_IDENTITY_SERVICE,
       rewriteTo: '/auth',
       public: true,
     },
@@ -43,10 +43,10 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     },
     {
       path: '/api/v1/users',
-      service: 'student-service',
+      service: 'identity-service',
       host,
-      port: env.PORT_STUDENT_SERVICE,
-      rewriteTo: '/users',
+      port: env.PORT_IDENTITY_SERVICE,
+      rewriteTo: '/auth',
     },
     {
       path: '/api/v1/teacher',
@@ -124,6 +124,27 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       host,
       port: env.PORT_ATTENDANCE_SERVICE,
       rewriteTo: '/attendance',
+    },
+    {
+      path: '/api/v1/admissions',
+      service: 'student-service',
+      host,
+      port: env.PORT_STUDENT_SERVICE,
+      rewriteTo: '/admissions',
+    },
+    {
+      path: '/api/v1/exams',
+      service: 'exam-service',
+      host,
+      port: env.PORT_EXAM_SERVICE,
+      rewriteTo: '',
+    },
+    {
+      path: '/api/v1/hr',
+      service: 'staff-service',
+      host,
+      port: env.PORT_STAFF_SERVICE,
+      rewriteTo: '/hr',
     },
 
     // ── Python services ──

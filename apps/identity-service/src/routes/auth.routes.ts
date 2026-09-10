@@ -1,23 +1,28 @@
 // ──────────────────────────────────────────────
-// Auth Routes — login, refresh, logout, me
+// Auth Routes — login (+MFA), refresh, logout, me, sessions, permissions
 //
-// REMOVED: POST /auth/register.
-// It was mounted publicly and its schema accepted `role: 'SUPER_ADMIN'` with an
-// attacker-chosen branchId/schoolId, so anyone on the internet could mint a
-// super-admin for any school. User creation is invite-only and lives behind
-// authentication (Phase 1 provisioning + Phase 3 identity-service).
+// Extracted from student-service (BUILD_PLAN Phase 3.1). Auth living inside
+// students was why that file crossed 1,200 lines; identity is its own service
+// now.
 //
-// Phase 1 tenancy: with one database per school, the login request must first
-// be routed to the right database. The client says which school it is reaching
-// via `X-Tenant-Slug` (subdomain requests are normalized to the same header by
-// the gateway). The service consults the control-plane `user_directory` (an
-// email-hash → tenant index, never the address) to resolve or verify the
-// tenant before opening the user's database.
+// Everything here is invite-only: there is no public registration. The
+// gateway is the only legitimate caller of the public subset (/login,
+// /refresh, /logout, /mfa/verify, /password/*) — in deployment the service
+// port is network-restricted, and the gateway rate-limits these routes.
+//
+// MFA: BRANCH_ADMIN / PRINCIPAL / SUPER_ADMIN / FINANCE / ACCOUNTANT roles
+// get a TOTP challenge (BUILD_PLAN 2.1.5 + 3.1). Login with `totp` in the
+// payload verifies immediately; without it the response is 200 with
+// `mfaRequired: true` and a short-lived `mfaToken` that /mfa/verify exchanges
+// for the real token pair. Enrollment: POST /mfa/enroll (authenticated) →
+// secret + otpauth URL; POST /mfa/activate confirms a valid code and switches
+// the account on.
 // ──────────────────────────────────────────────
 
 import { Router, type Request, type Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
+import { authenticator } from 'otplib';
 import { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import type { IdentityEnv } from '@school-erp/config';
@@ -26,12 +31,15 @@ import {
   TokenError,
   issueTokenPair,
   revokeSession,
+  revokeAllSessions,
   rotateRefreshToken,
   type LiveUser,
   type TokenConfig,
   type TokenStore,
 } from '@school-erp/auth';
 import { findUserTenant, indexTenantUser } from '@school-erp/tenant';
+import { signMfaChallenge, verifyMfaChallenge, mfaRequiredForRoles, ChallengeError } from '../services/mfa';
+import { permissionsFor } from '../services/permissions';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -43,6 +51,13 @@ const store: TokenStore = new MemoryTokenStore();
 const loginSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(1).max(128),
+  /** A current TOTP code. Present → MFA is verified in this very call. */
+  totp: z.string().regex(/^\d{6}$/).optional(),
+});
+
+const mfaVerifySchema = z.object({
+  mfaToken: z.string().min(10),
+  totp: z.string().regex(/^\d{6}$/),
 });
 
 const refreshSchema = z.object({
@@ -73,13 +88,14 @@ function controlPlane(req: Request): ControlPlaneClient | null {
   return (req.app.get('controlPlane') as ControlPlaneClient | undefined) ?? null;
 }
 
+function prismaOf(req: Request): PrismaClient {
+  return req.app.get('prisma') as PrismaClient;
+}
+
 /**
- * Load the authoritative user record.
- *
- * Roles come from the DB on every login *and* every refresh. Since Phase 2.1
- * identity lives in User + UserRoleAssignment: role codes resolve from active
- * role assignments, and the working branch comes from the assignments (with
- * `defaultBranchId` as the UX fallback).
+ * Load the authoritative user record. Roles come from the DB on every login
+ * *and* every refresh — a deactivated or demoted user cannot refresh into
+ * stale privileges.
  */
 async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser | null> {
   const user = await prisma.user.findUnique({
@@ -91,10 +107,7 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
       defaultBranchId: true,
       roleAssignments: {
         where: { isActive: true },
-        select: {
-          branchId: true,
-          role: { select: { code: true } },
-        },
+        select: { branchId: true, role: { select: { code: true } } },
       },
     },
   });
@@ -118,14 +131,10 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
 /**
  * Resolve the tenant database for a login.
  *
- * Priority:
- *   1. `X-Tenant-Slug` — which school the client is reaching (subdomain via
- *      the gateway, or the mobile header). Resolved against the control plane.
- *   2. `user_directory` — where this email lives. Repairs routing when the
- *      client is a browser on the apex domain with no slug available.
- *
- * The two must agree. A mismatch (credentials of school A aimed at school B)
- * is refused before any password work happens.
+ * Priority: `X-Tenant-Slug` (which school the client is reaching), then
+ * `user_directory` (where this email lives). The two must agree — a mismatch
+ * (credentials of school A aimed at school B) is refused before any password
+ * work happens, with the same generic message as a bad password.
  */
 async function resolveLoginTenant(
   req: Request,
@@ -159,9 +168,6 @@ async function resolveLoginTenant(
     tenantId = record.id;
 
     if (directory && directory.tenantId !== tenantId) {
-      // Credentials of school A aimed at school B: refuse before any password
-      // work. Same generic message as a bad password — never confirm which
-      // emails exist in which school.
       return { error: [401, 'authentication-error', 'Invalid Credentials', 'Email or password is incorrect.'] };
     }
   } else if (directory) {
@@ -176,8 +182,6 @@ async function resolveLoginTenant(
   }
 
   if (!prisma) {
-    // No hint and no directory entry: fall back to the ambient DATABASE_URL
-    // (the dev / single-tenant deployment shape).
     return { prisma: prismaDefault, tenantId: '' };
   }
   return { prisma, tenantId };
@@ -213,12 +217,10 @@ router.post('/login', async (req: Request, res: Response) => {
         passwordHash: true,
         isActive: true,
         defaultBranchId: true,
+        mfaSecret: true,
         roleAssignments: {
           where: { isActive: true },
-          select: {
-            branchId: true,
-            role: { select: { code: true } },
-          },
+          select: { branchId: true, role: { select: { code: true } } },
         },
       },
     });
@@ -236,13 +238,7 @@ router.post('/login', async (req: Request, res: Response) => {
           !record ? 'no such user' : !passwordMatches ? 'bad password' : 'inactive'
         })`,
       );
-      problem(
-        res,
-        401,
-        'authentication-error',
-        'Invalid Credentials',
-        'Email or password is incorrect.',
-      );
+      problem(res, 401, 'authentication-error', 'Invalid Credentials', 'Email or password is incorrect.');
       return;
     }
 
@@ -250,13 +246,31 @@ router.post('/login', async (req: Request, res: Response) => {
     const branchId =
       record.roleAssignments.find((a) => a.branchId)?.branchId ?? record.defaultBranchId;
 
+    // MFA challenge for privileged roles with an enrolled secret (2.1.5).
+    const needsMfa = mfaRequiredForRoles(roles) && record.mfaSecret !== null;
+    if (needsMfa) {
+      if (!credentials.totp) {
+        // Step 1 of 2: hand back a short-lived, single-use challenge token.
+        const challenge = signMfaChallenge(record.id, env.JWT_SECRET);
+        res.json({ mfaRequired: true, mfaToken: challenge.token });
+        return;
+      }
+      // `totp` supplied in the login payload — verify it right here.
+      const ok = authenticator.verify({ token: credentials.totp, secret: record.mfaSecret! });
+      if (!ok) {
+        logger.warn(`Failed MFA for ${credentials.email} from ${req.ip}`);
+        problem(res, 401, 'authentication-error', 'Invalid Credentials', 'Email or password is incorrect.');
+        return;
+      }
+    } else if (credentials.totp) {
+      // A TOTP code was sent for an account that has none — ignore it silently
+      // rather than leaking whether the account is MFA-enrolled.
+    }
+
     const user: LiveUser = {
       id: record.id,
       email: record.email,
       isActive: record.isActive,
-      // Routing key vs write key: `tenantId` names the control-plane tenant
-      // (which database); `schoolId` names the School row inside it (what
-      // handlers scope by). Equal in dev single-DB mode.
       tenantId: routed.tenantId,
       schoolId: null,
       branchId: branchId ?? null,
@@ -279,7 +293,7 @@ router.post('/login', async (req: Request, res: Response) => {
       data: { lastLogin: new Date() },
     });
 
-    logger.info(`Login succeeded for ${user.email} (tenant ${user.tenantId})`);
+    logger.info(`Login succeeded for ${user.email} (tenant ${user.tenantId || 'local'})`);
 
     res.json({
       accessToken: pair.accessToken,
@@ -299,9 +313,156 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /auth/mfa/verify ── (step 2 of the MFA login)
+router.post('/mfa/verify', async (req: Request, res: Response) => {
+  const env: IdentityEnv = req.app.get('env');
+
+  let body: z.infer<typeof mfaVerifySchema>;
+  try {
+    body = mfaVerifySchema.parse(req.body);
+  } catch {
+    problem(res, 400, 'validation-error', 'Invalid Input', 'mfaToken and a 6-digit totp are required.');
+    return;
+  }
+
+  try {
+    const userId = await verifyMfaChallenge(body.mfaToken, env.JWT_SECRET, store);
+    const prisma = prismaOf(req);
+
+    const record = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        isActive: true,
+        defaultBranchId: true,
+        mfaSecret: true,
+        roleAssignments: {
+          where: { isActive: true },
+          select: { branchId: true, role: { select: { code: true } } },
+        },
+      },
+    });
+
+    if (!record || !record.isActive || !record.mfaSecret) {
+      problem(res, 401, 'authentication-error', 'Invalid Credentials', 'Sign-in could not be completed.');
+      return;
+    }
+
+    const ok = authenticator.verify({ token: body.totp, secret: record.mfaSecret });
+    if (!ok) {
+      logger.warn(`Failed MFA verify for ${record.email} from ${req.ip}`);
+      problem(res, 401, 'authentication-error', 'Invalid Credentials', 'Sign-in could not be completed.');
+      return;
+    }
+
+    const user = await loadUser(prisma, record.id);
+    if (!user) {
+      problem(res, 401, 'authentication-error', 'Invalid Credentials', 'Sign-in could not be completed.');
+      return;
+    }
+
+    const pair = await issueTokenPair(user, tokenConfig(env), store);
+    await prisma.user.update({ where: { id: record.id }, data: { lastLogin: new Date() } });
+    logger.info(`MFA login succeeded for ${user.email}`);
+
+    res.json({
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+      expiresIn: pair.expiresIn,
+      tokenType: 'Bearer',
+      user: { id: user.id, email: user.email, roles: user.roles, branchId: user.branchId },
+    });
+  } catch (error) {
+    if (error instanceof TokenError || error instanceof ChallengeError) {
+      problem(res, 401, 'authentication-error', 'Invalid MFA Challenge', 'Start the sign-in again.');
+      return;
+    }
+    logger.error(`MFA verify error: ${(error as Error).message}`);
+    problem(res, 500, 'internal-error', 'Server Error', 'An unexpected error occurred.');
+  }
+});
+
+// ── POST /auth/mfa/enroll ── (authenticated: generate a secret + otpauth URL)
+router.post('/mfa/enroll', async (req: Request, res: Response) => {
+  try {
+    const env: IdentityEnv = req.app.get('env');
+    const ctx = (req as Request & { ctx?: { userId?: string; email?: string } }).ctx;
+    if (!ctx?.userId) {
+      problem(res, 401, 'authentication-error', 'Unauthorized', 'Authentication required.');
+      return;
+    }
+    const prisma = prismaOf(req);
+
+    const user = await prisma.user.findUnique({ where: { id: ctx.userId } });
+    if (!user) {
+      problem(res, 404, 'not-found', 'Not Found', 'User not found.');
+      return;
+    }
+    if (user.mfaSecret) {
+      problem(res, 409, 'conflict', 'Already Enrolled', 'MFA is already configured for this account. Contact support to reset it.');
+      return;
+    }
+
+    const secret = authenticator.generateSecret();
+    // Store as NOT-yet-confirmed: the account keeps mfaSecret null until
+    // activation, so an abandoned enrollment can never lock anyone out.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { mfaSecret: null },
+    });
+    // Hand the secret back once; the pending value rides in the response — the
+    // client must complete activation for enrollment to persist.
+    const otpauth = authenticator.keyuri(user.email, 'School ERP', secret);
+    void env;
+
+    res.json({ secret, otpauth, pending: true });
+  } catch (error) {
+    logger.error(`MFA enroll error: ${(error as Error).message}`);
+    problem(res, 500, 'internal-error', 'Server Error', 'An unexpected error occurred.');
+  }
+});
+
+// ── POST /auth/mfa/activate ── (confirm a code against the pending secret)
+router.post('/mfa/activate', async (req: Request, res: Response) => {
+  try {
+    const ctx = (req as Request & { ctx?: { userId?: string } }).ctx;
+    if (!ctx?.userId) {
+      problem(res, 401, 'authentication-error', 'Unauthorized', 'Authentication required.');
+      return;
+    }
+    const { secret, totp } = req.body as { secret?: string; totp?: string };
+    if (!secret || !totp || !/^\d{6}$/.test(totp) || secret.length < 16) {
+      problem(res, 400, 'validation-error', 'Invalid Input', 'secret and a 6-digit totp are required.');
+      return;
+    }
+    const prisma = prismaOf(req);
+    const user = await prisma.user.findUnique({ where: { id: ctx.userId } });
+    if (!user) {
+      problem(res, 404, 'not-found', 'Not Found', 'User not found.');
+      return;
+    }
+    if (user.mfaSecret) {
+      problem(res, 409, 'conflict', 'Already Enrolled', 'MFA is already configured for this account.');
+      return;
+    }
+    const ok = authenticator.verify({ token: totp, secret });
+    if (!ok) {
+      problem(res, 400, 'validation-error', 'Invalid Code', 'The code did not match. Check your authenticator clock and try again.');
+      return;
+    }
+    await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: secret } });
+    logger.info(`MFA enrolled for ${user.email}`);
+    res.json({ enrolled: true });
+  } catch (error) {
+    logger.error(`MFA activate error: ${(error as Error).message}`);
+    problem(res, 500, 'internal-error', 'Server Error', 'An unexpected error occurred.');
+  }
+});
+
 // ── POST /auth/refresh ──
 router.post('/refresh', async (req: Request, res: Response) => {
-  const prisma: PrismaClient = req.app.get('prisma');
+  const prisma = prismaOf(req);
   const env: IdentityEnv = req.app.get('env');
 
   let body: z.infer<typeof refreshSchema>;

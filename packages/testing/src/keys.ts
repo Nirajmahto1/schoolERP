@@ -27,6 +27,8 @@ export interface TestIdentity {
   tenantId: string;
   branchId: string | null;
   roles: string[];
+  /** Optional `module.action` grants carried inside the assertion. */
+  permissions?: string[];
 }
 
 /** Mint a valid assertion for one upstream service. */
@@ -42,6 +44,7 @@ export function assertionFor(
       tenantId: identity.tenantId,
       branchId: identity.branchId,
       roles: identity.roles,
+      permissions: identity.permissions,
       audience,
     },
     signerFor(keypair),

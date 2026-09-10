@@ -19,7 +19,7 @@ import {
   type TenantSeed,
   type TestIdentity,
 } from '@school-erp/testing';
-import { createIdentityApp } from '../app';
+import { createStudentApp } from '../app';
 import { makeIdentityTestEnv } from './test.setup';
 
 const SERVICE = 'student-service';
@@ -37,7 +37,7 @@ describe('student endpoints', () => {
     db = await TestDatabase.create(process.env.DATABASE_URL as string);
     prisma = db.client();
     keypair = testKeypair();
-    app = createIdentityApp({ env: makeIdentityTestEnv(db.url, keypair), prisma });
+    app = createStudentApp({ env: makeIdentityTestEnv(db.url, keypair), prisma });
     // Three fully disjoint tenants (GATE 1: "the isolation suite passes
     // against all three"). Every assertion below must hold for every pair.
     alpha = await seedTenant(prisma, { code: 'ALPHA', name: 'Alpha School' });

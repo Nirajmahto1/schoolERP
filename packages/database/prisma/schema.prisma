@@ -88,6 +88,9 @@ model Branch {
   coScholasticAreas      CoScholasticArea[]
   subjectGroups          SubjectGroup[]
   attendanceSummaries    AttendanceMonthlySummary[]
+  admissionEnquiries     AdmissionEnquiry[]       @relation("AdmissionEnquiryBranch")
+  admissionApplications  AdmissionApplication[]   @relation("AdmissionApplicationBranch")
+  transferCertificates   TransferCertificate[]    @relation("TransferCertificateBranch")
 
   @@unique([schoolId, code])
   @@map("branches")
@@ -241,6 +244,8 @@ model AcademicYear {
   coScholastics StudentCoScholastic[]
   fromPromotionBatches PromotionBatch[] @relation("PromotionFromYear")
   toPromotionBatches   PromotionBatch[] @relation("PromotionToYear")
+  admissionEnquiries   AdmissionEnquiry[]      @relation("AdmissionEnquiryYear")
+  admissionApplications AdmissionApplication[] @relation("AdmissionApplicationYear")
 
   @@unique([branchId, name])
   @@index([branchId, isCurrent])
@@ -360,6 +365,8 @@ model Student {
   bookIssues  BookIssue[]
   documents   Document[]
   attendanceSummaries AttendanceMonthlySummary[]
+  transferCertificates TransferCertificate[] @relation("TransferCertificateStudent")
+  admissionApplications AdmissionApplication[] @relation("AdmissionApplicationStudent")
 
   @@unique([branchId, admissionNo])
   @@index([branchId])
@@ -620,6 +627,8 @@ model Class {
   calendarEntries AcademicCalendar[]
   attendanceSessions AttendanceSession[]
   promotionBatches PromotionBatch[]
+  admissionEnquiries    AdmissionEnquiry[]      @relation("AdmissionEnquiryClass")
+  admissionApplications AdmissionApplication[] @relation("AdmissionApplicationClass")
 
   @@unique([branchId, name, academicYearId])
   @@map("classes")
@@ -1471,6 +1480,97 @@ model Announcement {
 }
 
 // ── Library ──
+
+// ── Admissions pipeline (BUILD_PLAN 3.2: enquiry → application → admission) ──
+
+model AdmissionEnquiry {
+  id              String    @id @default(cuid())
+  branchId        String
+  academicYearId  String
+  studentName     String
+  classAppliedId  String?
+  parentName      String
+  phone           String
+  email           String?
+  source          String    @default("WALK_IN") // WALK_IN, PHONE, WEBSITE, REFERRAL, EVENT
+  status          String    @default("NEW") // NEW, FOLLOW_UP, CONVERTED, CLOSED_LOST
+  followUpAt      DateTime?
+  notes           String?
+  convertedApplicationId String?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  branch        Branch                @relation("AdmissionEnquiryBranch", fields: [branchId], references: [id])
+  academicYear  AcademicYear          @relation("AdmissionEnquiryYear", fields: [academicYearId], references: [id])
+  classApplied  Class?                @relation("AdmissionEnquiryClass", fields: [classAppliedId], references: [id])
+  applications  AdmissionApplication[]
+
+  @@index([branchId, status])
+  @@index([branchId, phone])
+  @@map("admission_enquiries")
+}
+
+model AdmissionApplication {
+  id              String    @id @default(cuid())
+  branchId        String
+  academicYearId  String
+  enquiryId       String?
+  applicationNo   String
+  firstName       String
+  lastName        String
+  dateOfBirth     DateTime
+  gender          Gender
+  previousSchool  String?
+  guardianName    String
+  guardianPhone   String
+  guardianEmail   String?
+  guardianRelation String   @default("FATHER")
+  classAppliedId  String
+  status          String    @default("SUBMITTED") // SUBMITTED, UNDER_REVIEW, INTERVIEW, APPROVED, REJECTED, ADMITTED
+  decidedBy       String?
+  decidedAt       DateTime?
+  admittedStudentId String?
+  remarks         String?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  branch          Branch        @relation("AdmissionApplicationBranch", fields: [branchId], references: [id])
+  academicYear    AcademicYear  @relation("AdmissionApplicationYear", fields: [academicYearId], references: [id])
+  enquiry         AdmissionEnquiry? @relation(fields: [enquiryId], references: [id])
+  classApplied    Class         @relation("AdmissionApplicationClass", fields: [classAppliedId], references: [id])
+  admittedStudent Student?      @relation("AdmissionApplicationStudent", fields: [admittedStudentId], references: [id])
+
+  @@unique([branchId, applicationNo])
+  @@index([branchId, status])
+  @@map("admission_applications")
+}
+
+// A TC is issued once per student leaving the school; the enrollment gets
+// status TC_ISSUED and the student row is soft-deactivated.
+model TransferCertificate {
+  id              String   @id @default(cuid())
+  branchId        String
+  studentId       String
+  enrollmentId    String?
+  tcNo            String
+  issueDate       DateTime @default(now())
+  reason          String?
+  remarks         String?
+  lastClassId     String?
+  feeDuesCleared  Boolean  @default(true)
+  issuedBy        String?
+  createdAt       DateTime @default(now())
+
+  branch    Branch   @relation("TransferCertificateBranch", fields: [branchId], references: [id])
+  student   Student  @relation("TransferCertificateStudent", fields: [studentId], references: [id])
+
+  @@unique([branchId, tcNo])
+  @@index([branchId])
+  @@index([studentId])
+  @@map("transfer_certificates")
+}
 
 model Book {
   id        String @id @default(cuid())

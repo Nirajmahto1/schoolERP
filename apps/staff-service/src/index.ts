@@ -8,6 +8,7 @@ import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { teacherRoutes } from './routes/teacher.routes';
 import { adminRoutes } from './routes/admin.routes';
+import { hrRoutes } from './routes/hr.routes';
 
 const SERVICE_NAME = 'staff-service';
 const env = loadServiceEnv(SERVICE_NAME, 'PORT_STAFF_SERVICE');
@@ -259,6 +260,7 @@ r.get('/transport/vehicles', async (req, res) => {
 });
 
 mount('/', r);
+mount('/hr', hrRoutes);
 finalize();
 
 listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });

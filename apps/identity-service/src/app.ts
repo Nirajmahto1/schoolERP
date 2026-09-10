@@ -1,39 +1,41 @@
 // ──────────────────────────────────────────────
-// School ERP — Student Service (app factory)
+// School ERP — Identity Service (app factory)
 //
-// Split from index.ts so tests can build the app with an injected Prisma
-// client and an explicitly-parsed environment, without binding a port or
-// validating the real .env at import time.
+// Phase 3.1: auth, MFA, sessions, invites, password reset, permission
+// resolution, and impersonation live here — extracted from student-service so
+// the student module stays about students.
 //
-// Phase 3.1: /auth moved to identity-service — this service is students and
-// parents only.
+// Route mounting is split deliberately:
+//   PUBLIC  /auth/*            login, mfa/verify, refresh, logout,
+//                              invites/complete, password/*
+//   GATED   /auth/*            me, sessions, invites (create), impersonate
+// Express matches in registration order, so gated and public handlers live on
+// two separate routers — a public mount can never shadow a gated one.
 // ──────────────────────────────────────────────
 
 import express, { type Express } from 'express';
 import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders } from '@school-erp/auth';
-import type { ServiceEnv } from '@school-erp/config';
-import { studentRoutes } from './routes/student.routes';
-import { parentRoutes } from './routes/parent.routes';
-import { admissionRoutes } from './routes/admission.routes';
-import { importRoutes } from './routes/import.routes';
+import type { IdentityEnv } from '@school-erp/config';
+import { authRoutes } from './routes/auth.routes';
+import { accountRoutes, publicAccountRoutes } from './routes/account.routes';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
-export const SERVICE_NAME = 'student-service';
+export const SERVICE_NAME = 'identity-service';
 
-export interface StudentAppOptions {
-  env: ServiceEnv;
+export interface IdentityAppOptions {
+  env: IdentityEnv;
   prisma: PrismaClient;
   /**
-   * Unused since Phase 3.1 (login routing lives in identity-service); kept
-   * optional so older call sites still compile.
+   * Control-plane client for login routing (user_directory). When omitted —
+   * as in unit tests — login runs in single-database mode.
    */
   controlPlane?: ControlPlaneClient;
 }
 
-export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
+export function createIdentityApp({ env, prisma, controlPlane }: IdentityAppOptions): Express {
   const app = express();
 
   app.disable('x-powered-by');
@@ -49,6 +51,7 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
 
   app.set('prisma', prisma);
   app.set('env', env);
+  if (controlPlane) app.set('controlPlane', controlPlane);
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: SERVICE_NAME, timestamp: new Date().toISOString() });
@@ -68,14 +71,17 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
     }
   });
 
-  // ── Everything requires a gateway-signed, audience-bound assertion.
+  // ── Public subset: reached before a user has a token. The gateway is the
+  //    only legitimate caller in deployment (network policy) and rate-limits
+  //    these. Token-bearing routes (/invites/complete, /password/*) carry
+  //    their own one-time credentials.
+  app.use('/auth', authRoutes);
+  app.use('/auth', publicAccountRoutes);
+
+  // ── Everything else requires a gateway-signed, audience-bound assertion.
   //    A request arriving directly on the service port without one gets 401.
-  //    (Auth/public routes live on identity-service since Phase 3.1.)
   const assertion = requireAssertion(env.INTERNAL_ASSERTION_PUBLIC_KEY, SERVICE_NAME);
-  app.use('/students', assertion, studentRoutes);
-  app.use('/parents', assertion, parentRoutes);
-  app.use('/admissions', assertion, admissionRoutes);
-  app.use('/import', assertion, importRoutes);
+  app.use('/auth', assertion, accountRoutes);
 
   return app;
 }

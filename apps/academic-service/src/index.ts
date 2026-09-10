@@ -8,21 +8,30 @@ import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { logger } from './utils/logger';
 
+/** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'academic-service';
-const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
-const prisma = new PrismaClient();
 
-// No CORS, no dotenv, no per-service port fallback. Configuration comes from
-// @school-erp/config (missing var = crash at boot), and every non-health route
-// is gated behind a gateway-signed, audience-bound assertion (GATE 0).
-const { app, mount, finalize } = createServiceApp({
-  serviceName: SERVICE_NAME,
-  assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
-  onLog: (msg: string) => logger.info(msg),
-  readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
-});
+export interface AcademicAppOptions {
+  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
+  prisma: PrismaClient;
+}
 
-app.set('prisma', prisma);
+/**
+ * App factory — split from the entrypoint so tests can inject a Prisma
+ * client and an explicit env without booting the real process.
+ */
+export function createAcademicApp(options: AcademicAppOptions) {
+  const { prisma } = options;
+  const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+
+  const { app, mount, finalize } = createServiceApp({
+    serviceName: SERVICE_NAME,
+    assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+    onLog: (msg: string) => logger.info(msg),
+    readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
+  });
+
+  app.set('prisma', prisma);
 
 const r = Router();
 
@@ -316,8 +325,120 @@ r.post('/library/return/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
-mount('/', r);
-finalize();
+// ── Timetable (BUILD_PLAN 3.3 + 2.7.6) ──
+// Slot create enforces the teacher-clash rule: a teacher cannot be in two
+// places at once, and cannot teach two sections in the same period.
+r.post('/timetable/slots', async (req, res) => {
+  try {
+    const { staffId, day, startTime, endTime, sectionId, subjectId, room } = req.body ?? {};
+    if (!staffId || !day || !startTime || !endTime || !sectionId || !subjectId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'staffId, day, startTime, endTime, sectionId and subjectId are required.' });
+      return;
+    }
+    const slotSection = await prisma.section.findFirst({
+      where: { id: sectionId },
+      select: { class: { select: { branchId: true } } },
+    });
+    if (!slotSection) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Section not found.' }); return; }
+    const { branchId } = ctx(req);
+    const sectionBranch = slotSection.class.branchId;
+    if (branchId && branchId !== sectionBranch) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Section not found.' }); return; }
+
+    const clash = await prisma.timetableSlot.findFirst({
+      where: { staffId, day, startTime, sectionId: { not: sectionId } },
+      select: { id: true, sectionId: true },
+    });
+    if (clash) {
+      res.status(409).json({ type: 'conflict', title: 'Teacher Clash', status: 409, detail: `Teacher already has a slot at ${day} ${startTime} for another section.` });
+      return;
+    }
+    const slot = await prisma.timetableSlot.create({
+      data: { staffId, day, startTime, endTime, sectionId, subjectId, room },
+    });
+    res.status(201).json(slot);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+r.get('/timetable', async (req, res) => {
+  try {
+    const { sectionId } = req.query;
+    if (!sectionId) { res.status(400).json({ detail: 'sectionId is required' }); return; }
+    const slots = await prisma.timetableSlot.findMany({
+      where: { sectionId: sectionId as string },
+      include: {
+        subject: { select: { name: true, code: true } },
+        staff: { select: { firstName: true, lastName: true, employeeId: true } },
+      },
+      orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
+    });
+    res.json({ data: slots });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+r.delete('/timetable/slots/:id', async (req, res) => {
+  try {
+    await prisma.timetableSlot.delete({ where: { id: req.params.id } });
+    res.json({ message: 'Slot deleted' });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Academic calendar (BUILD_PLAN 2.7.6 / 3.3) ──
+r.get('/calendar', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { academicYearId } = req.query;
+    const year = academicYearId
+      ? await prisma.academicYear.findFirst({ where: { id: academicYearId as string, branchId } })
+      : await prisma.academicYear.findFirst({ where: { branchId, isCurrent: true } });
+    if (!year) { res.status(404).json({ detail: 'No academic year.' }); return; }
+    const entries = await prisma.academicCalendar.findMany({
+      where: { branchId, academicYearId: year.id },
+      orderBy: { date: 'asc' },
+    });
+    res.json({ data: entries });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+r.post('/calendar', async (req, res) => {
+  try {
+    const { branchId, userId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { date, type, title, description, isHoliday } = req.body ?? {};
+    if (!date || !type || !title) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date, type and title are required.' });
+      return;
+    }
+    const year = await prisma.academicYear.findFirst({ where: { branchId, isCurrent: true } });
+    if (!year) { res.status(400).json({ detail: 'Branch has no current academic year.' }); return; }
+    const entry = await prisma.academicCalendar.create({
+      data: {
+        branchId,
+        academicYearId: year.id,
+        date: new Date(date),
+        // The calendar distinguishes working days from holidays; an entry
+        // created via this route is a holiday/exam/event marker.
+        type: isHoliday ? 'HOLIDAY' : (type as never),
+        title,
+        description,
+        isWorkingDay: !isHoliday,
+      },
+    });
+    res.status(201).json(entry);
+    void description; void userId;
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+  mount('/', r);
+  finalize();
+
+  return app;
+}
+
+// ── Entrypoint ──
+const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
+const prisma = new PrismaClient();
+const app = createAcademicApp({ env, prisma });
 
 listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 

@@ -78,12 +78,14 @@ export const gatewayEnvSchema = baseSchema
      */
     CORS_ALLOWED_ORIGINS: csvList,
 
+    PORT_IDENTITY_SERVICE: port(4010),
     PORT_STUDENT_SERVICE: port(4001),
     PORT_STAFF_SERVICE: port(4002),
     PORT_ACADEMIC_SERVICE: port(4003),
     PORT_FEE_SERVICE: port(4004),
     PORT_COMMUNICATION_SERVICE: port(4005),
     PORT_ATTENDANCE_SERVICE: port(4006),
+    PORT_EXAM_SERVICE: port(4007),
     PORT_ANALYTICS_SERVICE: port(5001),
     PORT_AI_SERVICE: port(5002),
     PORT_GO_SERVICE: port(5003),
@@ -115,7 +117,7 @@ const controlPlaneSchema = z.object({
   CONTROL_PLANE_DATABASE_URL: connectionString(['postgresql', 'postgres']),
 });
 
-// ── identity (auth lives in student-service today; extracted in Phase 3) ──
+// ── identity (Phase 3.1: extracted from student-service into its own service) ──
 
 export const identityEnvSchema = baseSchema
   .merge(databaseSchema)
@@ -124,7 +126,7 @@ export const identityEnvSchema = baseSchema
   .merge(assertionVerifierSchema)
   .merge(controlPlaneSchema)
   .extend({
-    PORT_STUDENT_SERVICE: port(4001),
+    PORT_IDENTITY_SERVICE: port(4010),
 
     /** Login throttling — per IP and per account. */
     LOGIN_MAX_ATTEMPTS: z.coerce.number().int().min(3).max(20).default(5),
@@ -142,7 +144,7 @@ export const identityEnvSchema = baseSchema
   });
 
 export type IdentityEnv = z.infer<typeof identityEnvSchema>;
-export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'student-service');
+export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'identity-service');
 
 // ── Generic downstream service (staff, academic, fee, attendance, comms) ──
 

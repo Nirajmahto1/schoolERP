@@ -20,6 +20,9 @@ export async function seedTenant(
   prisma: PrismaClient,
   seed: { code: string; name: string },
 ): Promise<TenantSeed> {
+  // User emails must be lowercase — the login path lowercases submitted
+  // addresses before lookup, and Postgres comparison is case-sensitive.
+  const code = seed.code.toLowerCase();
   const school = await prisma.school.create({
     data: {
       name: seed.name,
@@ -29,7 +32,7 @@ export async function seedTenant(
       state: 'Test State',
       pincode: '110001',
       phone: '0110000000',
-      email: `${seed.code}@school.example.test`,
+      email: `${code}@school.example.test`,
     },
   });
 
@@ -40,7 +43,7 @@ export async function seedTenant(
       code: 'MAIN',
       address: 'Test Address',
       phone: '0110000000',
-      email: `${seed.code}-main@school.example.test`,
+      email: `${code}-main@school.example.test`,
     },
   });
 
@@ -70,7 +73,7 @@ export async function seedTenant(
   // An administrator for this tenant.
   const adminUser = await prisma.user.create({
     data: {
-      email: `admin@${seed.code}.example.test`,
+      email: `admin@${code}.example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
       defaultBranchId: branch.id,
       roleAssignments: { create: { roleId: 'sys_branch_admin', branchId: branch.id } },
@@ -80,7 +83,7 @@ export async function seedTenant(
   // A guardian with portal access.
   const guardianUser = await prisma.user.create({
     data: {
-      email: `parent@${seed.code}.example.test`,
+      email: `parent@${code}.example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
       defaultBranchId: branch.id,
       roleAssignments: { create: { roleId: 'sys_parent', branchId: branch.id } },
@@ -91,14 +94,14 @@ export async function seedTenant(
     data: {
       userId: guardianUser.id,
       fullName: 'Test Father',
-      phone: `90000000${seed.code.slice(0, 2)}`,
-      email: `parent@${seed.code}.example.test`,
+      phone: `90000000${code.slice(0, 2)}`,
+      email: `parent@${code}.example.test`,
     },
   });
 
   const studentUser = await prisma.user.create({
     data: {
-      email: `${seed.code}-student@example.test`,
+      email: `${code}-student@example.test`,
       passwordHash: '$2b$12$not-a-real-bcrypt-hash',
       defaultBranchId: branch.id,
       roleAssignments: { create: { roleId: 'sys_student', branchId: branch.id } },
