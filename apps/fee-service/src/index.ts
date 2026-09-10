@@ -11,6 +11,7 @@ import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { postDemand, postPayment, ledgerBalance } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { buildOpenApiDocument } from '@school-erp/http';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'fee-service';
@@ -35,6 +36,42 @@ export function createFeeApp(options: FeeAppOptions) {
   });
 
   app.set('prisma', prisma);
+
+  // Published contract (GATE 3).
+  const openapi = buildOpenApiDocument({
+    title: 'Fee Service',
+    description: 'Fee structures, demands, payments with deterministic allocation, the append-only ledger, and collection reports.',
+    version: '1.0.0',
+    basePath: '/fees',
+    paths: {
+      '/fee-heads': { get: { summary: 'List fee heads', tags: ['structures'], responses: { '200': { description: 'OK' } } } },
+      '/fee-structures': {
+        get: { summary: 'List fee structures', tags: ['structures'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a fee structure with lines and classes', tags: ['structures'], responses: { '201': { description: 'Created' } } },
+      },
+      '/invoices': {
+        get: { summary: 'List invoices (cursor-paginated)', tags: ['invoices'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Post a demand via the domain engine (invoice + ledger)', tags: ['invoices'], responses: { '201': { description: 'Created' } } },
+      },
+      '/generate-invoices': {
+        post: { summary: 'Generate invoices for a structure × class × year with concessions (idempotent)', tags: ['invoices'], responses: { '201': { description: 'Generation report' } } },
+      },
+      '/payments': {
+        post: { summary: 'Record a payment (oldest-dues-first allocation, idempotencyKey supported)', tags: ['payments'], responses: { '201': { description: 'Payment + allocations' } } },
+      },
+      '/ledger': { get: { summary: 'Append-only ledger + balance for one student', tags: ['ledger'], responses: { '200': { description: 'OK' } } } },
+      '/concessions': {
+        get: { summary: 'List concessions', tags: ['concessions'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a concession (PENDING until approved)', tags: ['concessions'], responses: { '201': { description: 'Created' } } },
+      },
+      '/concessions/{id}/approve': { post: { summary: 'Approve a concession', tags: ['concessions'], responses: { '200': { description: 'Approved' } } } },
+      '/refunds': { post: { summary: 'Refund a credit balance (REFUND ledger entry)', tags: ['adjustments'], responses: { '201': { description: 'Created' }, '409': { description: 'Exceeds credit balance' } } } },
+      '/write-offs': { post: { summary: 'Write off dues (WRITE_OFF ledger entry, never a delete)', tags: ['adjustments'], responses: { '201': { description: 'Created' } } } },
+      '/defaulters': { get: { summary: 'Defaulters by overdue invoices', tags: ['reports'], responses: { '200': { description: 'OK' } } } },
+      '/reports': { get: { summary: 'Income/expense summary for dashboards', tags: ['reports'], responses: { '200': { description: 'OK' } } } },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
 const r = Router();
 
@@ -497,6 +534,10 @@ const env = loadServiceEnv(SERVICE_NAME, 'PORT_FEE_SERVICE');
 const prisma = new PrismaClient();
 const app = createFeeApp({ env, prisma });
 
-listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+// Only bind a port when run directly. Imported by tests or the e2e suite,
+// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+if (process.argv[1]?.endsWith('index.ts')) {
+  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+}
 
 export { app, prisma };

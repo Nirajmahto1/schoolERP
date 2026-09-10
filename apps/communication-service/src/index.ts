@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { buildOpenApiDocument } from '@school-erp/http';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
@@ -30,6 +31,42 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
   });
 
   app.set('prisma', prisma);
+
+  // Published contract (GATE 3).
+  const openapi = buildOpenApiDocument({
+    title: 'Communication Service',
+    description: 'Announcements, message templates, targeted dispatch, and notification logs.',
+    version: '1.0.0',
+    basePath: '/communication',
+    paths: {
+      '/announcements': {
+        get: { summary: 'Announcements visible to the caller\'s roles', tags: ['announcements'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create an announcement (role-targeted)', tags: ['announcements'], responses: { '201': { description: 'Created' } } },
+      },
+      '/announcements/{id}': {
+        put: { summary: 'Update an announcement', tags: ['announcements'], responses: { '200': { description: 'Updated' } } },
+        delete: { summary: 'Deactivate an announcement', tags: ['announcements'], responses: { '204': { description: 'Deactivated' } } },
+      },
+      '/templates': {
+        get: { summary: 'List message templates', tags: ['templates'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Upsert a template ({{placeholders}} rendered at dispatch)', tags: ['templates'], responses: { '201': { description: 'Created' } } },
+      },
+      '/dispatch': {
+        post: {
+          summary: 'Dispatch to guardians of targeted classes/sections + role-held staff; writes NotificationLog rows', tags: ['dispatch'],
+          requestBody: { type: 'object', properties: {
+            title: { type: 'string' }, content: { type: 'string' }, templateKey: { type: 'string' },
+            targetRoles: { type: 'array', items: { type: 'string' } },
+            classIds: { type: 'array', items: { type: 'string' } }, sectionIds: { type: 'array', items: { type: 'string' } },
+            channel: { type: 'string', enum: ['SMS', 'EMAIL', 'WHATSAPP', 'PUSH'] }, variables: { type: 'object' },
+          } },
+          responses: { '201': { description: 'Queued' } },
+        },
+      },
+      '/dispatch-logs': { get: { summary: 'NotificationLog rows (delivery-dispute trail)', tags: ['dispatch'], responses: { '200': { description: 'OK' } } } },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
 const r = Router();
 
@@ -262,6 +299,10 @@ const env = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
 const prisma = new PrismaClient();
 const app = createCommunicationApp({ env, prisma });
 
-listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+// Only bind a port when run directly. Imported by tests or the e2e suite,
+// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+if (process.argv[1]?.endsWith('index.ts')) {
+  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+}
 
 export { app, prisma };

@@ -15,6 +15,7 @@ import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders, ctx } from '@school-erp/auth';
 import type { ServiceEnv } from '@school-erp/config';
+import { buildOpenApiDocument } from '@school-erp/http';
 
 /** MUST equal the gateway route-table audience for this service. */
 export const SERVICE_NAME = 'exam-service';
@@ -75,6 +76,54 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: SERVICE_NAME, timestamp: new Date().toISOString() });
   });
+
+  // Published contract (GATE 3): the API surface the frontend builds against.
+  const openapi = buildOpenApiDocument({
+    title: 'Exam Service',
+    description: 'Examinations, mark entry with audit, publication workflow, and report cards.',
+    version: '1.0.0',
+    basePath: '/exams',
+    paths: {
+      '/examinations': {
+        get: { summary: 'List examinations for the caller\'s branch', tags: ['exams'], responses: { '200': { description: 'OK', jsonSchema: { type: 'object', properties: { data: { type: 'array', items: { $ref: '#/components/schemas/Examination' } } } } } } },
+        post: {
+          summary: 'Create an examination with subjects', tags: ['exams'],
+          requestBody: { type: 'object', required: ['name', 'academicYearId', 'startDate', 'endDate', 'subjects'], properties: {
+            name: { type: 'string' }, academicYearId: { type: 'string' }, assessmentTypeId: { type: 'string', nullable: true },
+            startDate: { type: 'string', format: 'date' }, endDate: { type: 'string', format: 'date' },
+            subjects: { type: 'array', minItems: 1, items: { type: 'object', required: ['subjectId', 'examDate', 'startTime', 'endTime', 'maxMarks', 'passingMarks'], properties: {
+              subjectId: { type: 'string' }, examDate: { type: 'string', format: 'date' }, startTime: { type: 'string' }, endTime: { type: 'string' }, maxMarks: { type: 'integer' }, passingMarks: { type: 'integer' } } } },
+          } },
+          responses: { '201': { description: 'Created' }, '400': { description: 'Validation error' } },
+        },
+      },
+      '/examinations/{id}/status': {
+        post: {
+          summary: 'Advance the publication workflow (SUBMITTED → VERIFIED → PUBLISHED)', tags: ['exams'],
+          requestBody: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['SUBMITTED', 'VERIFIED', 'PUBLISHED'] } } },
+          responses: { '200': { description: 'Advanced' }, '409': { description: 'Invalid transition or empty exam' } },
+        },
+      },
+      '/marks': {
+        post: {
+          summary: 'Enter/adjust marks (audited; frozen after publication)', tags: ['marks'],
+          requestBody: { type: 'object', required: ['examSubjectId', 'marks'], properties: {
+            examSubjectId: { type: 'string' },
+            marks: { type: 'array', items: { type: 'object', required: ['studentId'], properties: {
+              studentId: { type: 'string' }, marksObtained: { type: 'number', nullable: true }, isAbsent: { type: 'boolean' }, isExempt: { type: 'boolean' }, remarks: { type: 'string', nullable: true } } } },
+          } },
+          responses: { '201': { description: 'Entered' }, '409': { description: 'Exam is PUBLISHED' } },
+        },
+      },
+      '/marks/{examSubjectId}/audit': {
+        get: { summary: 'Mark-entry audit trail for one exam subject', tags: ['marks'], responses: { '200': { description: 'OK' } } },
+      },
+      '/report-card/{examinationId}/{studentId}': {
+        get: { summary: 'Published report card with grades (404 until PUBLISHED)', tags: ['report-cards'], responses: { '200': { description: 'OK' }, '404': { description: 'Not published or not found' } } },
+      },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
   app.get('/ready', async (_req, res) => {
     try { await prisma.$queryRaw`SELECT 1`; res.json({ status: 'ready', service: SERVICE_NAME }); }
     catch { res.status(503).json({ type: 'unavailable', title: 'Not Ready', status: 503, detail: 'Database is not reachable.' }); }

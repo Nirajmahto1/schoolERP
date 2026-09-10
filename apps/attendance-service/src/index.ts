@@ -12,6 +12,7 @@ import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { rebuildMonthlySummary } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx, requireAssertion } from '@school-erp/auth';
+import { buildOpenApiDocument } from '@school-erp/http';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -38,6 +39,46 @@ export function createAttendanceApp(options: AttendanceAppOptions) {
   });
 
   app.set('prisma', prisma);
+
+  // Published contract (GATE 3).
+  const openapi = buildOpenApiDocument({
+    title: 'Attendance Service',
+    description: 'Daily and period-wise attendance, audited amendments, leaves, and summaries.',
+    version: '1.0.0',
+    basePath: '/attendance',
+    paths: {
+      '/attendance/mark': {
+        post: {
+          summary: 'Mark daily attendance (creates/reuses the session, rebuilds the monthly summary)', tags: ['attendance'],
+          requestBody: { type: 'object', required: ['date', 'classId', 'sectionId', 'records'], properties: {
+            date: { type: 'string', format: 'date' }, classId: { type: 'string' }, sectionId: { type: 'string' },
+            records: { type: 'array', items: { type: 'object', required: ['studentId', 'status'], properties: { studentId: { type: 'string' }, status: { type: 'string', enum: ['PRESENT', 'ABSENT', 'LATE', 'HALF_DAY', 'ON_LEAVE', 'MEDICAL', 'EXCUSED'] }, remarks: { type: 'string' } } } },
+          } },
+          responses: { '200': { description: 'Marked' } },
+        },
+      },
+      '/attendance/mark-period': { post: { summary: 'Mark period-wise attendance (subject + period)', tags: ['attendance'], responses: { '200': { description: 'Marked' } } } },
+      '/attendance/amend': {
+        post: {
+          summary: 'Amend a record — every change is appended to the audit trail', tags: ['amendments'],
+          requestBody: { type: 'object', required: ['recordId', 'status'], properties: { recordId: { type: 'string' }, status: { type: 'string' }, reason: { type: 'string' } } },
+          responses: { '200': { description: 'Amended' } },
+        },
+      },
+      '/attendance/amendments/{recordId}': { get: { summary: 'Full amendment trail for one record', tags: ['amendments'], responses: { '200': { description: 'OK' } } } },
+      '/attendance/daily': { get: { summary: 'Day view for a class/section', tags: ['attendance'], responses: { '200': { description: 'OK' } } } },
+      '/attendance/student/{studentId}': { get: { summary: 'One student\'s attendance history', tags: ['attendance'], responses: { '200': { description: 'OK' } } } },
+      '/attendance/summary': { get: { summary: 'Denormalised monthly summaries', tags: ['summaries'], responses: { '200': { description: 'OK' } } } },
+      '/attendance/defaulters': { get: { summary: 'Students below the attendance threshold (default 75%)', tags: ['reports'], responses: { '200': { description: 'OK' } } } },
+      '/leaves': {
+        get: { summary: 'List student leaves', tags: ['leaves'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'File a student leave', tags: ['leaves'], responses: { '201': { description: 'Created' } } },
+      },
+      '/leaves/{id}/decision': { post: { summary: 'Approve/reject/cancel a leave', tags: ['leaves'], responses: { '200': { description: 'Decided' } } } },
+      '/attendance/staff/mark': { post: { summary: 'Mark staff attendance', tags: ['staff'], responses: { '200': { description: 'Marked' } } } },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
 const r = Router();
 
@@ -518,6 +559,10 @@ const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
 const prisma = new PrismaClient();
 const app = createAttendanceApp({ env, prisma });
 
-listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+// Only bind a port when run directly. Imported by tests or the e2e suite,
+// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+if (process.argv[1]?.endsWith('index.ts')) {
+  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+}
 
 export { app, prisma };

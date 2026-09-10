@@ -6,6 +6,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { buildOpenApiDocument } from '@school-erp/http';
 import { teacherRoutes } from './routes/teacher.routes';
 import { adminRoutes } from './routes/admin.routes';
 import { hrRoutes } from './routes/hr.routes';
@@ -25,6 +26,48 @@ const { app, mount, finalize } = createServiceApp({
 
 mount('/teacher', teacherRoutes);
 mount('/admin', adminRoutes);
+
+// Published contract (GATE 3).
+const openapi = buildOpenApiDocument({
+  title: 'Staff Service',
+  description: 'Teacher workspace, staff HR records, leave workflow, payroll, and transport.',
+  version: '1.0.0',
+  basePath: '/api/v1',
+  paths: {
+    '/teacher/my-classes': { get: { summary: 'Classes the teacher is allocated to', tags: ['teacher'], responses: { '200': { description: 'OK' } } } },
+    '/teacher/students': { get: { summary: 'Students of a section', tags: ['teacher'], responses: { '200': { description: 'OK' } } } },
+    '/teacher/attendance': {
+      get: { summary: 'Attendance for a class/section/date', tags: ['teacher'], responses: { '200': { description: 'OK' } } },
+      post: { summary: 'Mark attendance as a teacher', tags: ['teacher'], responses: { '200': { description: 'Marked' } } },
+    },
+    '/teacher/marks': {
+      get: { summary: 'Marks for an exam/subject', tags: ['teacher'], responses: { '200': { description: 'OK' } } },
+      post: { summary: 'Enter marks', tags: ['teacher'], responses: { '201': { description: 'Entered' } } },
+    },
+    '/teacher/leave-requests': {
+      get: { summary: 'Own leave requests', tags: ['teacher'], responses: { '200': { description: 'OK' } } },
+      post: { summary: 'File a leave request', tags: ['teacher'], responses: { '201': { description: 'Created' } } },
+    },
+    '/teacher/timetable': { get: { summary: 'The teacher\'s weekly timetable', tags: ['teacher'], responses: { '200': { description: 'OK' } } } },
+    '/hr': {
+      get: { summary: 'List staff records (filter by department/q/isActive)', tags: ['hr'], responses: { '200': { description: 'OK' } } },
+      post: { summary: 'Create a staff member (user + assignment in one transaction)', tags: ['hr'], responses: { '201': { description: 'Created' }, '409': { description: 'Duplicate employeeId' } } },
+    },
+    '/hr/{id}': { get: { summary: 'Staff detail with recent leaves and payroll', tags: ['hr'], responses: { '200': { description: 'OK' } } } },
+    '/hr/leaves': { get: { summary: 'Staff leave requests (filter by status)', tags: ['hr'], responses: { '200': { description: 'OK' } } } },
+    '/hr/leaves/{id}/decision': { post: { summary: 'Approve/reject/cancel a staff leave', tags: ['hr'], responses: { '200': { description: 'Decided' } } } },
+    '/hr/payroll': { get: { summary: 'Payroll rows for a month/year', tags: ['payroll'], responses: { '200': { description: 'OK' } } } },
+    '/hr/payroll/run': {
+      post: {
+        summary: 'Run payroll for all active staff (idempotent per staff/month/year)', tags: ['payroll'],
+        requestBody: { type: 'object', required: ['month', 'year'], properties: { month: { type: 'integer', minimum: 1, maximum: 12 }, year: { type: 'integer' }, allowances: { type: 'number' }, deductions: { type: 'number' } } },
+        responses: { '201': { description: 'Run report' } },
+      },
+    },
+    '/hr/payroll/{id}/pay': { post: { summary: 'Mark a payroll row PAID', tags: ['payroll'], responses: { '200': { description: 'Paid' } } } },
+  },
+});
+app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
 const r = Router();
 
@@ -263,6 +306,10 @@ mount('/', r);
 mount('/hr', hrRoutes);
 finalize();
 
-listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+// Only bind a port when run directly. Imported by the e2e suite, the module
+// must NOT listen — vitest would hit EADDRINUSE across suites.
+if (process.argv[1]?.endsWith('index.ts')) {
+  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+}
 
 export { app, prisma };

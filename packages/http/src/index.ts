@@ -26,3 +26,10 @@ export {
   prismaPing,
   type ReadinessCheck,
 } from './health';
+
+export {
+  buildOpenApiDocument,
+  type OpenApiDocumentInput,
+  type OpenApiOperation,
+  type OpenApiPath,
+} from './openapi';

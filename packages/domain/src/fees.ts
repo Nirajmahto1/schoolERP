@@ -181,9 +181,18 @@ export async function postPayment(prisma: PrismaClient, input: PostPaymentInput)
       remaining -= take;
     }
     if (remaining > 1e-6) {
-      // Overpayment → advance credit: keep the remainder unallocated (a later
-      // invoice will absorb it via the ledger balance).
-      allocations.push({ invoice: openInvoices[openInvoices.length - 1], amount: remaining });
+      // Overpayment → advance credit. The remainder rides on the LAST open
+      // invoice (paidAmount may exceed total — a future demand absorbs it).
+      // Merge into that invoice's existing allocation: PaymentAllocation is
+      // unique per (payment, invoice), so a second row would abort the whole
+      // payment transaction.
+      const last = openInvoices[openInvoices.length - 1];
+      if (last) {
+        const existing = allocations.find((a) => a.invoice.id === last.id);
+        if (existing) existing.amount += remaining;
+        else allocations.push({ invoice: last, amount: remaining });
+        remaining = 0;
+      }
     }
 
     const receiptNo =
@@ -306,6 +315,12 @@ export async function reconcileStudent(
 /**
  * The GATE-2 fleet check: every student in a branch/year ties out.
  */
+/**
+ * Every student in the branch whose ledger and invoice views disagree.
+ * An empty result is the accountant-trust invariant: the ledger IS the
+ * balance. Non-zero balances that AGREE are fine (real dues!) — only a
+ * difference between the two views is a corruption signal.
+ */
 export async function tieOut(
   prisma: PrismaClient,
   input: { branchId: string; academicYearId?: string },
@@ -315,13 +330,15 @@ export async function tieOut(
     select: { id: true, admissionNo: true },
   });
 
-  const results = [];
+  const mismatches: Array<{ studentId: string; admissionNo: string; ledgerBalance: number; invoiceBalance: number; difference: number }> = [];
   for (const student of students) {
     const r = await reconcileStudent(prisma, {
       studentId: student.id,
       ...(input.academicYearId ? { academicYearId: input.academicYearId } : {}),
     });
-    results.push({ studentId: student.id, admissionNo: student.admissionNo, ...r });
+    if (r.difference !== 0) {
+      mismatches.push({ studentId: student.id, admissionNo: student.admissionNo, ...r });
+    }
   }
-  return results;
+  return mismatches;
 }

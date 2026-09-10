@@ -18,7 +18,8 @@
     "@school-erp/database": "*",
     "@school-erp/auth": "*",
     "@school-erp/config": "*",
-    "@school-erp/domain": "*"
+    "@school-erp/domain": "*",
+    "@school-erp/http": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

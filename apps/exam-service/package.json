@@ -17,7 +17,8 @@
     "@school-erp/config": "*",
     "express": "^4.21.0",
     "winston": "^3.14.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "@school-erp/http": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

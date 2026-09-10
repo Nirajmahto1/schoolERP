@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { buildOpenApiDocument } from '@school-erp/http';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -32,6 +33,53 @@ export function createAcademicApp(options: AcademicAppOptions) {
   });
 
   app.set('prisma', prisma);
+
+  // Published contract (GATE 3).
+  const openapi = buildOpenApiDocument({
+    title: 'Academic Service',
+    description: 'Academic years, classes, sections, subjects, teacher allocation, timetable, and calendar.',
+    version: '1.0.0',
+    basePath: '/academics',
+    paths: {
+      '/academic-years': {
+        get: { summary: 'List academic years', tags: ['years'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create an academic year', tags: ['years'], responses: { '201': { description: 'Created' } } },
+      },
+      '/classes': {
+        get: { summary: 'List classes with sections and enrollment counts', tags: ['classes'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a class (optionally with sections)', tags: ['classes'], responses: { '201': { description: 'Created' } } },
+      },
+      '/sections': {
+        get: { summary: 'List sections (filter by classId)', tags: ['sections'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a section', tags: ['sections'], responses: { '201': { description: 'Created' } } },
+      },
+      '/subjects': {
+        get: { summary: 'List subjects (filter by classId)', tags: ['subjects'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a subject', tags: ['subjects'], responses: { '201': { description: 'Created' } } },
+      },
+      '/subject-teachers': {
+        post: { summary: 'Allocate a teacher to a subject', tags: ['allocation'], responses: { '201': { description: 'Created' } } },
+        delete: { summary: 'Remove an allocation', tags: ['allocation'], responses: { '200': { description: 'Removed' } } },
+      },
+      '/timetable': { get: { summary: 'Timetable for a section', tags: ['timetable'], responses: { '200': { description: 'OK' } } } },
+      '/timetable/slots': {
+        post: { summary: 'Create a slot (409 on teacher clash)', tags: ['timetable'], responses: { '201': { description: 'Created' }, '409': { description: 'Teacher clash' } } },
+        delete: { summary: 'Delete a slot', tags: ['timetable'], responses: { '200': { description: 'Deleted' } } },
+      },
+      '/calendar': {
+        get: { summary: 'Academic calendar for a year', tags: ['calendar'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Add a calendar entry (holiday/exam/event)', tags: ['calendar'], responses: { '201': { description: 'Created' } } },
+      },
+      '/examinations': {
+        get: { summary: 'List examinations (see exam-service for the full API)', tags: ['exams'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create an examination', tags: ['exams'], responses: { '201': { description: 'Created' } } },
+      },
+      '/library/books': { get: { summary: 'Search library books', tags: ['library'], responses: { '200': { description: 'OK' } } } },
+      '/library/issue': { post: { summary: 'Issue a book', tags: ['library'], responses: { '201': { description: 'Issued' } } } },
+      '/library/return/{id}': { post: { summary: 'Return a book (fine computed)', tags: ['library'], responses: { '200': { description: 'Returned' } } } },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
 const r = Router();
 
@@ -440,6 +488,10 @@ const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
 const prisma = new PrismaClient();
 const app = createAcademicApp({ env, prisma });
 
-listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+// Only bind a port when run directly. Imported by tests or the e2e suite,
+// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+if (process.argv[1]?.endsWith('index.ts')) {
+  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+}
 
 export { app, prisma };

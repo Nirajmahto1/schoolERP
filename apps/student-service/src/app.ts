@@ -14,6 +14,7 @@ import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders } from '@school-erp/auth';
 import type { ServiceEnv } from '@school-erp/config';
+import { buildOpenApiDocument } from '@school-erp/http';
 import { studentRoutes } from './routes/student.routes';
 import { parentRoutes } from './routes/parent.routes';
 import { admissionRoutes } from './routes/admission.routes';
@@ -53,6 +54,56 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: SERVICE_NAME, timestamp: new Date().toISOString() });
   });
+
+  // Published contract (GATE 3).
+  const openapi = buildOpenApiDocument({
+    title: 'Student Service',
+    description: 'Students, guardians, the admissions pipeline, transfer certificates, and bulk import.',
+    version: '1.0.0',
+    basePath: '/api/v1',
+    paths: {
+      '/students': {
+        get: { summary: 'List students (paginated, branch-scoped)', tags: ['students'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create a student with guardian + enrollment', tags: ['students'], responses: { '201': { description: 'Created' } } },
+      },
+      '/students/{id}': {
+        get: { summary: 'Get one student', tags: ['students'], responses: { '200': { description: 'OK' }, '404': { description: 'Not found (cross-tenant safe)' } } },
+        put: { summary: 'Update a student', tags: ['students'], responses: { '200': { description: 'Updated' } } },
+        delete: { summary: 'Soft-delete a student', tags: ['students'], responses: { '200': { description: 'Deleted' } } },
+      },
+      '/students/import': {
+        post: {
+          summary: 'Bulk Excel import (?mode=dry-run|commit)', tags: ['import'],
+          requestBody: { type: 'object', required: ['file'], properties: { file: { type: 'string', description: 'Base64-encoded .xlsx' } } },
+          responses: { '200': { description: 'Dry-run report or commit result' } },
+        },
+      },
+      '/admissions/enquiries': {
+        get: { summary: 'List admission enquiries', tags: ['admissions'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create an enquiry', tags: ['admissions'], responses: { '201': { description: 'Created' } } },
+      },
+      '/admissions/applications': {
+        get: { summary: 'List applications', tags: ['admissions'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Create an application (optionally from an enquiry)', tags: ['admissions'], responses: { '201': { description: 'Created' } } },
+      },
+      '/admissions/applications/{id}/decision': {
+        patch: { summary: 'Decide an application (UNDER_REVIEW/INTERVIEW/APPROVED/REJECTED)', tags: ['admissions'], responses: { '200': { description: 'Decided' } } },
+      },
+      '/admissions/applications/{id}/admit': {
+        post: { summary: 'Convert an APPROVED application into an enrolled student', tags: ['admissions'], responses: { '201': { description: 'Admitted' }, '409': { description: 'Not approved or already admitted' } } },
+      },
+      '/admissions/tcs': {
+        get: { summary: 'List issued transfer certificates', tags: ['tc'], responses: { '200': { description: 'OK' } } },
+      },
+      '/admissions/tcs/{studentId}': {
+        post: { summary: 'Issue a TC: closes the active enrollment, deactivates the student', tags: ['tc'], responses: { '201': { description: 'Issued' }, '409': { description: 'No active enrollment' } } },
+      },
+      '/parents/...': {
+        get: { summary: 'Guardian portal endpoints (see parent.routes.ts)', tags: ['parents'], responses: { '200': { description: 'OK' } } },
+      },
+    },
+  });
+  app.get('/openapi.json', (_req, res) => { res.json(openapi); });
 
   app.get('/ready', async (_req, res) => {
     try {

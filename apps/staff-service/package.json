@@ -18,7 +18,8 @@
     "@school-erp/shared-types": "*",
     "@school-erp/database": "*",
     "@school-erp/auth": "*",
-    "@school-erp/config": "*"
+    "@school-erp/config": "*",
+    "@school-erp/http": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
@@ -29,5 +30,9 @@
     "ts-node-dev": "^2.0.0",
     "rimraf": "^5.0.0",
     "vitest": "^2.1.0"
+  },
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
   }
 }
