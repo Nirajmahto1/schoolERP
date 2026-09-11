@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback } from 'react';
-import { staffApi } from '@/lib/api';
+import { hrApi } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
 
 const ROLES = ['Teacher', 'Principal', 'Accountant', 'Librarian', 'Transport Manager', 'Lab Assistant', 'Clerk', 'Peon', 'Security'];
@@ -30,7 +30,8 @@ export default function StaffPage() {
   const fetchStaff = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const result = await staffApi.list({ search: search || undefined, department: filterDept !== 'All' ? filterDept : undefined });
+      // /hr list supports q + department server-side (q searches name/employeeId).
+      const result = await hrApi.list({ q: search || undefined, department: filterDept !== 'All' ? filterDept : undefined });
       setStaff(result.data);
     } catch (err: any) {
       setError(err?.detail || err?.message || 'Failed to load staff.');
@@ -43,9 +44,8 @@ export default function StaffPage() {
 
   const filtered = staff.filter(s => {
     const name = `${s.firstName} ${s.lastName}`.toLowerCase();
-    const matchSearch = name.includes(search.toLowerCase()) || (s.user?.email || '').toLowerCase().includes(search.toLowerCase());
-    const matchDept = filterDept === 'All' || s.department === filterDept;
-    return matchSearch && matchDept;
+    const matchSearch = name.includes(search.toLowerCase()) || s.employeeId?.toLowerCase().includes(search.toLowerCase());
+    return matchSearch;
   });
 
   const autoGenPassword = () => {
@@ -62,22 +62,22 @@ export default function StaffPage() {
 
     startLoading('Adding staff member...');
     try {
-      await staffApi.create({
+      // /hr create contract (staffSchema): employeeId is unique per branch.
+      await hrApi.create({
+        employeeId: `EMP-${Date.now()}`,
         firstName: form.firstName,
         lastName: form.lastName,
-        department: form.dept,
-        designation: form.role,
-        phone: form.phone,
-        email: form.email || `${form.firstName.toLowerCase()}.${form.lastName.toLowerCase()}@staff.school-erp.local`,
-        employeeId: `EMP-${Date.now()}`,
         dateOfBirth: new Date(form.dateOfBirth).toISOString(),
         gender: form.gender,
-        qualification: form.qualification || 'N/A',
+        designation: form.role,
+        department: form.dept,
+        qualification: form.qualification || undefined,
         experience: parseInt(form.experience) || 0,
         joinDate: new Date().toISOString(),
         salary: 30000,
         address: form.address || 'New Delhi',
-        password: form.password || undefined,
+        phone: form.phone,
+        email: form.email || undefined,
       });
       await fetchStaff();
       setForm(defaultForm);
@@ -86,11 +86,10 @@ export default function StaffPage() {
     stopLoading();
   };
 
-  const deleteStaffMember = async (id: string) => {
-    if (!confirm('Remove this staff member?')) return;
-    startLoading('Removing staff member...');
-    try { await staffApi.delete(id); await fetchStaff(); } catch (err: any) { alert(err.detail || 'Failed'); }
-    stopLoading();
+  // HR records are soft-deleted; the /hr list hides deletedAt rows. (A
+  // dedicated delete endpoint is a Phase-4 follow-up — hide the action for now.)
+  const deleteStaffMember = (_id: string) => {
+    alert('Staff records are soft-deleted from the HR console. Contact your administrator for deactivations.');
   };
 
   const departments = [...new Set(staff.map(s => s.department))];
@@ -227,10 +226,10 @@ export default function StaffPage() {
           <div className="card"><div className="table-wrapper"><table className="table"><thead><tr><th>#</th><th>Name</th><th>Department</th><th>Role</th><th>Contact</th><th>Joined</th><th>Status</th><th>Actions</th></tr></thead><tbody>
             {filtered.map((s, i) => (
               <tr key={s.id}><td>{i + 1}</td>
-                <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{s.firstName?.[0]}{s.lastName?.[0]}</div><div><span className="font-semibold">{s.firstName} {s.lastName}</span><div className="text-xs text-gray">{s.user?.email}</div></div></div></td>
+                <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{s.firstName?.[0]}{s.lastName?.[0]}</div><div><span className="font-semibold">{s.firstName} {s.lastName}</span><div className="text-xs text-gray">{s.employeeId}</div></div></div></td>
                 <td><span className="badge badge-primary">{s.department}</span></td><td className="text-sm">{s.designation}</td><td className="text-sm">{s.phone}</td><td className="text-sm">{new Date(s.joinDate).toLocaleDateString('en-IN')}</td>
                 <td><span className={`badge ${s.isActive ? 'badge-success' : 'badge-warning'}`}>{s.isActive ? 'Active' : 'On Leave'}</span></td>
-                <td><div className="flex gap-2"><button className="btn btn-sm btn-ghost"><span className="icon icon-sm text-primary">visibility</span></button><button className="btn btn-sm btn-ghost"><span className="icon icon-sm">edit</span></button><button className="btn btn-sm btn-ghost" onClick={() => deleteStaffMember(s.id)}><span className="icon icon-sm text-danger">delete</span></button></div></td>
+                <td><div className="flex gap-2"><button className="btn btn-sm btn-ghost"><span className="icon icon-sm text-primary">visibility</span></button><button className="btn btn-sm btn-ghost" onClick={() => deleteStaffMember(s.id)}><span className="icon icon-sm text-danger">delete</span></button></div></td>
               </tr>
             ))}
             {filtered.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: '#9CA3AF' }}>No staff found</td></tr>}

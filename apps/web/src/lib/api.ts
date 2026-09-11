@@ -168,12 +168,10 @@ export const parentApi = {
 
 // ── Staff API ──
 export const staffApi = {
-  list: (params?: { search?: string; department?: string }) => {
-    const qs = new URLSearchParams();
-    if (params?.search) qs.set('search', params.search);
-    if (params?.department) qs.set('department', params.department);
-    return apiRequest<{ data: any[]; meta?: any }>(`/staff?${qs}`);
-  },
+  // Staff-service /staff list: no search/department filters server-side (the
+  // list returns the branch's active staff); filtering happens client-side.
+  list: () =>
+    apiRequest<{ data: any[] }>(`/staff`),
 
   get: (id: string) => apiRequest<any>(`/staff/${id}`),
 
@@ -195,6 +193,84 @@ export const staffApi = {
 
   generatePayroll: (data: { month: number; year: number; branchId: string }) =>
     apiRequest<any>('/staff/payroll/generate', { method: 'POST', body: JSON.stringify(data) }),
+};
+
+// ── HR API (staff-service /hr — Phase 3.7 records, leaves, payroll) ──
+export const hrApi = {
+  list: (params?: { q?: string; department?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set('q', params.q);
+    if (params?.department) qs.set('department', params.department);
+    return apiRequest<{ data: any[] }>(`/hr?${qs}`);
+  },
+
+  create: (data: {
+    employeeId: string;
+    firstName: string;
+    lastName: string;
+    dateOfBirth: string;
+    gender: string;
+    designation: string;
+    department: string;
+    qualification?: string;
+    experience?: number;
+    joinDate: string;
+    salary: number;
+    address: string;
+    phone: string;
+    email?: string;
+  }) => apiRequest<any>('/hr', { method: 'POST', body: JSON.stringify(data) }),
+
+  getLeaves: () => apiRequest<{ data: any[] }>('/hr/leaves'),
+
+  decideLeave: (id: string, status: 'APPROVED' | 'REJECTED' | 'CANCELLED') =>
+    apiRequest<any>(`/hr/leaves/${id}/decision`, { method: 'POST', body: JSON.stringify({ status }) }),
+
+  /** Idempotent per (staff, month, year) — re-running corrects nothing, duplicates nothing. */
+  runPayroll: (data: { month: number; year: number; allowances?: number; deductions?: number }) =>
+    apiRequest<{ month: number; year: number; staffCount: number; totalNet: number; processed: any[] }>(
+      '/hr/payroll/run', { method: 'POST', body: JSON.stringify(data) },
+    ),
+
+  getPayroll: (params?: { month?: number; year?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.month) qs.set('month', String(params.month));
+    if (params?.year) qs.set('year', String(params.year));
+    return apiRequest<{ data: any[] }>(`/hr/payroll?${qs}`);
+  },
+
+  markPaid: (id: string) => apiRequest<any>(`/hr/payroll/${id}/pay`, { method: 'POST' }),
+};
+
+// ── Exams API (exam-service — entry → verify → publish workflow) ──
+export const examApi = {
+  list: () => apiRequest<{ data: any[] }>('/exams/examinations'),
+
+  create: (data: {
+    name: string;
+    academicYearId: string;
+    startDate: string;
+    endDate: string;
+    subjects: Array<{ subjectId: string; examDate: string; startTime: string; endTime: string; maxMarks: number; passingMarks: number }>;
+  }) => apiRequest<any>('/exams/examinations', { method: 'POST', body: JSON.stringify(data) }),
+
+  /** Workflow transitions: ENTRY→SUBMITTED→VERIFIED→PUBLISHED. */
+  setStatus: (id: string, status: 'SUBMITTED' | 'VERIFIED' | 'PUBLISHED') =>
+    apiRequest<any>(`/exams/examinations/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) }),
+
+  enterMarks: (data: {
+    examSubjectId: string;
+    marks: Array<{ studentId: string; marksObtained?: number | null; isAbsent?: boolean; isExempt?: boolean; remarks?: string }>;
+  }) => apiRequest<any>('/exams/marks', { method: 'POST', body: JSON.stringify(data) }),
+
+  /** Only available once the exam is PUBLISHED. */
+  getReportCard: (examinationId: string, studentId: string) =>
+    apiRequest<{ data: {
+      examination: { id: string; name: string; publishedAt: string };
+      student: { id: string; name: string; admissionNo: string; class: string; section: string };
+      subjects: Array<{ subject: string; code: string; maxMarks: number; marksObtained: number | null; percent: number | null; grade: string | null; isAbsent: boolean; isExempt: boolean }>;
+      total: { marks: number; maxMarks: number; percent: number; grade: string };
+    } }>(`/exams/report-card/${examinationId}/${studentId}`),
 };
 
 // ── Attendance API ──

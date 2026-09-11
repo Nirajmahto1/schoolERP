@@ -67,6 +67,43 @@ hrRoutes.get('/', async (req: Request, res: Response) => {
   } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
 });
 
+// NOTE: static paths (/payroll, /leaves) MUST be registered before /:id —
+// Express matches in registration order, and "payroll"/"leaves" would otherwise
+// be swallowed as an :id (observed: GET /hr/payroll → 404 "Staff member not found").
+hrRoutes.get('/leaves', async (req: Request, res: Response) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+    const { status } = req.query;
+    const leaves = await prismaOf(req).leaveRequest.findMany({
+      where: { staff: { branchId }, ...(status && { status: status as never }) },
+      include: { staff: { select: { employeeId: true, firstName: true, lastName: true, designation: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    res.json({ data: leaves });
+  } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
+});
+
+hrRoutes.get('/payroll', async (req: Request, res: Response) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+    const { month, year } = req.query;
+    const rows = await prismaOf(req).payroll.findMany({
+      where: {
+        staff: { branchId },
+        ...(month && { month: parseInt(month as string) }),
+        ...(year && { year: parseInt(year as string) }),
+      },
+      include: { staff: { select: { employeeId: true, firstName: true, lastName: true, designation: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    });
+    res.json({ data: rows });
+  } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
+});
+
 hrRoutes.get('/:id', async (req: Request, res: Response) => {
   try {
     const { branchId } = ctx(req);
@@ -154,21 +191,6 @@ hrRoutes.post('/leaves/:id/decision', async (req: Request, res: Response) => {
   } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
 });
 
-hrRoutes.get('/leaves', async (req: Request, res: Response) => {
-  try {
-    const { branchId } = ctx(req);
-    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
-    const { status } = req.query;
-    const leaves = await prismaOf(req).leaveRequest.findMany({
-      where: { staff: { branchId }, ...(status && { status: status as never }) },
-      include: { staff: { select: { employeeId: true, firstName: true, lastName: true, designation: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-    });
-    res.json({ data: leaves });
-  } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
-});
-
 // ── Payroll (3.7) ──
 
 const payrollRunSchema = z.object({
@@ -219,24 +241,5 @@ hrRoutes.post('/payroll/:id/pay', async (req: Request, res: Response) => {
     });
     res.json(updated);
     void userId;
-  } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
-});
-
-hrRoutes.get('/payroll', async (req: Request, res: Response) => {
-  try {
-    const { branchId } = ctx(req);
-    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
-    const { month, year } = req.query;
-    const rows = await prismaOf(req).payroll.findMany({
-      where: {
-        staff: { branchId },
-        ...(month && { month: parseInt(month as string) }),
-        ...(year && { year: parseInt(year as string) }),
-      },
-      include: { staff: { select: { employeeId: true, firstName: true, lastName: true, designation: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: 500,
-    });
-    res.json({ data: rows });
   } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
 });

@@ -1,4 +1,4 @@
-// Browser verification across the four core admin screens.
+// Browser verification: fees, invoicing, staff, exams screens against live data.
 import { spawn } from 'child_process';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -80,17 +80,16 @@ async function visit(path, settleMs, markers, label) {
   const text = dom.result?.result?.value ?? '';
   const found = markers.filter(m => text.includes(m));
   const status = found.length === markers.length ? '✅' : '⚠️';
-  console.log(`${status} ${label}: ${found.length}/${markers.length} markers [${found.join(' | ')}]`);
+  console.log(`${status} ${label}: ${found.length}/${markers.length} [${found.join(' | ')}]`);
   if (found.length !== markers.length) {
-    console.log('   --- visible text sample ---');
-    console.log(text.slice(0, 500).replace(/\n+/g, ' / '));
+    console.log('   sample:', text.slice(0, 400).replace(/\n+/g, ' / '));
   }
 }
 
-await visit('/dashboard', 4000, ['Dashboard', 'Total Students', 'Total Staff', 'Fee Collection'], 'dashboard');
-await visit('/dashboard/students', 6000, ['Students Directory', 'Diya Sharma', 'ADM-DEMO-MAIN'], 'students');
-await visit('/dashboard/fee-payments', 6000, ['Fee Payments', 'INV-', 'Pay Now'], 'fee-payments');
-await visit('/dashboard/attendance', 6000, ['Attendance Tracking', 'All Present', 'Save Attendance'], 'attendance');
+await visit('/dashboard/fees', 7000, ['Fee Management', 'INV-', 'Total Collected'], 'fees');
+await visit('/dashboard/invoicing', 7000, ['Invoicing', 'Generate Invoice'], 'invoicing');
+await visit('/dashboard/staff', 7000, ['Staff & HR', 'Aarav', 'Teacher'], 'staff');
+await visit('/dashboard/exams', 9000, ['Exams & Results', 'Term I Examination'], 'exams (examinations tab)');
 
 ws.close();
 chrome.kill();

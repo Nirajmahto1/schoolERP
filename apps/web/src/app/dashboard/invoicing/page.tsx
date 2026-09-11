@@ -101,7 +101,7 @@ export default function InvoicingPage() {
       <div style={{ padding: '24px 32px' }}>
         <div className="flex items-center justify-between mb-4">
           <div className="tabs">
-            {['All', 'Draft', 'Pending', 'Overdue', 'Paid'].map(tab => (
+            {['All', 'DRAFT', 'ISSUED', 'PARTIALLY_PAID', 'PAID'].map(tab => (
                <button 
                  key={tab} 
                  className={`tab ${activeTab === tab ? 'active' : ''}`}
@@ -126,19 +126,19 @@ export default function InvoicingPage() {
               </select>
             </div>
             <div className="input-group">
-              <label className="input-label">Fee Type</label>
+              <label className="input-label">Fee Structure</label>
               <select className="select" value={structureId} onChange={e => {
                 const sId = e.target.value;
                 setStructureId(sId);
                 const st = structures.find(x => x.id === sId);
-                if (st) setAmount(st.amount);
+                if (st) setAmount(Number(st.lines?.[0]?.amount ?? 0));
               }}>
                 {structures.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div className="input-group">
-              <label className="input-label">Amount (₹)</label>
-              <input className="input" type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} />
+              <label className="input-label">First Line Amount (₹)</label>
+              <input className="input" type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} disabled />
             </div>
             <div className="input-group">
               <label className="input-label">Due Date</label>
@@ -157,9 +157,9 @@ export default function InvoicingPage() {
               <td className="font-medium">{inv.student?.firstName} {inv.student?.lastName}</td>
               <td>{inv.student?.admissionNo}</td>
               <td className="text-sm">{new Date(inv.createdAt).toLocaleDateString()}</td>
-              <td className={`text-sm ${inv.status==='OVERDUE' ? 'text-danger font-semibold' : ''}`}>{new Date(inv.dueDate).toLocaleDateString()}</td>
+              <td className={`text-sm ${inv.status!=='PAID' && new Date(inv.dueDate) < new Date() ? 'text-danger font-semibold' : ''}`}>{new Date(inv.dueDate).toLocaleDateString()}</td>
               <td className="font-bold">₹{Number(inv.totalAmount).toLocaleString()}</td>
-              <td><span className={`badge ${inv.status==='PAID'?'badge-success':inv.status==='OVERDUE'?'badge-danger':inv.status==='PENDING'?'badge-warning':'badge-gray'}`}>{inv.status || 'DRAFT'}</span></td>
+              <td><span className={`badge ${inv.status==='PAID'?'badge-success':inv.status==='ISSUED'?'badge-warning':inv.status==='PARTIALLY_PAID'?'badge-primary':'badge-gray'}`}>{inv.status}</span></td>
             </tr>
           ))}
           {filteredInvoices.length === 0 && (

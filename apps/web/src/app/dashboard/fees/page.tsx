@@ -63,11 +63,12 @@ export default function FeesPage() {
   };
 
   const collected = invoices.reduce((s, i) => s + Number(i.paidAmount || 0), 0);
-  const pending = invoices.filter(i => ['PENDING', 'PARTIAL'].includes(i.status)).reduce((s, i) => s + Number(i.totalAmount) - Number(i.paidAmount || 0), 0);
-  const overdue = invoices.filter(i => i.status === 'OVERDUE').reduce((s, i) => s + Number(i.totalAmount) - Number(i.paidAmount || 0), 0);
+  // Phase 2.5 statuses: DRAFT | ISSUED | PARTIALLY_PAID | PAID.
+  const pending = invoices.filter(i => ['ISSUED', 'PARTIALLY_PAID'].includes(i.status)).reduce((s, i) => s + Number(i.totalAmount) - Number(i.paidAmount || 0), 0);
+  const overdue = invoices.filter(i => i.status !== 'PAID' && new Date(i.dueDate) < new Date()).reduce((s, i) => s + Number(i.totalAmount) - Number(i.paidAmount || 0), 0);
 
   const statusBadge = (status: string) => {
-    const map: Record<string, string> = { PAID: 'badge-success', PENDING: 'badge-warning', OVERDUE: 'badge-danger', PARTIAL: 'badge-primary' };
+    const map: Record<string, string> = { PAID: 'badge-success', ISSUED: 'badge-warning', PARTIALLY_PAID: 'badge-primary', DRAFT: 'badge-gray' };
     return map[status] || 'badge-gray';
   };
 
@@ -89,7 +90,7 @@ export default function FeesPage() {
         <div className="flex gap-3 mb-4 items-center" style={{ flexWrap: 'wrap' }}>
           <div className="search-bar"><span className="icon">search</span><input placeholder="Search student or invoice..." value={search} onChange={e => setSearch(e.target.value)} /></div>
           <select className="select" style={{ width: 130 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-            <option value="All">All Status</option><option value="PENDING">Pending</option><option value="PAID">Paid</option><option value="OVERDUE">Overdue</option><option value="PARTIAL">Partial</option>
+            <option value="All">All Status</option><option value="ISSUED">Issued</option><option value="PARTIALLY_PAID">Partial</option><option value="PAID">Paid</option><option value="DRAFT">Draft</option>
           </select>
         </div>
 
@@ -127,17 +128,18 @@ export default function FeesPage() {
           </div>
         ) : !error && (
           <div className="card">
-            <div className="table-wrapper"><table className="table"><thead><tr><th>Invoice</th><th>Student</th><th>Fee Type</th><th>Amount</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+            <div className="table-wrapper"><table className="table"><thead><tr><th>Invoice</th><th>Student</th><th>Fee Type</th><th>Amount</th><th>Paid</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
               {filtered.map(inv => (
                 <tr key={inv.id}>
                   <td className="text-sm font-semibold text-primary">{inv.invoiceNo}</td>
                   <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{inv.student?.firstName?.[0]}{inv.student?.lastName?.[0]}</div><span className="font-semibold">{inv.student?.firstName} {inv.student?.lastName}</span></div></td>
-                  <td className="text-sm">{inv.items?.[0]?.feeStructure?.name || 'Tuition'}</td>
+                  <td className="text-sm">{inv.lines?.[0]?.feeHead?.name || 'Tuition'}</td>
                   <td className="font-semibold">₹{Number(inv.totalAmount).toLocaleString('en-IN')}</td>
+                  <td className="text-sm">₹{Number(inv.paidAmount || 0).toLocaleString('en-IN')}</td>
                   <td className="text-sm">{new Date(inv.dueDate).toLocaleDateString('en-IN')}</td>
                   <td><span className={`badge ${statusBadge(inv.status)}`}>{inv.status}</span></td>
                   <td>
-                    {['PENDING', 'PARTIAL', 'OVERDUE'].includes(inv.status) ? (
+                    {['ISSUED', 'PARTIALLY_PAID'].includes(inv.status) ? (
                       <button className="btn btn-sm btn-success" onClick={() => {
                         setPayingId(inv.id);
                         setPayForm({ ...payForm, amount: String(Number(inv.totalAmount) - Number(inv.paidAmount)) });
@@ -148,7 +150,7 @@ export default function FeesPage() {
                   </td>
                 </tr>
               ))}
-              {filtered.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: '#9CA3AF' }}>No invoices found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: '#9CA3AF' }}>No invoices found</td></tr>}
             </tbody></table></div>
           </div>
         )}

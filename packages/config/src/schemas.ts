@@ -11,6 +11,7 @@ import {
   connectionString,
   csvList,
   jwtDuration,
+  loadDotenv,
   nodeEnv,
   parseEnv,
   port,
@@ -164,6 +165,12 @@ export type ServiceEnv = z.infer<typeof serviceEnvSchema>;
  * per service.
  */
 export function loadServiceEnv(serviceName: string, portVar: string): ServiceEnv {
+  // Load .env BEFORE snapshotting process.env: parseEnv also calls loadDotenv,
+  // but by then `source` (a snapshot taken below) would already have been built
+  // without the file's values — so every var added to .env after the other
+  // services' vars silently fell back to schema defaults (exam-service booted
+  // on port 4000 and collided with the gateway).
+  loadDotenv();
   const source: NodeJS.ProcessEnv = { ...process.env };
   if (source[portVar] !== undefined) source.PORT = source[portVar];
   return parseEnv(serviceEnvSchema, serviceName, source);
