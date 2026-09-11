@@ -373,14 +373,38 @@ r.post('/library/return/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+r.get('/library/issues', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    const { bookId } = req.query;
+    const issues = await prisma.bookIssue.findMany({
+      where: {
+        status: 'ISSUED',
+        ...(bookId && { bookId: bookId as string }),
+        ...(branchId && { book: { branchId } }),
+      },
+      include: {
+        book: { select: { title: true } },
+        student: { select: { firstName: true, lastName: true, admissionNo: true } },
+      },
+      orderBy: { dueDate: 'asc' },
+      take: 200,
+    });
+    res.json({ data: issues });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 // ── Timetable (BUILD_PLAN 3.3 + 2.7.6) ──
 // Slot create enforces the teacher-clash rule: a teacher cannot be in two
 // places at once, and cannot teach two sections in the same period.
 r.post('/timetable/slots', async (req, res) => {
   try {
     const { staffId, day, startTime, endTime, sectionId, subjectId, room } = req.body ?? {};
-    if (!staffId || !day || !startTime || !endTime || !sectionId || !subjectId) {
-      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'staffId, day, startTime, endTime, sectionId and subjectId are required.' });
+    // staffId is optional (schema: String?) — unassigned slots are useful for
+    // placeholder periods; the clash check below only applies when a teacher
+    // is named.
+    if (!day || !startTime || !endTime || !sectionId || !subjectId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'day, startTime, endTime, sectionId and subjectId are required.' });
       return;
     }
     const slotSection = await prisma.section.findFirst({
@@ -392,16 +416,18 @@ r.post('/timetable/slots', async (req, res) => {
     const sectionBranch = slotSection.class.branchId;
     if (branchId && branchId !== sectionBranch) { res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Section not found.' }); return; }
 
-    const clash = await prisma.timetableSlot.findFirst({
-      where: { staffId, day, startTime, sectionId: { not: sectionId } },
-      select: { id: true, sectionId: true },
-    });
-    if (clash) {
-      res.status(409).json({ type: 'conflict', title: 'Teacher Clash', status: 409, detail: `Teacher already has a slot at ${day} ${startTime} for another section.` });
-      return;
+    if (staffId) {
+      const clash = await prisma.timetableSlot.findFirst({
+        where: { staffId, day, startTime, sectionId: { not: sectionId } },
+        select: { id: true, sectionId: true },
+      });
+      if (clash) {
+        res.status(409).json({ type: 'conflict', title: 'Teacher Clash', status: 409, detail: `Teacher already has a slot at ${day} ${startTime} for another section.` });
+        return;
+      }
     }
     const slot = await prisma.timetableSlot.create({
-      data: { staffId, day, startTime, endTime, sectionId, subjectId, room },
+      data: { staffId: staffId || null, day, startTime, endTime, sectionId, subjectId, room },
     });
     res.status(201).json(slot);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }

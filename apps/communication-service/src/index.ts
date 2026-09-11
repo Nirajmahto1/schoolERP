@@ -255,7 +255,9 @@ r.post('/dispatch', async (req, res) => {
     // Persist the dispatch log in batches; QUEUED rows are drained by the
     // notification-engine, which updates status + provider message id.
     if (logs.length) {
-      await prisma.notificationLog.createMany({ data: logs.map((l) => ({ ...l, branchId, createdBy: userId })) });
+      // Note: NotificationLog has no createdBy column — authorship is carried
+      // by the announcement created below.
+      await prisma.notificationLog.createMany({ data: logs.map((l) => ({ ...l, branchId })) });
     }
 
     // The announcement itself is still recorded for the in-app feed.

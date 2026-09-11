@@ -15,6 +15,8 @@ export default function LibraryPage() {
   const [filterCat, setFilterCat] = useState('All');
   const [showIssue, setShowIssue] = useState<string | null>(null);
   const [issueStudent, setIssueStudent] = useState('');
+  const [issued, setIssued] = useState<any[]>([]);
+  const [returnBookId, setReturnBookId] = useState<string | null>(null);
 
   const fetchBooks = useCallback(async () => {
     setLoading(true);
@@ -35,6 +37,8 @@ export default function LibraryPage() {
       } else {
         const result = await libraryApi.getBooks({ search: search || undefined, category: filterCat !== 'All' ? filterCat : undefined });
         setBooks(result.data);
+        const iss = await libraryApi.getIssues();
+        setIssued(iss.data || []);
       }
     } catch (err: any) {
       setError(err?.detail || err?.message || 'Failed to load books. Please ensure the backend is running.');
@@ -52,26 +56,23 @@ export default function LibraryPage() {
   });
 
   const issueBook = async (id: string) => {
-    const isStudent = user?.role === 'STUDENT';
-    const isTeacher = user?.role === 'TEACHER';
-    if (!isStudent && !isTeacher && !issueStudent) { alert('Please enter a Student ID.'); return; }
-    startLoading('Issuing book...');
+    if (!issueStudent) { alert('Please enter a Student ID.'); return; }
     try {
       await libraryApi.issueBook({ bookId: id, studentId: issueStudent, dueDate: new Date(Date.now() + 14 * 86400000).toISOString() });
       await fetchBooks();
     } catch (err: any) { alert(err.detail || 'Failed to issue book'); }
     setShowIssue(null);
     setIssueStudent('');
-    stopLoading();
   };
 
-  const returnBook = async (id: string) => {
-    startLoading('Processing return...');
+  // The backend returns by issue id, not book id — the picker below resolves
+  // which active issue to return.
+  const returnIssue = async (issueId: string) => {
     try {
-      await libraryApi.returnBook(id);
+      await libraryApi.returnBook(issueId);
       await fetchBooks();
     } catch (err: any) { alert(err.detail || 'Failed to return book'); }
-    stopLoading();
+    setReturnBookId(null);
   };
 
   const totalBooks = books.reduce((a, b) => a + Number(b.total), 0);
@@ -92,7 +93,33 @@ export default function LibraryPage() {
           <div className="flex gap-3"><div className="search-bar"><span className="icon">search</span><input placeholder="Search book or author..." value={search} onChange={e => setSearch(e.target.value)} /></div>
             <select className="select" style={{ width: 140 }} value={filterCat} onChange={e => setFilterCat(e.target.value)}><option value="All">All Categories</option>{categories.map(c => <option key={c}>{c}</option>)}</select>
           </div>
+          {user?.role !== 'STUDENT' && issued.length > 0 && (
+            <button className="btn btn-secondary" onClick={() => setReturnBookId(returnBookId === null ? '_' : null)}>
+              <span className="icon icon-sm">bookmark_remove</span>Process Return
+            </button>
+          )}
         </div>
+
+        {returnBookId !== null && (
+          <div className="card mb-4 animate-fadeIn"><div className="card-body">
+            <h3 className="mb-4">Return a Book</h3>
+            <div className="input-group"><label className="input-label">Active issue</label>
+              <select className="select" value={returnBookId === '_' ? '' : returnBookId} onChange={e => setReturnBookId(e.target.value || '_')}>
+                <option value="">Select an issue…</option>
+                {issued.map(i => (
+                  <option key={i.id} value={i.id}>
+                    {i.book?.title} — {i.student?.firstName} {i.student?.lastName} ({i.student?.admissionNo}) · due {new Date(i.dueDate).toLocaleDateString()}{new Date(i.dueDate) < new Date() ? ' (overdue)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <button className="btn btn-success" disabled={!returnBookId || returnBookId === '_'} onClick={() => returnBookId !== '_' && returnIssue(returnBookId)}><span className="icon icon-sm">check</span>Confirm Return</button>
+              <button className="btn btn-secondary" onClick={() => setReturnBookId(null)}>Cancel</button>
+            </div>
+            <p className="text-xs text-gray mt-3">Overdue returns are fined ₹5 per day by the backend.</p>
+          </div></div>
+        )}
 
         {user?.role !== 'STUDENT' && showIssue !== null && (
           <div className="card mb-4 animate-fadeIn"><div className="card-body">
@@ -133,7 +160,6 @@ export default function LibraryPage() {
                   ) : (
                     <>
                       {b.available > 0 && <button className="btn btn-sm btn-primary" onClick={() => setShowIssue(b.id)}><span className="icon icon-sm">bookmark_add</span>Issue</button>}
-                      {b.issued > 0 && <button className="btn btn-sm btn-secondary" onClick={() => returnBook(b.id)}><span className="icon icon-sm">bookmark_remove</span>Return</button>}
                     </>
                   )}
                 </div>

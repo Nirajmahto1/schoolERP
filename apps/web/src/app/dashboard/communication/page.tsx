@@ -25,6 +25,9 @@ export default function CommunicationPage() {
   const [showCompose, setShowCompose] = useState(false);
   const [newAnn, setNewAnn] = useState({ title: '', content: '', type: 'GENERAL', target: 'All' });
   const [tab, setTab] = useState('Announcements');
+  const [logs, setLogs] = useState<any[]>([]);
+  const [dispatchForm, setDispatchForm] = useState({ title: '', content: '', channel: 'SMS', target: 'All' });
+  const [dispatching, setDispatching] = useState(false);
 
   const fetchAnnouncements = useCallback(async () => {
     setLoading(true);
@@ -47,7 +50,15 @@ export default function CommunicationPage() {
     setLoading(false);
   }, [user]);
 
+  const fetchLogs = useCallback(async () => {
+    try {
+      const result = await communicationApi.getDispatchLogs();
+      setLogs(result.data || []);
+    } catch { setLogs([]); }
+  }, []);
+
   useEffect(() => { fetchAnnouncements(); }, [fetchAnnouncements]);
+  useEffect(() => { if (tab === 'Messages') fetchLogs(); }, [tab, fetchLogs]);
 
   const filtered = announcements.filter(a => a.title.toLowerCase().includes(search.toLowerCase()) || a.content.toLowerCase().includes(search.toLowerCase()));
 
@@ -73,6 +84,30 @@ export default function CommunicationPage() {
     stopLoading();
   };
 
+  const sendDispatch = async () => {
+    if (!dispatchForm.content) { alert('Please write the message content.'); return; }
+    setDispatching(true);
+    try {
+      const roleMap: Record<string, string> = { All: '', Students: 'STUDENT', Parents: 'PARENT', Teachers: 'TEACHER' };
+      const mapped = roleMap[dispatchForm.target];
+      const roles = mapped ? [mapped] : [];
+      const result = await communicationApi.dispatch({
+        title: dispatchForm.title || undefined,
+        content: dispatchForm.content,
+        channel: dispatchForm.channel,
+        targetRoles: roles,
+      });
+      alert(`Dispatch queued: ${result.queued} message(s) — ${result.audience.guardians} guardian(s), ${result.audience.staff} staff.`);
+      setDispatchForm({ title: '', content: '', channel: 'SMS', target: 'All' });
+      setShowCompose(false);
+      await Promise.all([fetchLogs(), fetchAnnouncements()]);
+    } catch (err: any) { alert(err?.detail || 'Failed to dispatch'); }
+    setDispatching(false);
+  };
+
+  const channelBadge: Record<string, string> = { SMS: 'badge-primary', EMAIL: 'badge-success', WHATSAPP: 'badge-warning', PUSH: 'badge-gray' };
+  const statusBadge: Record<string, string> = { QUEUED: 'badge-warning', SENT: 'badge-success', FAILED: 'badge-danger' };
+
   return (
     <>
       <Topbar title="Communication Hub" subtitle="Announcements, messages, and notifications" />
@@ -80,11 +115,25 @@ export default function CommunicationPage() {
         <div className="flex items-center justify-between mb-4" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div className="tabs"><button className={`tab ${tab === 'Announcements' ? 'active' : ''}`} onClick={() => setTab('Announcements')}>Announcements</button><button className={`tab ${tab === 'Messages' ? 'active' : ''}`} onClick={() => setTab('Messages')}>Messages</button><button className={`tab ${tab === 'Events' ? 'active' : ''}`} onClick={() => setTab('Events')}>Events Calendar</button></div>
           <div className="flex gap-3"><div className="search-bar"><span className="icon">search</span><input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} /></div>
-          {user?.role !== 'STUDENT' && <button className="btn btn-primary" onClick={() => setShowCompose(!showCompose)}><span className="icon icon-sm">{showCompose ? 'close' : 'add'}</span>{showCompose ? 'Cancel' : 'New Announcement'}</button>}
+          {user?.role !== 'STUDENT' && (tab === 'Announcements'
+            ? <button className="btn btn-primary" onClick={() => setShowCompose(!showCompose)}><span className="icon icon-sm">{showCompose ? 'close' : 'add'}</span>{showCompose ? 'Cancel' : 'New Announcement'}</button>
+            : tab === 'Messages' && <button className="btn btn-primary" onClick={() => setShowCompose(true)}><span className="icon icon-sm">send</span>New Dispatch</button>)}
           </div>
         </div>
 
-        {showCompose && (
+        {showCompose && tab === 'Messages' && (
+          <div className="card mb-4 animate-fadeIn"><div className="card-body"><h3 className="mb-4">New Dispatch</h3>
+            <div className="grid grid-3 gap-4">
+              <div className="input-group"><label className="input-label">Title</label><input className="input" value={dispatchForm.title} onChange={e => setDispatchForm({ ...dispatchForm, title: e.target.value })} placeholder="e.g. Fee Reminder" /></div>
+              <div className="input-group"><label className="input-label">Channel</label><select className="select" value={dispatchForm.channel} onChange={e => setDispatchForm({ ...dispatchForm, channel: e.target.value })}><option>SMS</option><option>EMAIL</option><option>WHATSAPP</option><option>PUSH</option></select></div>
+              <div className="input-group"><label className="input-label">Audience</label><select className="select" value={dispatchForm.target} onChange={e => setDispatchForm({ ...dispatchForm, target: e.target.value })}><option>All</option><option>Parents</option><option>Teachers</option></select></div>
+            </div>
+            <div className="input-group"><label className="input-label">Message *</label><textarea className="input" rows={3} value={dispatchForm.content} onChange={e => setDispatchForm({ ...dispatchForm, content: e.target.value })} placeholder="Supports {{guardianName}} placeholders..." style={{ resize: 'vertical' }}></textarea></div>
+            <div className="flex gap-3"><button className="btn btn-primary" onClick={sendDispatch} disabled={dispatching}><span className="icon icon-sm">send</span>{dispatching ? 'Queuing…' : 'Queue Dispatch'}</button></div>
+          </div></div>
+        )}
+
+        {showCompose && tab === 'Announcements' && (
           <div className="card mb-4 animate-fadeIn"><div className="card-body"><h3 className="mb-4">Compose Announcement</h3>
             <div className="grid grid-2 gap-4">
               <div className="input-group"><label className="input-label">Title *</label><input className="input" value={newAnn.title} onChange={e => setNewAnn({ ...newAnn, title: e.target.value })} placeholder="e.g. Annual Sports Meet" /></div>
@@ -108,6 +157,30 @@ export default function CommunicationPage() {
 
         {loading ? (
           <div className="card" style={{ padding: 48, textAlign: 'center' }}><span className="icon" style={{ fontSize: 32, color: '#5048E5', animation: 'spin 1s linear infinite' }}>progress_activity</span><p style={{ marginTop: 12, color: '#6B7280' }}>Loading announcements...</p></div>
+        ) : !error && tab === 'Messages' ? (
+          <div className="card"><div className="card-body">
+            <h3 className="mb-4">Dispatch Log</h3>
+            <div className="table-wrapper">
+              <table className="table">
+                <thead><tr><th>When</th><th>Channel</th><th>Recipient</th><th>Message</th><th>Status</th></tr></thead>
+                <tbody>
+                  {logs.length === 0 ? (
+                    <tr><td colSpan={5} className="text-center py-6 text-gray">No messages dispatched yet — use “New Dispatch” to queue SMS/email to guardians and staff.</td></tr>
+                  ) : logs.map(l => (
+                    <tr key={l.id}>
+                      <td className="text-sm">{new Date(l.createdAt).toLocaleString()}</td>
+                      <td><span className={`badge ${channelBadge[l.channel] || 'badge-gray'}`}>{l.channel}</span></td>
+                      <td className="text-sm">{l.recipient || l.recipientId}</td>
+                      <td className="text-sm" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.body}</td>
+                      <td><span className={`badge ${statusBadge[l.status] || 'badge-gray'}`}>{l.status}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div></div>
+        ) : !error && tab === 'Events' ? (
+          <div className="card" style={{ padding: 24, textAlign: 'center', color: '#9CA3AF' }}>Calendar events appear here once the academic calendar is wired up.</div>
         ) : !error && (
           <div className="flex flex-col gap-4">
             {filtered.map(a => (

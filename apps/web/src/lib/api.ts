@@ -387,10 +387,31 @@ export const yearApi = {
   list: () => apiRequest<{ data: any[] }>('/academics/academic-years'),
 };
 
+// ── Timetable API ──
+export const timetableApi = {
+  get: (sectionId: string) =>
+    apiRequest<{ data: any[] }>(`/academics/timetable?sectionId=${encodeURIComponent(sectionId)}`),
+
+  createSlot: (data: { sectionId: string; subjectId: string; staffId?: string; day: string; startTime: string; endTime: string; room?: string }) =>
+    apiRequest<any>('/academics/timetable/slots', { method: 'POST', body: JSON.stringify(data) }),
+
+  deleteSlot: (id: string) =>
+    apiRequest<void>(`/academics/timetable/slots/${id}`, { method: 'DELETE' }),
+};
+
 // ── Communication API ──
 export const communicationApi = {
   getAnnouncements: () =>
-    apiRequest<{ data: any[] }>('/communication/announcements'),
+    apiRequest<{ data: any[] }>('/communication/announcements', { method: 'GET' }),
+
+  getDispatchLogs: () =>
+    apiRequest<{ data: any[] }>('/communication/dispatch-logs'),
+
+  dispatch: (data: { title?: string; content: string; channel?: string; targetRoles?: string[]; classIds?: string[]; sectionIds?: string[] }) =>
+    apiRequest<{ announcementId: string; queued: number; audience: { guardians: number; staff: number } }>('/communication/dispatch', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 
   createAnnouncement: (data: { title: string; content: string; type: string; targetRoles: string[] }) =>
     apiRequest<any>('/communication/announcements', {
@@ -467,6 +488,9 @@ export const libraryApi = {
 
   issueBook: (data: { bookId: string; studentId: string; staffId?: string; dueDate: string }) =>
     apiRequest<any>('/library/issue', { method: 'POST', body: JSON.stringify(data) }),
+
+  getIssues: () =>
+    apiRequest<{ data: any[] }>('/library/issues'),
 
   returnBook: (issueId: string) =>
     apiRequest<any>(`/library/return/${issueId}`, { method: 'POST' }),
