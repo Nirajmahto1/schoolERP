@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect } from 'react';
-import { feeApi, studentApi } from '@/lib/api';
+import { feeApi, studentApi, yearApi } from '@/lib/api';
 
 export default function InvoicingPage() {
   const [showForm, setShowForm] = useState(false);
@@ -9,6 +9,7 @@ export default function InvoicingPage() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [students, setStudents] = useState<any[]>([]);
   const [structures, setStructures] = useState<any[]>([]);
+  const [academicYearId, setAcademicYearId] = useState('');
   const [loading, setLoading] = useState(true);
 
   // Form State
@@ -20,19 +21,27 @@ export default function InvoicingPage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [invRes, stuRes, structRes] = await Promise.all([
+        const [invRes, stuRes, structRes, yearRes] = await Promise.all([
           feeApi.getInvoices({ limit: 50 }),
           studentApi.list({ limit: 50 }),
-          feeApi.getStructures()
+          feeApi.getStructures(),
+          yearApi.list(),
         ]);
         setInvoices(invRes.data || []);
         setStudents(stuRes.data || []);
         setStructures(structRes.data || []);
-        
+
+        // Current year = the one covering today; fall back to the newest.
+        const now = new Date();
+        const years = yearRes.data || [];
+        const current =
+          years.find((y: any) => new Date(y.startDate) <= now && new Date(y.endDate) >= now) || years[0];
+        if (current) setAcademicYearId(current.id);
+
         if (stuRes.data?.length > 0) setStudentId(stuRes.data[0].id);
         if (structRes.data?.length > 0) {
           setStructureId(structRes.data[0].id);
-          setAmount(structRes.data[0].amount || 0);
+          setAmount(Number(structRes.data[0].lines?.[0]?.amount ?? 0));
         }
         
         const date = new Date();
@@ -49,20 +58,33 @@ export default function InvoicingPage() {
 
   const handleGenerate = async () => {
     try {
+      // Invoice contract: studentId + academicYearId + lines[{feeHeadId, amount}].
+      // The selected structure's lines (fee head + amount) become the invoice lines.
+      const structure = structures.find((s: any) => s.id === structureId);
+      const lines = (structure?.lines || []).map((l: any) => ({
+        feeHeadId: l.feeHeadId,
+        amount: Number(l.amount),
+        description: l.feeHead?.name,
+      }));
+      if (lines.length === 0) {
+        alert('The selected fee structure has no lines. Add fee heads to it first.');
+        return;
+      }
+      if (!academicYearId) {
+        alert('No academic year found. Create one under Academics first.');
+        return;
+      }
       await feeApi.createInvoice({
         studentId,
+        academicYearId,
+        lines,
         dueDate: new Date(dueDate).toISOString(),
-        items: [{
-          feeStructureId: structureId,
-          amount: Number(amount),
-          discount: 0
-        }]
       });
       setShowForm(false);
       const res = await feeApi.getInvoices({ limit: 50 });
       setInvoices(res.data);
-    } catch {
-      alert('Failed to generate invoice');
+    } catch (err: any) {
+      alert(err?.detail || 'Failed to generate invoice');
     }
   };
 

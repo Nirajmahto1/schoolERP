@@ -55,6 +55,28 @@ export function authLimiter(maxAttempts: number, windowMinutes: number): RateLim
   });
 }
 
+/**
+ * IP-only login limiter.
+ *
+ * Used on PROXIED public routes: the gateway must not parse the request body
+ * (see app.ts — a parsed body cannot be re-piped by http-proxy), so no email
+ * is available here. The per-account dimension is enforced downstream by
+ * identity-service, which owns the parsed body.
+ */
+export function ipAuthLimiter(maxAttempts: number, windowMinutes: number): RateLimitRequestHandler {
+  return rateLimit({
+    windowMs: windowMinutes * 60 * 1000,
+    max: maxAttempts,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => `auth:${req.ip}`,
+    message: problemResponse(
+      'Too many attempts. Wait a few minutes before trying again.',
+    ),
+  });
+}
+
 /** Writes: enough for bulk data entry by a front-office clerk, not for scraping. */
 export function writeLimiter(): RateLimitRequestHandler {
   return rateLimit({

@@ -28,7 +28,11 @@ export function createTenantHintResolver(baseDomain?: string): RequestHandler {
 
   return (req, res, next) => {
     // Drop the client's copy first; we re-set it only when WE resolved it.
-    req.headers[TENANT_SLUG_HEADER] = undefined as never;
+    // NOTE: delete the key — assigning `undefined` leaves the key present with
+    // an undefined value, which http-proxy then forwards as
+    // `x-tenant-slug: undefined` and Node rejects with
+    // `Invalid value "undefined" for header "x-tenant-slug"`.
+    delete req.headers[TENANT_SLUG_HEADER];
 
     // 1. Mobile fallback header. Validate the shape so a malformed value can
     //    never reach downstream resolution (or a log-injection).

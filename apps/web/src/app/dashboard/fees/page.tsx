@@ -45,7 +45,15 @@ export default function FeesPage() {
     setProcessing(true);
     startLoading('Processing payment...');
     try {
-      await feeApi.recordPayment({ invoiceId: inv.id, amount, method: payForm.mode.toUpperCase() });
+      // Phase 2.5 payment contract: studentId + academicYearId + amount + method.
+      // The engine allocates across open invoices when invoiceIds is omitted.
+      await feeApi.recordPayment({
+        studentId: inv.studentId,
+        academicYearId: inv.academicYearId,
+        amount,
+        method: payForm.mode.toUpperCase(),
+        invoiceIds: [inv.id],
+      });
       await fetchInvoices();
     } catch (err: any) { alert(err.detail || 'Payment failed'); }
     setPayingId(null);

@@ -17,9 +17,9 @@ import {
   type TokenStore,
 } from '@school-erp/auth';
 import type { GatewayEnv } from '@school-erp/config';
-import { createAuthMiddleware } from './middleware/auth';
+import { createAuthMiddleware, createOptionalAuthMiddleware } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
-import { authLimiter, methodAwareLimiter } from './middleware/rateLimit';
+import { authLimiter, ipAuthLimiter, methodAwareLimiter } from './middleware/rateLimit';
 import { createTenantHintResolver, TENANT_SLUG_HEADER } from './middleware/tenant';
 import { createUpstreamProxy } from './proxy';
 import { buildRoutes } from './routes';
@@ -113,16 +113,27 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
   });
 
   const authenticate = createAuthMiddleware({ tokens, store: tokenStore, signer });
+  const optionalAuthenticate = createOptionalAuthMiddleware({ tokens, store: tokenStore, signer });
   const throttle = methodAwareLimiter();
-  const loginThrottle = authLimiter(5, 15);
+  const loginThrottle = authLimiter(5, 15); // body-aware variant (kept for non-proxied use)
+  const ipLoginThrottle = ipAuthLimiter(20, 15);
   const routes = buildRoutes(env);
 
   for (const route of routes) {
     const proxy = createUpstreamProxy(route, env.UPSTREAM_TIMEOUT_MS);
 
     if (route.public) {
-      // Parse JSON here only, so the limiter can key on the submitted email.
-      app.use(route.path, express.json({ limit: '64kb' }), loginThrottle, proxy);
+      // Optional auth: a valid Bearer on a public prefix still gets an
+      // assertion, so identity-service's gated /auth/me works through the
+      // gateway while login/refresh stay anonymous.
+      //
+      // NO body parser here. http-proxy pipes the raw request stream to the
+      // upstream; express.json consumes that stream, and a parsed body cannot
+      // be re-piped — the upstream then hangs forever waiting for the
+      // announced Content-Length (observed: every proxied POST hangs). The
+      // login limiter below therefore keys on IP only (still per-account at
+      // identity-service, which parses the body itself).
+      app.use(route.path, optionalAuthenticate, ipLoginThrottle, proxy);
       logger.info(`  ${route.path} → ${route.service} (public)`);
     } else {
       app.use(route.path, authenticate, throttle, proxy);

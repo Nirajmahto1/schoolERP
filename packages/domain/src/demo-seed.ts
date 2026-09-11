@@ -277,7 +277,7 @@ export async function seedDemoTenant(
 
   // ── 5. Users: admins, teachers, students, parents ──
   const passwordHash =
-    '$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy'; // "Admin@123" (cost 10)
+    '$2a$10$1rLK7i2.BisiOJXZwLnuS.QZyUlVukwYafNSgeHTFgZAueszMxWOm'; // "Admin@123" (cost 10) — VERIFIED against bcryptjs
   const users: Array<{ id: string; email: string; passwordHash: string; isActive: boolean; defaultBranchId: string | null }> = [];
   const userBranches: Array<{ userId: string; branchId: string }> = [];
   const staffRows: Array<{

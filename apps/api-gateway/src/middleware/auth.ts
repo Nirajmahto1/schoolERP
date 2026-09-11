@@ -125,6 +125,65 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
   };
 }
 
+/**
+ * Optional authentication for PUBLIC route prefixes.
+ *
+ * `/auth` is mostly public (login, refresh, MFA verify), but identity-service
+ * mounts assertion-gated routes under the same prefix (`GET /auth/me`, session
+ * management, invites). A public proxy hop mints no assertion, so those gated
+ * routes could never be reached through the gateway. This variant best-effort
+ * verifies the Bearer token: when valid, `req.mintFor` is wired exactly as the
+ * mandatory middleware does; when absent or invalid, the request continues
+ * anonymously so genuinely-public endpoints behave as before. Downstream
+ * services remain the authority — the assertion gate on identity-service is
+ * what actually protects `/me`.
+ */
+export function createOptionalAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) {
+      next();
+      return;
+    }
+    const token = header.slice('Bearer '.length).trim();
+    if (!token) {
+      next();
+      return;
+    }
+
+    try {
+      const claims = await verifyAccessToken(token, deps.tokens, deps.store);
+      const identity: GatewayIdentity = {
+        userId: claims.sub,
+        email: claims.email,
+        tenantId: claims.tenantId,
+        schoolId: claims.schoolId ?? null,
+        branchId: claims.branchId,
+        roles: claims.roles,
+      };
+      req.identity = identity;
+      req.mintFor = (audience: string) =>
+        mintAssertion(
+          {
+            userId: identity.userId,
+            email: identity.email,
+            tenantId: identity.tenantId,
+            schoolId: identity.schoolId,
+            branchId: identity.branchId,
+            roles: identity.roles,
+            audience,
+          },
+          deps.signer,
+        );
+      next();
+    } catch {
+      // An expired/revoked/invalid token on a public route is not an error:
+      // continue anonymously. (Logging in with a stale token is a normal flow.)
+      next();
+    }
+  };
+}
+
 /** Coarse role gate at the edge. Services re-check; this fails fast and cheap. */
 export function authorize(...roles: string[]): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {

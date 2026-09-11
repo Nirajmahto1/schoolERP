@@ -40,6 +40,10 @@ export function createUpstreamProxy(
     ws: route.ws ?? false,
     proxyTimeout: timeoutMs,
     timeout: timeoutMs,
+    // NOTE: http-proxy pipes the raw request stream. NO middleware before the
+    // proxy may consume that stream (express.json etc.) — a parsed body cannot
+    // be re-piped and the upstream hangs forever. Public /auth routes parse
+    // their bodies at identity-service, not at the gateway.
     pathRewrite: (path) => {
       const [pathname, query] = path.split('?');
       const suffix = pathname === '/' ? '' : pathname;

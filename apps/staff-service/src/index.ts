@@ -24,6 +24,10 @@ const { app, mount, finalize } = createServiceApp({
   readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
 });
 
+// Route handlers fetch the client via `req.app.get('prisma')` so they stay
+// unit-testable — register the shared instance here.
+app.set('prisma', prisma);
+
 mount('/teacher', teacherRoutes);
 mount('/admin', adminRoutes);
 
@@ -308,7 +312,7 @@ finalize();
 
 // Only bind a port when run directly. Imported by the e2e suite, the module
 // must NOT listen — vitest would hit EADDRINUSE across suites.
-if (process.argv[1]?.endsWith('index.ts')) {
+if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 }
 

@@ -136,7 +136,13 @@ export default function AttendancePage() {
         .filter(([, status]) => status !== '')
         .map(([studentId, status]) => ({ studentId, status }));
 
-      await attendanceApi.mark({ date, records, markedBy: user!.id });
+      await attendanceApi.mark({
+        date,
+        classId: selectedClassId,
+        sectionId: selectedSectionId,
+        records,
+        markedBy: user?.id,
+      });
       setSaved(true);
       if (absentees > 0) setShowNotif(true);
     } catch (err: any) {
@@ -165,8 +171,8 @@ export default function AttendancePage() {
           <div className="animate-slideUp" style={{ position: 'fixed', bottom: 32, right: 32, zIndex: 100, background: '#1A1C2E', color: 'white', padding: '16px 24px', borderRadius: 12, boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', gap: 12, border: '1px solid rgba(255,255,255,0.1)' }}>
             <div style={{ background: '#10B981', borderRadius: '50%', padding: 4, display: 'flex' }}><span className="icon" style={{ fontSize: 18 }}>notifications_active</span></div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>Attendance Saved via Go Service</div>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>{absent} absent alerts dispatched to parents via Notification Engine (WebSocket + SMS).</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Attendance Saved</div>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>{absent > 0 ? `${absent} absent — consider notifying parents.` : 'All records updated.'}</div>
             </div>
             <button onClick={() => setShowNotif(false)} style={{ background: 'transparent', border: 'none', color: 'white', cursor: 'pointer', marginLeft: 8 }}><span className="icon">close</span></button>
           </div>

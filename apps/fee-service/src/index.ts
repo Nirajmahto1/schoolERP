@@ -536,7 +536,7 @@ const app = createFeeApp({ env, prisma });
 
 // Only bind a port when run directly. Imported by tests or the e2e suite,
 // the module must NOT listen — vitest would hit EADDRINUSE across suites.
-if (process.argv[1]?.endsWith('index.ts')) {
+if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 }
 

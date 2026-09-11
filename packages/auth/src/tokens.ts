@@ -51,7 +51,9 @@ export interface AccessTokenClaims {
 const accessClaimsSchema = z.object({
   sub: z.string().min(1),
   email: z.string().email(),
-  tenantId: z.string().min(1),
+  // MAY be empty: single-database deployments (local dev, self-hosted starter)
+  // sign tenantId: "". Empty means "no multi-tenant routing", never a tenant key.
+  tenantId: z.string().min(0),
   schoolId: z.string().min(1).nullable().default(null),
   branchId: z.string().nullable(),
   roles: z.array(z.string()).min(1),

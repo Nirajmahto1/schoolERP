@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
+import { authApi } from '@/lib/api';
 import styles from './page.module.css';
 
 export default function LoginPage() {
@@ -9,6 +10,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState('');
+  // Phase 2.2 MFA: admins get a TOTP challenge after step 1 of login. The
+  // backend returns a short-lived mfaToken; step 2 exchanges it + the 6-digit
+  // code for a real session.
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaToken, setMfaToken] = useState('');
+  const [totp, setTotp] = useState('');
   const { login } = useAuth();
   const router = useRouter();
 
@@ -17,10 +24,30 @@ export default function LoginPage() {
     setLoggingIn(true);
     setError('');
     try {
-      await login(email, password);
+      const result = await login(email, password);
+      if (result && result.mfaRequired && result.mfaToken) {
+        setMfaToken(result.mfaToken);
+        setMfaRequired(true);
+        setLoggingIn(false);
+        return;
+      }
       router.push('/dashboard');
     } catch (err: any) {
       setError(err?.message || 'Login failed. Please check your credentials and ensure the server is running.');
+    }
+    setLoggingIn(false);
+  };
+
+  const handleMfaVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoggingIn(true);
+    setError('');
+    try {
+      await authApi.verifyMfa(mfaToken, totp);
+      // Session tokens are now in localStorage; re-hydrate the user and go.
+      window.location.href = '/dashboard';
+    } catch (err: any) {
+      setError(err?.detail || err?.message || 'Invalid verification code.');
     }
     setLoggingIn(false);
   };
@@ -55,6 +82,40 @@ export default function LoginPage() {
             <span className={styles.mobileLogoText}>EduCore</span>
           </div>
 
+          {mfaRequired ? (
+            <>
+              <h2 className={styles.formTitle}>Two-Factor Verification</h2>
+              <p className={styles.formDesc}>Enter the 6-digit code from your authenticator app</p>
+              <form className={styles.form} onSubmit={handleMfaVerify}>
+                {error && <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', color: '#dc2626', padding: '8px 12px', borderRadius: 8, fontSize: 13, marginBottom: 4 }}>{error}</div>}
+                <div className="input-group">
+                  <label className="input-label">Verification Code</label>
+                  <div className="input-icon-wrapper">
+                    <span className="icon">password</span>
+                    <input
+                      className="input"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      placeholder="000000"
+                      maxLength={6}
+                      style={{ letterSpacing: 8, fontSize: 20, textAlign: 'center' }}
+                      value={totp}
+                      onChange={e => setTotp(e.target.value.replace(/[^0-9]/g, ''))}
+                      autoFocus
+                      required
+                    />
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary w-full" style={{ padding: '12px', justifyContent: 'center' }} disabled={loggingIn || totp.length !== 6}>
+                  <span className="icon icon-sm">{loggingIn ? 'hourglass_empty' : 'verified_user'}</span>{loggingIn ? 'Verifying...' : 'Verify & Sign In'}
+                </button>
+                <button type="button" className="btn btn-ghost w-full" style={{ justifyContent: 'center' }} onClick={() => { setMfaRequired(false); setMfaToken(''); setTotp(''); setError(''); }}>
+                  Back to login
+                </button>
+              </form>
+            </>
+          ) : (
+          <>
           <h2 className={styles.formTitle}>Welcome Back</h2>
           <p className={styles.formDesc}>Enter your credentials to access your dashboard</p>
 
@@ -77,6 +138,8 @@ export default function LoginPage() {
             </button>
           </form>
           <p className={styles.contactText}>New to the school? <a href="#" className={styles.contactLink}>Contact Admission</a></p>
+          </>
+          )}
         </div>
       </div>
     </div>

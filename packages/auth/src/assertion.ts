@@ -66,8 +66,12 @@ export const assertionClaimsSchema = z.object({
   /**
    * Tenant (school) the request operates within — the CONTROL-PLANE tenant id,
    * which is what @school-erp/tenant resolves to a database connection.
+   *
+   * MAY be empty: single-database deployments (local dev, self-hosted starter)
+   * have no control plane and identity-service signs `tenantId: ""`. Services
+   * must treat empty as "no multi-tenant routing" — never as a tenant key.
    */
-  tenantId: z.string().min(1),
+  tenantId: z.string().min(0),
   /**
    * The School row id INSIDE the tenant database (the data-level tenant).
    * Distinct from tenantId: one names the platform registry row, the other

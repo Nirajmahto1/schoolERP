@@ -98,11 +98,14 @@ function getNavItems(role: UserRole): NavItem[] {
 
 const roleLabels: Record<UserRole, string> = {
   SUPER_ADMIN: 'Super Admin',
-  ADMIN: 'Admin',
+  BRANCH_ADMIN: 'Branch Admin',
   PRINCIPAL: 'Principal',
   TEACHER: 'Teacher',
   STUDENT: 'Student',
   PARENT: 'Parent',
+  ACCOUNTANT: 'Accountant',
+  LIBRARIAN: 'Librarian',
+  TRANSPORT_MANAGER: 'Transport Manager',
   FINANCE: 'Finance',
 };
 

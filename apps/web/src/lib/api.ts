@@ -60,10 +60,33 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
 
 // ── Auth API ──
 export const authApi = {
-  login: (email: string, password: string) =>
-    apiRequest<{ accessToken: string; refreshToken: string; user: any }>('/auth/login', {
+  login: (email: string, password: string, totp?: string) => {
+    const body: Record<string, string> = { email, password };
+    if (totp) body.totp = totp;
+    return apiRequest<{
+      accessToken: string;
+      refreshToken: string;
+      user: any;
+      mfaRequired?: boolean;
+      mfaToken?: string;
+    }>('/auth/login', { method: 'POST', body: JSON.stringify(body) });
+  },
+
+  /** Identity + permission resolution (identity-service /auth/me, assertion-gated). */
+  me: () => apiRequest<{
+    id: string;
+    email: string;
+    branchId: string | null;
+    roles: string[];
+    permissions: string[];
+    assertionPermissions: string[];
+    impersonatedBy: string | null;
+  }>('/auth/me'),
+
+  verifyMfa: (mfaToken: string, totp: string) =>
+    apiRequest<{ accessToken: string; refreshToken: string; user: any }>('/auth/mfa/verify', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ mfaToken, totp }),
     }),
 
   // NOTE: /auth/register was removed in Phase 0 — anyone could mint a
@@ -74,6 +97,9 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ refreshToken }),
     }),
+
+  logout: () =>
+    apiRequest<void>('/auth/logout', { method: 'POST' }),
 };
 
 // ── Students API ──
@@ -180,12 +206,19 @@ export const attendanceApi = {
     return apiRequest<{ data: any[]; summary: any }>(`/attendance/daily?${qs}`);
   },
 
-  // Routed to Go Service for high-throughput 8 AM burst handling + parent notifications
-  mark: (data: { date: string; records: { studentId: string; status: string; remarks?: string }[]; markedBy: string }) =>
-    apiRequest<any>('/go/attendance/burst-mark', {
-      method: 'POST',
-      body: JSON.stringify(data)
-    }),
+  // Attendance-service daily marking (session + upsert records + summary rebuild).
+  // The old /go/attendance/burst-mark stub wrote to a legacy table with no
+  // branch scope and is incompatible with the session-based schema.
+  mark: (data: {
+    date: string;
+    classId: string;
+    sectionId: string;
+    records: { studentId: string; status: string; remarks?: string }[];
+    markedBy?: string;
+  }) => apiRequest<{ count: number; sessionId: string; message: string }>('/attendance/mark', {
+    method: 'POST',
+    body: JSON.stringify(data)
+  }),
 
   getStudentHistory: (studentId: string, params?: { startDate?: string; endDate?: string }) => {
     const qs = new URLSearchParams();
@@ -252,10 +285,18 @@ export const feeApi = {
     return apiRequest<{ data: any[]; meta: any }>(`/fees/invoices?${qs}`);
   },
 
-  createInvoice: (data: { studentId: string; items: any[]; dueDate: string }) =>
+  createInvoice: (data: {
+    studentId: string;
+    academicYearId: string;
+    /** One line per fee head: { feeHeadId, amount, discount?, description? } */
+    lines: Array<{ feeHeadId: string; amount: number; discount?: number; description?: string }>;
+    dueDate: string;
+    periodStart?: string;
+    periodEnd?: string;
+  }) =>
     apiRequest<any>('/fees/invoices', { method: 'POST', body: JSON.stringify(data) }),
 
-  recordPayment: (data: { invoiceId: string; amount: number; method: string; transactionId?: string }) =>
+  recordPayment: (data: { studentId: string; academicYearId: string; amount: number; method: string; invoiceIds?: string[]; idempotencyKey?: string }) =>
     apiRequest<any>('/fees/payments', { method: 'POST', body: JSON.stringify(data) }),
 
   getDefaulters: () =>
@@ -263,6 +304,11 @@ export const feeApi = {
 
   getReports: () =>
     apiRequest<any>('/fees/reports'),
+};
+
+// ── Academic Years ──
+export const yearApi = {
+  list: () => apiRequest<{ data: any[] }>('/academics/academic-years'),
 };
 
 // ── Communication API ──

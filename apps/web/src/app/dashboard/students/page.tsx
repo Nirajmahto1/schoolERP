@@ -95,8 +95,11 @@ export default function StudentsPage() {
 
   const filtered = students.filter(s => {
     const name = `${s.firstName} ${s.lastName}`.toLowerCase();
-    const matchSearch = name.includes(search.toLowerCase()) || s.admissionNo.toLowerCase().includes(search.toLowerCase());
-    const matchClass = filterClass === 'All' || s.classId === filterClass;
+    // Phase 2: `s.classId` lives on the current enrollment, not the student row.
+    // The route resolves it, so we read it here for filtering compatibility.
+    const clsId = s.enrollments?.[0]?.classId || s.classId;
+    const matchSearch = name.includes(search.toLowerCase()) || String(s.admissionNo || '').toLowerCase().includes(search.toLowerCase());
+    const matchClass = filterClass === 'All' || clsId === filterClass;
     return matchSearch && matchClass;
   });
 
@@ -139,15 +142,18 @@ export default function StudentsPage() {
       if (newStudent.studentPassword) payload.studentPassword = newStudent.studentPassword;
 
       if (parentMode === 'existing') {
-        payload.parentId = newStudent.parentId;
+        // Existing guardian directory entry (Phase 2.1: Guardian + StudentGuardian).
+        payload.guardianId = newStudent.parentId;
+        payload.guardians = [{ guardianId: newStudent.parentId, relation: 'GUARDIAN', isPrimary: true }];
       } else {
-        payload.parent = {
-          fatherName: newStudent.fatherName,
-          fatherPhone: newStudent.fatherPhone,
+        // New guardian: the route creates the guardian + link in one admission.
+        payload.guardian = {
+          fullName: newStudent.fatherName,
+          phone: newStudent.fatherPhone,
           address: newStudent.address,
         };
-        if (newStudent.parentDob) payload.parent.dateOfBirth = new Date(newStudent.parentDob).toISOString();
-        if (newStudent.parentPassword) payload.parentPassword = newStudent.parentPassword;
+        if (newStudent.parentDob) payload.guardian.dateOfBirth = new Date(newStudent.parentDob).toISOString();
+        if (newStudent.parentPassword) payload.guardianPassword = newStudent.parentPassword;
       }
 
       await studentApi.create(payload);
@@ -277,8 +283,8 @@ export default function StudentsPage() {
                         {parents.length === 0 ? <div className="p-4 text-center text-sm text-gray">No parents found. try searching...</div> : parents.map(p => (
                           <div key={p.id} onClick={() => setNewStudent({...newStudent, parentId: p.id})} style={{ padding: '12px 16px', borderBottom: '1px solid #F3F4F6', cursor: 'pointer', background: newStudent.parentId === p.id ? '#EFF6FF' : 'transparent' }} className="hover:bg-gray-50 flex justify-between items-center">
                             <div>
-                               <div className="font-semibold text-sm">{p.fatherName}</div>
-                               <div className="text-xs text-gray">{p.fatherPhone} • Prev Siblings: {p.students?.length||0}</div>
+                               <div className="font-semibold text-sm">{p.fullName || p.fatherName}</div>
+                               <div className="text-xs text-gray">{p.phone || p.fatherPhone} • Prev Siblings: {(p.students?.length) || 0}</div>
                             </div>
                             {newStudent.parentId === p.id && <span className="icon text-primary icon-sm">check_circle</span>}
                           </div>
@@ -341,15 +347,17 @@ export default function StudentsPage() {
             <div className="table-wrapper"><table className="table"><thead><tr><th>#</th><th>Student Name</th><th>Admission No</th><th>Class</th><th>Gender</th><th>Parent Contact</th><th>Status</th><th>Actions</th></tr></thead><tbody>
               {filtered.map((s, i) => {
                 const name = `${s.firstName} ${s.lastName}`;
-                const cls = s.class ? `${s.class.name.replace('Class ', '')}-${s.section?.name || 'A'}` : 'N/A';
+                const cls = s.enrollments?.[0]?.class ? `${s.enrollments[0].class.name.replace('Class ', '')}${s.enrollments[0].section ? `-${s.enrollments[0].section.name}` : ''}` : (s.class ? `${s.class.name.replace('Class ', '')}-${s.section?.name || 'A'}` : 'N/A');
+                // Phase 2.1: guardian directory is a join (StudentGuardian → Guardian).
+                const primaryGuardian = s.guardians?.[0]?.guardian || s.guardians?.[0];
                 const email = `${s.firstName?.toLowerCase()}.${s.lastName?.toLowerCase()}@student.dps.edu.in`;
                 return (
                   <tr key={s.id}><td>{i + 1}</td>
                     <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{s.firstName?.[0]}{s.lastName?.[0]}</div><div><span className="font-semibold">{name}</span><div className="text-xs text-gray">{email}</div></div></div></td>
                     <td className="text-sm font-semibold text-primary">{s.admissionNo}</td><td><span className="badge badge-primary">{cls}</span></td><td className="text-sm">{s.gender === 'MALE' ? 'Male' : s.gender === 'FEMALE' ? 'Female' : 'Other'}</td>
                     <td>
-                      <div className="text-sm font-medium">{s.parent?.fatherName || '—'}</div>
-                      <div className="text-xs text-gray">{s.parent?.fatherPhone || '—'}</div>
+                      <div className="text-sm font-medium">{primaryGuardian?.fullName || '—'}</div>
+                      <div className="text-xs text-gray">{primaryGuardian?.phone || '—'}</div>
                     </td>
                     <td><button className={`badge ${s.isActive ? 'badge-success' : 'badge-gray'}`} style={{ cursor: 'pointer', border: 'none' }} onClick={() => toggleStatus(s.id)}>{s.isActive ? 'Active' : 'Inactive'}</button></td>
                     <td><div className="flex gap-2">

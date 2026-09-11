@@ -30,7 +30,7 @@ function AdminDashboard() {
   }, []);
 
   if (loading) return <div className="p-12 text-center text-primary animate-pulse">Loading dashboard...</div>;
-  if (error) return <div className="p-12 text-center text-danger">Failed to load dashboard: {error}</div>;
+  if (error || !data) return <div className="p-12 text-center text-danger">Failed to load dashboard: {error || 'No data'}</div>;
 
   return (
     <>
@@ -38,10 +38,10 @@ function AdminDashboard() {
       <div className={styles.content}>
         <div className="grid grid-4 gap-4 animate-fadeIn">
           {[
-            { label: 'Total Students', value: data.totalStudents.toLocaleString(), icon: 'group', color: '#5048E5', bg: '#EEF0FF' },
-            { label: 'Total Staff', value: data.totalStaff.toLocaleString(), icon: 'badge', color: '#10B981', bg: '#D1FAE5' },
-            { label: 'Attendance Rate', value: `${data.attendanceRate}%`, icon: 'event_available', color: '#F59E0B', bg: '#FEF3C7' },
-            { label: 'Fee Collection', value: `₹${(data.feeCollection / 100000).toFixed(1)}L`, icon: 'payments', color: '#EF4444', bg: '#FEE2E2' }
+            { label: 'Total Students', value: String(data.totalStudents ?? 0), icon: 'group', color: '#5048E5', bg: '#EEF0FF' },
+            { label: 'Total Staff', value: String(data.totalStaff ?? 0), icon: 'badge', color: '#10B981', bg: '#D1FAE5' },
+            { label: "Today's Attendance", value: `${data.attendanceRate ?? 0}%`, icon: 'event_available', color: '#F59E0B', bg: '#FEF3C7' },
+            { label: 'Fee Collection (all time)', value: `₹${(Number(data.feeCollection ?? 0) / 100000).toFixed(1)}L`, icon: 'payments', color: '#EF4444', bg: '#FEE2E2' }
           ].map(s => (
             <div key={s.label} className="stat-card" style={{ borderLeftColor: s.color }}>
               <div className="stat-icon" style={{ background: s.bg, color: s.color }}><span className="icon">{s.icon}</span></div>
@@ -470,12 +470,14 @@ function FinanceDashboard() {
 
 /* ─── Main Dashboard Router ─── */
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!user) router.push('/');
-  }, [user, router]);
+    // Wait for the AuthContext's localStorage restore to settle — redirecting
+    // on the first render races hydration and bounces logged-in users to /.
+    if (!loading && !user) router.push('/');
+  }, [loading, user, router]);
 
   if (!user) return null;
 

@@ -17,11 +17,10 @@ export default function FeePaymentsPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await feeApi.getInvoices({ limit: 50, status: 'PENDING' });
-      // Also get PARTIAL and OVERDUE
-      const partial = await feeApi.getInvoices({ limit: 50, status: 'PARTIAL' });
-      const overdue = await feeApi.getInvoices({ limit: 50, status: 'OVERDUE' });
-      setInvoices([...result.data, ...partial.data, ...overdue.data]);
+      // Phase 2.5: InvoiceStatus is DRAFT | ISSUED | PARTIALLY_PAID | PAID.
+      const result = await feeApi.getInvoices({ limit: 50, status: 'ISSUED' });
+      const partial = await feeApi.getInvoices({ limit: 50, status: 'PARTIALLY_PAID' });
+      setInvoices([...result.data, ...partial.data]);
     } catch (err: any) {
       setError(err?.detail || err?.message || 'Failed to load invoices. Please ensure the backend is running.');
       setInvoices([]);
@@ -37,7 +36,15 @@ export default function FeePaymentsPage() {
     setProcessing(true);
     startLoading('Processing payment...');
     try {
-      await feeApi.recordPayment({ invoiceId: inv.id, amount, method: payForm.mode.toUpperCase() });
+      // Phase 2.5 payment contract: studentId + academicYearId + amount + method
+      // (+ invoiceIds for explicit allocation); the route rejects invoiceId alone.
+      await feeApi.recordPayment({
+        studentId: inv.studentId,
+        academicYearId: inv.academicYearId,
+        amount,
+        method: payForm.mode.toUpperCase(),
+        invoiceIds: [inv.id],
+      });
       await fetchInvoices();
     } catch (err: any) { alert(err.detail || 'Payment failed. Please try again.'); }
     setPayingId(null);
@@ -49,7 +56,7 @@ export default function FeePaymentsPage() {
   const totalPending = invoices.reduce((s, i) => s + (Number(i.totalAmount) - Number(i.paidAmount || 0)), 0);
 
   const statusBadge = (status: string) => {
-    const map: Record<string, string> = { PAID: 'badge-success', PENDING: 'badge-warning', OVERDUE: 'badge-danger', PARTIAL: 'badge-primary' };
+    const map: Record<string, string> = { PAID: 'badge-success', ISSUED: 'badge-warning', PARTIALLY_PAID: 'badge-primary', DRAFT: 'badge-gray', OVERDUE: 'badge-danger' };
     return map[status] || 'badge-gray';
   };
 
@@ -60,7 +67,7 @@ export default function FeePaymentsPage() {
         <div className="grid grid-3 gap-4 mb-6">
           {[
             { l: 'Total Pending', v: `₹${totalPending.toLocaleString('en-IN')}`, c: '#F59E0B' },
-            { l: 'Pending Invoices', v: String(invoices.filter(i => i.status === 'PENDING').length), c: '#5048E5' },
+            { l: 'Pending Invoices', v: String(invoices.filter(i => i.status === 'ISSUED').length), c: '#5048E5' },
             { l: 'Overdue', v: String(invoices.filter(i => i.status === 'OVERDUE').length), c: '#EF4444' },
           ].map(s => (
             <div key={s.l} className="stat-card" style={{ borderLeftColor: s.c }}><div className="stat-icon" style={{ background: s.c + '15', color: s.c }}><span className="icon">payments</span></div><div><div className="stat-value">{s.v}</div><div className="stat-label">{s.l}</div></div></div>
@@ -108,7 +115,7 @@ export default function FeePaymentsPage() {
                   <tr key={inv.id}>
                     <td className="text-sm font-semibold text-primary">{inv.invoiceNo}</td>
                     <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{inv.student?.firstName?.[0]}{inv.student?.lastName?.[0]}</div><span className="font-semibold">{inv.student?.firstName} {inv.student?.lastName}</span></div></td>
-                    <td className="text-sm">{inv.items?.[0]?.feeStructure?.name || 'Tuition'}</td>
+                    <td className="text-sm">{inv.lines?.find?.((l: any) => l.feeHeadId)?.feeHead?.name || inv.lines?.[0]?.feeHead?.name || 'Tuition'}</td>
                     <td className="font-semibold">₹{Number(inv.totalAmount).toLocaleString('en-IN')}</td>
                     <td className="text-sm">₹{Number(inv.paidAmount || 0).toLocaleString('en-IN')}</td>
                     <td className="font-semibold" style={{ color: '#EF4444' }}>₹{balance.toLocaleString('en-IN')}</td>
