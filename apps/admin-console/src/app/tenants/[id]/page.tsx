@@ -34,6 +34,7 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
       datastore: true,
       plan: true,
       subscriptions: { orderBy: { periodStart: "desc" }, take: 5 },
+      invoices: { orderBy: { createdAt: "desc" }, take: 10 },
       migrationRuns: { orderBy: { createdAt: "desc" }, take: 20 },
       supportGrants: {
         where: { expiresAt: { gte: new Date() } },
@@ -161,6 +162,75 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
             </p>
           )}
         </div>
+      </section>
+
+      {/* Invoices (Rule 46 tax invoices, printable PDF) */}
+      <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="font-medium">Tax invoices</h2>
+          <span className="text-xs text-slate-500">latest 10 · Rule 46 (CGST Rules) PDF</span>
+        </div>
+        {tenant.invoices.length === 0 ? (
+          <p className="text-sm text-slate-500 mt-3">No invoices yet — issue one on conversion or renewal.</p>
+        ) : (
+          <table className="w-full text-sm mt-3">
+            <thead>
+              <tr className="text-left text-slate-500 border-b border-slate-800">
+                <th className="py-1.5 pr-3">Invoice</th>
+                <th className="py-1.5 pr-3">Issued</th>
+                <th className="py-1.5 pr-3">Period</th>
+                <th className="py-1.5 pr-3 text-right">Amount</th>
+                <th className="py-1.5 pr-3 text-right">GST</th>
+                <th className="py-1.5 pr-3">Status</th>
+                <th className="py-1.5 text-right">PDF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tenant.invoices.map((inv) => (
+                <tr key={inv.id} className="border-b border-slate-800/50">
+                  <td className="py-1.5 pr-3 font-mono text-xs">{inv.invoiceNo ?? "(unnumbered)"}</td>
+                  <td className="py-1.5 pr-3 text-xs text-slate-400">
+                    {inv.issuedAt ? new Date(inv.issuedAt).toLocaleDateString() : "—"}
+                  </td>
+                  <td className="py-1.5 pr-3 text-xs text-slate-400">
+                    {inv.periodStart && inv.periodEnd
+                      ? `${new Date(inv.periodStart).toLocaleDateString()} → ${new Date(inv.periodEnd).toLocaleDateString()}`
+                      : "—"}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right font-mono text-xs">
+                    ₹{inv.amount.toString()}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right font-mono text-xs text-slate-400">
+                    ₹{inv.gstAmount.toString()}
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <span
+                      className={`rounded-md border px-2 py-0.5 text-xs ${
+                        inv.status === "PAID"
+                          ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                          : inv.status === "ISSUED"
+                            ? "bg-sky-950 text-sky-300 border-sky-800"
+                            : ""
+                      }`}
+                    >
+                      {inv.status}
+                    </span>
+                  </td>
+                  <td className="py-1.5 text-right">
+                    <a
+                      href={`/api/tenants/${tenant.id}/invoices/${inv.id}/pdf`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sky-400 hover:text-sky-300 text-xs"
+                    >
+                      Open PDF ↗
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <div className="grid md:grid-cols-2 gap-6">
