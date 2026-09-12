@@ -143,6 +143,12 @@ export async function convertTenantToPaid(controlPlane: ControlPlaneClient, inpu
     : `${now.getFullYear() - 1}-${String(now.getFullYear()).slice(2)}`;
 
   return controlPlane.$transaction(async (tx) => {
+    // Serialize invoice numbering across the fleet: concurrent conversions
+    // counting the same FY would mint duplicate invoiceNo values (the unique
+    // index turns that into a failed sale). A transaction-level advisory lock
+    // makes count+mint atomic against every other issuer.
+    await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('saas_invoice_numbering'))");
+
     const subscription = await tx.subscription.create({
       data: {
         tenantId: tenant.id,
@@ -156,6 +162,7 @@ export async function convertTenantToPaid(controlPlane: ControlPlaneClient, inpu
     });
 
     // Fiscal-year invoice counter: count invoices from this FY and increment.
+    // (Safe now — the advisory lock above holds until this tx commits.)
     const fyCount = await tx.saasInvoice.count({
       where: { invoiceNo: { startsWith: `SI-${fiscalYear}-` } },
     });

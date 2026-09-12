@@ -304,9 +304,20 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'invoice-pdf': {
+      // Render (or re-serve the cached) Rule 46 tax invoice as a PDF.
+      const { renderSaasInvoicePdf } = await import('./invoice-pdf');
+      const invoiceId = requireArg(args, 'invoice-id');
+      const { pdf, cached } = await renderSaasInvoicePdf(cp, invoiceId, { regenerate: args['regenerate'] === true });
+      const out = typeof args['out'] === 'string' ? args['out'] : `${(invoiceId as string).slice(0, 12)}.pdf`;
+      await import('node:fs').then((fs) => fs.promises.writeFile(out, pdf));
+      console.log(`${cached ? 'served cached PDF' : 'rendered fresh PDF'} (${pdf.length} bytes) → ${out}`);
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command ?? '(none)'}`);
-      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, dunning, usage, billing-recon');
+      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, invoice-pdf, dunning, usage, billing-recon');
       process.exitCode = 1;
   }
 

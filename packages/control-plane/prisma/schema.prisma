@@ -166,6 +166,9 @@ model SaasInvoice {
   status          InvoiceStatus @default(DRAFT)
   razorpayOrderId String?
   paidAt          DateTime?
+  // Cached base64 PDF bytes — re-downloads don't re-render; regenerate on correction.
+  // String (like Payment.receiptPdf in the tenant DB), not Bytes.
+  invoicePdf      String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
