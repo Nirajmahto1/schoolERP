@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { currentAdmin, controlPlane } from "@/lib/auth";
 import { latestSchemaVersionClient } from "@/lib/fleet";
 import TenantActions from "./tenant-actions";
+import BillingActions from "./billing-actions";
+import InvoicePaidButton from "./invoice-paid-button";
 import GrantForm from "./grant-form";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +57,9 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
         : "behind"
     : "no-datastore";
   const subscription = tenant.subscriptions[0];
+  const activeSubscription =
+    tenant.subscriptions.find((s) => s.status === "ACTIVE") ?? subscription;
+  const measuredSeats = activeSubscription?.seats ?? null;
 
   return (
     <main className="mx-auto max-w-7xl p-6 space-y-6">
@@ -161,6 +166,13 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
               No active subscription.
             </p>
           )}
+
+          <BillingActions
+            tenantId={tenant.id}
+            status={tenant.status}
+            currentPlanCode={tenant.plan?.code ?? null}
+            suggestedSeats={measuredSeats}
+          />
         </div>
       </section>
 
@@ -182,6 +194,7 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
                 <th className="py-1.5 pr-3 text-right">Amount</th>
                 <th className="py-1.5 pr-3 text-right">GST</th>
                 <th className="py-1.5 pr-3">Status</th>
+                <th className="py-1.5 pr-3 text-right">Actions</th>
                 <th className="py-1.5 text-right">PDF</th>
               </tr>
             </thead>
@@ -215,6 +228,11 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
                     >
                       {inv.status}
                     </span>
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {inv.status === "ISSUED" && (
+                      <InvoicePaidButton tenantId={tenant.id} invoiceId={inv.id} invoiceNo={inv.invoiceNo ?? inv.id} />
+                    )}
                   </td>
                   <td className="py-1.5 text-right">
                     <a

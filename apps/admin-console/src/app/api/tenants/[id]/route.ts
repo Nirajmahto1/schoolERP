@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const { id } = await context.params;
   const body = (await request.json().catch(() => null)) as
-    | { action?: string; reason?: string; retentionDays?: number }
+    | { action?: string; reason?: string; retentionDays?: number; planCode?: string; seats?: number; invoiceId?: string }
     | null;
   const action = body?.action;
 
@@ -55,6 +55,53 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       case "recount-seats": {
         const seats = await lifecycle.recountSeats(cp, id, actor);
         return NextResponse.json({ ok: true, seats });
+      }
+      case "convert-paid": {
+        // Trial → paid (BUILD_PLAN 4.2.2): issues the Rule 46 tax invoice in
+        // the same transaction. Supplier identity comes from env, exactly
+        // like the CLI convert command.
+        const planCode = body?.planCode?.trim().toUpperCase();
+        const seats = Math.floor(Number(body?.seats));
+        if (!planCode) throw new Error("planCode is required.");
+        if (!Number.isFinite(seats) || seats <= 0) throw new Error("seats must be a positive number.");
+        const { convertTenantToPaid } = await import("@school-erp/provisioning-service/dist/billing.js");
+        const { loadProvisioningEnv } = await import("@school-erp/provisioning-service/dist/config.js");
+        const env = loadProvisioningEnv();
+        const result = await convertTenantToPaid(cp, {
+          tenantId: id,
+          planCode,
+          seats,
+          supplierGstin: env.supplierGstin,
+          supplierName: env.supplierName,
+          supplierAddress: env.supplierAddress,
+          actor,
+        });
+        return NextResponse.json({ ok: true, invoiceId: result.invoiceId, invoiceNo: result.invoiceNo, total: result.total, amountInWords: result.amountInWords });
+      }
+      case "renew": {
+        // Renewal (4.2.2): rolls the period forward one year and issues the
+        // next sequentially numbered invoice on the tenant's current plan.
+        const seats = Math.floor(Number(body?.seats));
+        if (!Number.isFinite(seats) || seats <= 0) throw new Error("seats must be a positive number.");
+        const { issueRenewalInvoice } = await import("@school-erp/provisioning-service/dist/billing.js");
+        const { loadProvisioningEnv } = await import("@school-erp/provisioning-service/dist/config.js");
+        const env = loadProvisioningEnv();
+        const result = await issueRenewalInvoice(cp, {
+          tenantId: id,
+          seats,
+          supplierGstin: env.supplierGstin,
+          supplierName: env.supplierName,
+          supplierAddress: env.supplierAddress,
+          actor,
+        });
+        return NextResponse.json({ ok: true, invoiceId: result.invoiceId, invoiceNo: result.invoiceNo, total: result.total, amountInWords: result.amountInWords });
+      }
+      case "invoice-paid": {
+        const invoiceId = body?.invoiceId?.trim();
+        if (!invoiceId) throw new Error("invoiceId is required.");
+        const { markSaasInvoicePaid } = await import("@school-erp/provisioning-service/dist/billing.js");
+        const invoice = await markSaasInvoicePaid(cp, invoiceId, actor);
+        return NextResponse.json({ ok: true, invoiceNo: invoice.invoiceNo, status: invoice.status });
       }
       default:
         return NextResponse.json(
