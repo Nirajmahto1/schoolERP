@@ -12,13 +12,32 @@ import { loadServiceEnv } from '@school-erp/config';
 import { postDemand, postPayment, ledgerBalance } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
+import {
+  createGatewayRoutes,
+  createWebhookRoute,
+  createReconcileRoute,
+  createGatewayRefundRoute,
+  createSettlementsRoute,
+} from './gateway.routes';
+import { RazorpayClient } from './razorpay';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'fee-service';
 
 export interface FeeAppOptions {
-  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
+  env: {
+    INTERNAL_ASSERTION_PUBLIC_KEY: string;
+    /** Razorpay (BUILD_PLAN 4.1) — optional; checkout answers 503 without. */
+    RAZORPAY_KEY_ID?: string;
+    RAZORPAY_KEY_SECRET?: string;
+    RAZORPAY_WEBHOOK_SECRET?: string;
+  };
   prisma: PrismaClient;
+  /**
+   * Injectable transport for the Razorpay REST client — tests stub the
+   * gateway without a network. Production leaves it undefined (real fetch).
+   */
+  razorpayFetch?: (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 }
 
 /**
@@ -27,11 +46,14 @@ export interface FeeAppOptions {
  */
 export function createFeeApp(options: FeeAppOptions) {
   const { prisma } = options;
-  const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+  const env = { ...options.env };
 
-  const { app, mount, finalize } = createServiceApp({
+  const { app, mount, mountPublicWebhook, finalize } = createServiceApp({
     serviceName: SERVICE_NAME,
     assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+    // The Razorpay webhook verifies an HMAC over the exact bytes the provider
+    // sent; `rawBodyPaths` captures them while still parsing JSON.
+    rawBodyPaths: ['/webhooks'],
     readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
   });
 
@@ -523,7 +545,35 @@ r.post('/write-offs', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+  // ── Razorpay collection (BUILD_PLAN 4.1) ──
+  const razorpay =
+    env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET
+      ? new RazorpayClient(
+          { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+          options.razorpayFetch,
+        )
+      : undefined;
+  const gatewayOptions = {
+    prisma,
+    razorpay,
+    keyId: env.RAZORPAY_KEY_ID,
+    keySecret: env.RAZORPAY_KEY_SECRET,
+    webhookSecret: env.RAZORPAY_WEBHOOK_SECRET,
+  };
+  // Public: provider → service, authenticated by HMAC. Mounted BEFORE the
+  // gated catch-all below — Express matches in order, and `mount('/')`
+  // registers assertion middleware for every path, webhook included.
+  mountPublicWebhook('/webhooks', createWebhookRoute(gatewayOptions));
+
   mount('/', r);
+
+  // Gated: admin/parent checkout and the accountant tooling. Routers use
+  // sub-paths, so each mounts at its own prefix.
+  mount('/checkout', createGatewayRoutes(gatewayOptions));
+  mount('/reconcile', createReconcileRoute(gatewayOptions));
+  mount('/refunds', createGatewayRefundRoute(gatewayOptions));
+  mount('/settlements', createSettlementsRoute(gatewayOptions));
+
   finalize();
 
   return app;

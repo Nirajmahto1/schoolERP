@@ -8,5 +8,6 @@ export * from './sequences';
 export * from './enrollments';
 export * from './promotion';
 export * from './fees';
+export * from './gateway-payments';
 export * from './attendance';
 export { seedDemoTenant, type DemoSeedOptions, type DemoSeedResult } from './demo-seed';

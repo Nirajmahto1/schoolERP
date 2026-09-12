@@ -380,6 +380,25 @@ export const feeApi = {
 
   getReports: () =>
     apiRequest<any>('/fees/reports'),
+
+  // ── Razorpay checkout (BUILD_PLAN 4.1) ──
+  createCheckoutOrder: (data: { studentId: string; academicYearId: string; invoiceIds?: string[] }) =>
+    apiRequest<{ paymentId: string; orderId: string; amount: number; currency: string; keyId: string | null; invoices: Array<{ id: string; invoiceNo: string; dueDate: string; outstanding: number }> }>(
+      '/fees/checkout/orders',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
+
+  verifyCheckout: (data: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) =>
+    apiRequest<{ captured: boolean; reason?: string; payment?: { id: string; receiptNo: string | null } }>(
+      '/fees/checkout/verify',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
+
+  runReconcile: () =>
+    apiRequest<{ checked: number; captured: Array<{ paymentId: string; gatewayPaymentId: string }>; mismatches: unknown[] }>(
+      '/fees/reconcile/run',
+      { method: 'POST' },
+    ),
 };
 
 // ── Academic Years ──

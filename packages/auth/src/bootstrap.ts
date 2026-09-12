@@ -7,8 +7,18 @@
 // one of them ends up missing a step.
 // ──────────────────────────────────────────────
 
-import express, { type Express, type RequestHandler } from 'express';
+import express, { type Express, type RequestHandler, type Request } from 'express';
 import { requireAssertion, stripSpoofableHeaders } from './middleware';
+
+/**
+ * Requests whose raw body was captured onto `req.rawBody`. Payment-webhook
+ * HMACs are computed over the exact bytes the sender produced —
+ * re-serializing the parsed JSON would produce a different byte string and
+ * every signature check would fail.
+ */
+export interface RawBodyRequest extends Request {
+  rawBody?: Buffer;
+}
 
 export interface ServiceAppOptions {
   /** MUST match the `service` value in the gateway route table (the audience). */
@@ -16,6 +26,13 @@ export interface ServiceAppOptions {
   assertionPublicKey: string;
   /** Anything reachable without an assertion. `/health` and `/ready` are automatic. */
   publicPaths?: string[];
+  /**
+   * Path prefixes whose bodies must ALSO be captured raw (signature
+   * verification). A scoped JSON parser with a `verify` hook is mounted for
+   * each before the global one — body-parser sets `req._body`, so the global
+   * parser then skips them instead of double-reading the stream.
+   */
+  rawBodyPaths?: string[];
   jsonLimit?: string;
   onLog?: (message: string) => void;
   /** Readiness probe — typically a `SELECT 1`. */
@@ -26,6 +43,11 @@ export interface ServiceApp {
   app: Express;
   /** Mount protected routers with this: `mount('/staff', staffRoutes)`. */
   mount: (path: string, ...handlers: RequestHandler[]) => void;
+  /**
+   * Mount provider webhooks (public, raw body). Signature verification is the
+   * handler's job — the bootstrap only guarantees it has the exact bytes.
+   */
+  mountPublicWebhook: (path: string, ...handlers: RequestHandler[]) => void;
   /** Call after all routes are mounted. */
   finalize: () => void;
 }
@@ -50,9 +72,22 @@ export function createServiceApp(options: ServiceAppOptions): ServiceApp {
   // First, always: a client must never be able to assert its own identity.
   app.use(stripSpoofableHeaders);
 
-  // Deliberately no CORS: internal services are reachable only via the gateway,
-  // which owns the browser-facing policy. Permissive CORS on an internal
-  // service invites direct browser calls that skip the gateway entirely.
+  // Raw-body paths get a scoped parser whose verify hook stashes the exact
+  // bytes for HMAC verification. Mounted BEFORE the global parser: body-parser
+  // marks `req._body` once parsed, so the global parser below skips these and
+  // the stream is never read twice.
+  for (const prefix of options.rawBodyPaths ?? []) {
+    app.use(
+      prefix,
+      express.json({
+        limit: jsonLimit,
+        verify: (req, _res, buf) => {
+          (req as RawBodyRequest).rawBody = buf;
+        },
+      }),
+    );
+  }
+
   app.use(express.json({ limit: jsonLimit }));
 
   if (onLog) {
@@ -85,6 +120,16 @@ export function createServiceApp(options: ServiceAppOptions): ServiceApp {
 
   const mount = (path: string, ...handlers: RequestHandler[]): void => {
     app.use(path, assertion, ...handlers);
+  };
+
+  /**
+   * Public mount for provider webhooks: no gateway assertion (the caller is
+   * Razorpay's infrastructure, not a logged-in user), raw body available as
+   * `req.rawBody`. Authenticity comes from the provider's HMAC signature,
+   * verified inside the handler — never from headers.
+   */
+  const mountPublicWebhook = (path: string, ...handlers: RequestHandler[]): void => {
+    app.use(path, ...handlers);
   };
 
   const finalize = (): void => {
@@ -124,7 +169,7 @@ export function createServiceApp(options: ServiceAppOptions): ServiceApp {
     );
   };
 
-  return { app, mount, finalize };
+  return { app, mount, mountPublicWebhook, finalize };
 }
 
 /**

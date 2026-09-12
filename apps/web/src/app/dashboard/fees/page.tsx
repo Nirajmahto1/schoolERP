@@ -62,6 +62,60 @@ export default function FeesPage() {
     stopLoading();
   };
 
+  // ── Razorpay checkout (BUILD_PLAN 4.1) ──
+  // order → open Razorpay's modal → the browser hands back the signature →
+  // /checkout/verify captures server-side. The webhook may also arrive first;
+  // capture is idempotent, so both paths credit exactly once.
+  const payOnline = async (inv: any) => {
+    setProcessing(true);
+    startLoading('Opening Razorpay checkout...');
+    try {
+      const order = await feeApi.createCheckoutOrder({
+        studentId: inv.studentId,
+        academicYearId: inv.academicYearId,
+        invoiceIds: [inv.id],
+      });
+      stopLoading();
+      const w = window as unknown as { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } };
+      if (!w.Razorpay) {
+        alert('Razorpay checkout is not loaded. Add the checkout script to app/layout.tsx and set NEXT_PUBLIC_RAZORPAY_KEY_ID.');
+        setProcessing(false);
+        return;
+      }
+      const rzp = new w.Razorpay({
+        key: order.keyId ?? process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        amount: order.amount * 100,
+        currency: order.currency,
+        name: 'School Fees',
+        description: `Invoice ${inv.invoiceNo}`,
+        order_id: order.orderId,
+        prefill: { name: `${inv.student?.firstName ?? ''} ${inv.student?.lastName ?? ''}`.trim() },
+        theme: { color: '#5048E5' },
+        handler: async (response: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
+          startLoading('Verifying payment...');
+          try {
+            const result = await feeApi.verifyCheckout(response);
+            if (result.captured) {
+              alert(`Payment captured — receipt ${result.payment?.receiptNo ?? ''}`);
+              await fetchInvoices();
+            } else {
+              alert(result.reason === 'ALREADY_CAPTURED' ? 'This payment was already recorded.' : `Verification failed: ${result.reason ?? 'unknown'}`);
+            }
+          } catch (err: any) {
+            alert(err?.detail || 'Payment verification failed. The reconciliation job will pick it up if money was captured.');
+          }
+          stopLoading();
+        },
+        modal: { ondismiss: () => setProcessing(false) },
+      });
+      rzp.open();
+    } catch (err: any) {
+      alert(err?.detail || 'Could not start the online payment. Razorpay may not be configured on this deployment.');
+      setProcessing(false);
+    }
+    stopLoading();
+  };
+
   const collected = invoices.reduce((s, i) => s + Number(i.paidAmount || 0), 0);
   // Phase 2.5 statuses: DRAFT | ISSUED | PARTIALLY_PAID | PAID.
   const pending = invoices.filter(i => ['ISSUED', 'PARTIALLY_PAID'].includes(i.status)).reduce((s, i) => s + Number(i.totalAmount) - Number(i.paidAmount || 0), 0);
@@ -105,6 +159,9 @@ export default function FeesPage() {
             <div className="flex gap-3 mt-4">
               <button className="btn btn-success" onClick={() => recordPayment(invoices.find(i => i.id === payingId))} disabled={processing}>
                 <span className="icon icon-sm">{processing ? 'hourglass_empty' : 'check_circle'}</span>{processing ? 'Processing...' : 'Confirm Payment'}
+              </button>
+              <button className="btn btn-primary" onClick={() => payOnline(invoices.find(i => i.id === payingId))} disabled={processing}>
+                <span className="icon icon-sm">account_balance_wallet</span>Pay Online (Razorpay)
               </button>
               <button className="btn btn-secondary" onClick={() => setPayingId(null)}>Cancel</button>
             </div>

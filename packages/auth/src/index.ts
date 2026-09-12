@@ -49,7 +49,7 @@ export type {
 export { MemoryTokenStore } from './memory-store';
 
 export { createServiceApp, listenWithGracefulShutdown } from './bootstrap';
-export type { ServiceApp, ServiceAppOptions } from './bootstrap';
+export type { ServiceApp, ServiceAppOptions, RawBodyRequest } from './bootstrap';
 
 export { RedisTokenStore } from './redis-store';
 

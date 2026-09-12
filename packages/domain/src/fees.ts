@@ -111,6 +111,13 @@ export interface PostPaymentInput {
   receiptNo?: string;
   paidAt?: Date;
   createdBy?: string | null;
+  /**
+   * UPDATE this pre-created intent row (gateway checkout) to SUCCESS instead
+   * of creating a second Payment row — one row per gateway payment, so
+   * webhook / verify / reconcile all agree on identity and nothing
+   * double-counts in reports.
+   */
+  existingPaymentId?: string;
 }
 
 export interface PostPaymentResult {
@@ -199,25 +206,40 @@ export async function postPayment(prisma: PrismaClient, input: PostPaymentInput)
       input.receiptNo ??
       (await nextSequenceValueIn(tx as unknown as TxClient, { branchId: input.branchId, code: 'RECEIPT' }));
 
-    const payment = await tx.payment.create({
-      data: {
-        studentId: input.studentId,
-        branchId: input.branchId,
-        academicYearId: input.academicYearId,
-        invoiceId: allocations[0]?.invoice.id ?? null,
-        amount: input.amount,
-        method: input.method,
-        status: 'SUCCESS',
-        idempotencyKey: input.idempotencyKey ?? null,
-        gatewayOrderId: input.gatewayOrderId ?? null,
-        gatewayPaymentId: input.gatewayPaymentId ?? null,
-        gatewayProvider: input.gatewayProvider ?? null,
-        rawWebhook: input.rawWebhook ? (input.rawWebhook as object) : undefined,
-        allocationMode: input.allocationMode ?? 'OLDEST_DUES_FIRST',
-        receiptNo,
-        paidAt: input.paidAt ?? new Date(),
-      },
-    });
+    const payment = input.existingPaymentId
+      ? await tx.payment.update({
+          where: { id: input.existingPaymentId },
+          data: {
+            status: 'SUCCESS',
+            method: input.method,
+            idempotencyKey: input.idempotencyKey ?? null,
+            gatewayOrderId: input.gatewayOrderId ?? null,
+            gatewayPaymentId: input.gatewayPaymentId ?? null,
+            gatewayProvider: input.gatewayProvider ?? null,
+            rawWebhook: input.rawWebhook ? (input.rawWebhook as object) : undefined,
+            receiptNo,
+            paidAt: input.paidAt ?? new Date(),
+          },
+        })
+      : await tx.payment.create({
+          data: {
+            studentId: input.studentId,
+            branchId: input.branchId,
+            academicYearId: input.academicYearId,
+            invoiceId: allocations[0]?.invoice.id ?? null,
+            amount: input.amount,
+            method: input.method,
+            status: 'SUCCESS',
+            idempotencyKey: input.idempotencyKey ?? null,
+            gatewayOrderId: input.gatewayOrderId ?? null,
+            gatewayPaymentId: input.gatewayPaymentId ?? null,
+            gatewayProvider: input.gatewayProvider ?? null,
+            rawWebhook: input.rawWebhook ? (input.rawWebhook as object) : undefined,
+            allocationMode: input.allocationMode ?? 'OLDEST_DUES_FIRST',
+            receiptNo,
+            paidAt: input.paidAt ?? new Date(),
+          },
+        });
 
     for (const alloc of allocations) {
       await tx.paymentAllocation.create({

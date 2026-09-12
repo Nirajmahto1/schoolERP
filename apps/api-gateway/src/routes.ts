@@ -104,6 +104,18 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       port: env.PORT_ACADEMIC_SERVICE,
       rewriteTo: '/library',
     },
+    // ── Razorpay webhook (BUILD_PLAN 4.1): the provider's servers cannot
+    // carry a Bearer token, so this prefix is public. Authenticity is the
+    // webhook-secret HMAC, verified at fee-service over the raw body — the
+    // proxy must not parse or buffer the request.
+    {
+      path: '/api/v1/fees/webhooks',
+      service: 'fee-service',
+      host,
+      port: env.PORT_FEE_SERVICE,
+      rewriteTo: '/webhooks',
+      public: true,
+    },
     {
       path: '/api/v1/fees',
       service: 'fee-service',

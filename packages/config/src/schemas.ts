@@ -64,6 +64,19 @@ const assertionVerifierSchema = z.object({
   INTERNAL_ASSERTION_PUBLIC_KEY: secretString(64),
 });
 
+// ── Razorpay fee collection (BUILD_PLAN 4.1) ──
+// Optional: a service boots without keys (checkout endpoints answer 503
+// 'not configured'), because CI and local dev have no Razorpay account. The
+// webhook secret alone is enough to run reconciliation against a store that
+// already has gateway rows.
+const razorpaySchema = z.object({
+  // An empty value in .env (e.g. `RAZORPAY_KEY_ID=`) means "not configured",
+  // not "invalid" — trimmed empties normalize to undefined.
+  RAZORPAY_KEY_ID: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  RAZORPAY_KEY_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  RAZORPAY_WEBHOOK_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+});
+
 // ── Gateway ──
 
 export const gatewayEnvSchema = baseSchema
@@ -153,6 +166,7 @@ export const serviceEnvSchema = baseSchema
   .merge(databaseSchema)
   .merge(assertionVerifierSchema)
   .merge(controlPlaneSchema)
+  .merge(razorpaySchema)
   .extend({
     PORT: port(4000),
   });
