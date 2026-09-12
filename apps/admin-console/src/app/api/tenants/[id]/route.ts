@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const { id } = await context.params;
   const body = (await request.json().catch(() => null)) as
-    | { action?: string; reason?: string; retentionDays?: number; planCode?: string; seats?: number; invoiceId?: string }
+    | { action?: string; reason?: string; retentionDays?: number; planCode?: string; seats?: number; invoiceId?: string; metric?: string; value?: number; limit?: number }
     | null;
   const action = body?.action;
 
@@ -102,6 +102,39 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         const { markSaasInvoicePaid } = await import("@school-erp/provisioning-service/dist/billing.js");
         const invoice = await markSaasInvoicePaid(cp, invoiceId, actor);
         return NextResponse.json({ ok: true, invoiceNo: invoice.invoiceNo, status: invoice.status });
+      }
+      case "record-usage": {
+        // Point-in-time sample (BUILD_PLAN 4.2.4) — normally pushed by the
+        // platform's nightly metering job; this is the manual/ops path.
+        const billing = await import("@school-erp/provisioning-service/dist/billing.js");
+        const metric = body?.metric as string | undefined;
+        const value = Math.round(Number(body?.value));
+        if (!metric || !["students", "staff", "storage_bytes", "messaging_credits"].includes(metric)) {
+          throw new Error("metric must be students | staff | storage_bytes | messaging_credits.");
+        }
+        if (!Number.isFinite(value) || value < 0) throw new Error("value must be a non-negative number.");
+        await billing.recordUsage(cp, id, metric as "students" | "staff" | "storage_bytes" | "messaging_credits", value);
+        return NextResponse.json({ ok: true, metric, value });
+      }
+      case "usage-recon": {
+        // Seats vs measured students — overage is flagged, never silently billed.
+        const { reconcileMeteredBilling } = await import("@school-erp/provisioning-service/dist/billing.js");
+        const recon = await reconcileMeteredBilling(cp, id);
+        return NextResponse.json({ ok: true, ...recon });
+      }
+      case "usage-history": {
+        // Recent samples per metric for the console's usage sparkline table.
+        const limit = Math.min(500, Math.max(1, Math.floor(Number(body?.limit) || 200)));
+        const rows = await cp.usageRecord.findMany({
+          where: { tenantId: id },
+          orderBy: { capturedAt: "desc" },
+          take: limit,
+          select: { metric: true, value: true, capturedAt: true },
+        });
+        return NextResponse.json({
+          ok: true,
+          rows: rows.map((r) => ({ metric: r.metric, value: Number(r.value), capturedAt: r.capturedAt.toISOString() })),
+        });
       }
       default:
         return NextResponse.json(

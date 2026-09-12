@@ -5,6 +5,7 @@ import { latestSchemaVersionClient } from "@/lib/fleet";
 import TenantActions from "./tenant-actions";
 import BillingActions from "./billing-actions";
 import InvoicePaidButton from "./invoice-paid-button";
+import UsageCard from "./usage-card";
 import GrantForm from "./grant-form";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,19 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
     },
   });
   if (!tenant) notFound();
+
+  // Metering samples (BUILD_PLAN 4.2.4): recent history for the usage card.
+  // Latest-per-metric is computed client-side from the same rows.
+  const usageHistory = await cp.usageRecord.findMany({
+    where: { tenantId: id },
+    orderBy: { capturedAt: "desc" },
+    take: 200,
+    select: { metric: true, value: true, capturedAt: true },
+  });
+  const latestUsage: Record<string, number> = {};
+  for (const r of usageHistory) {
+    if (!(r.metric in latestUsage)) latestUsage[r.metric] = Number(r.value);
+  }
 
   const targetVersion = latestSchemaVersionClient();
   const drift = tenant.datastore
@@ -175,6 +189,18 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
           />
         </div>
       </section>
+
+      {/* Usage & metering (4.2.4) */}
+      <UsageCard
+        tenantId={tenant.id}
+        latest={latestUsage}
+        history={usageHistory.map((r) => ({
+          metric: r.metric,
+          value: Number(r.value),
+          capturedAt: r.capturedAt.toISOString(),
+        }))}
+        caps={{ students: tenant.plan?.maxStudents ?? null }}
+      />
 
       {/* Invoices (Rule 46 tax invoices, printable PDF) */}
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
