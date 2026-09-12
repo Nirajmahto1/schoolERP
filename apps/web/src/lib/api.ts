@@ -399,6 +399,19 @@ export const feeApi = {
       '/fees/reconcile/run',
       { method: 'POST' },
     ),
+
+  // ── Receipts (BUILD_PLAN 4.1.4) ──
+  /** Latest receipt for an invoice (payments are linked by allocations). */
+  getInvoiceReceipt: (invoiceId: string) =>
+    apiRequest<{ data: Array<{ id: string; receiptNo: string | null; paidAt: string | null; status: string }>; }>(
+      `/fees/payments?invoiceId=${invoiceId}&status=SUCCESS&limit=1`,
+    ),
+
+  sendReceipt: (paymentId: string, channels?: string[]) =>
+    apiRequest<{ queued: number; channels: string[]; guardians: number }>(
+      `/fees/payments/${paymentId}/receipt/send`,
+      { method: 'POST', body: JSON.stringify(channels ? { channels } : {}) },
+    ),
 };
 
 // ── Academic Years ──

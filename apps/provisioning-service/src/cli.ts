@@ -29,6 +29,18 @@ import {
 } from './lifecycle';
 import { migrateAll, tenantFleetStatus } from './migrate';
 import { backupTenant, rehearseRestore } from './backup';
+import {
+  convertTenantToPaid,
+  issueRenewalInvoice,
+  latestUsage,
+  markSaasInvoicePaid,
+  overrideDunning,
+  reconcileMeteredBilling,
+  recordUsage,
+  runDunningPass,
+  seedDefaultPlans,
+  type UsageMetric,
+} from './billing';
 
 type Args = Record<string, string | boolean>;
 
@@ -215,9 +227,78 @@ async function main(): Promise<void> {
       break;
     }
 
+    // ── 4.2 SaaS billing ──
+
+    case 'plans-seed': {
+      const plans = await seedDefaultPlans(cp, 'cli:plans-seed');
+      console.table(plans.map((p) => ({ code: p.code, price: Number(p.pricePerStudentYear), maxBranches: p.maxBranches, maxStudents: p.maxStudents })));
+      break;
+    }
+
+    case 'convert': {
+      // Trial → paid: issues the GST tax invoice in the same transaction.
+      const result = await convertTenantToPaid(cp, {
+        tenantId: requireArg(args, 'tenant-id'),
+        planCode: requireArg(args, 'plan-code'),
+        seats: typeof args['seats'] === 'string' ? Number(args['seats']) : requireArg(args, 'seats') as unknown as number,
+        supplierGstin: typeof args['supplier-gstin'] === 'string' ? args['supplier-gstin'] : undefined,
+        actor: 'cli:convert',
+      });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case 'renew': {
+      const result = await issueRenewalInvoice(cp, {
+        tenantId: requireArg(args, 'tenant-id'),
+        seats: Number(requireArg(args, 'seats')),
+        actor: 'cli:renew',
+      });
+      console.log(JSON.stringify(result, null, 2));
+      break;
+    }
+
+    case 'invoice-paid': {
+      const invoice = await markSaasInvoicePaid(cp, requireArg(args, 'invoice-id'), 'cli:invoice-paid');
+      console.log(`invoice ${invoice.invoiceNo} marked PAID`);
+      break;
+    }
+
+    case 'dunning': {
+      if (args['override'] === true) {
+        await overrideDunning(cp, requireArg(args, 'tenant-id'), {
+          message: requireArg(args, 'message'),
+          actor: 'cli:dunning',
+          reactivate: args['reactivate'] === true,
+        });
+        console.log('dunning override recorded');
+      } else {
+        const outcomes = await runDunningPass(cp);
+        console.table(outcomes);
+        if (outcomes.length === 0) console.log('(no tenants advanced the dunning ladder)');
+      }
+      break;
+    }
+
+    case 'usage': {
+      const tenantId = requireArg(args, 'tenant-id');
+      if (typeof args['metric'] === 'string') {
+        await recordUsage(cp, tenantId, args['metric'] as UsageMetric, Number(requireArg(args, 'value')));
+        console.log('usage recorded');
+      }
+      console.log(JSON.stringify(await latestUsage(cp, tenantId), null, 2));
+      break;
+    }
+
+    case 'billing-recon': {
+      const recon = await reconcileMeteredBilling(cp, requireArg(args, 'tenant-id'));
+      console.log(JSON.stringify(recon, null, 2));
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command ?? '(none)'}`);
-      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill');
+      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, dunning, usage, billing-recon');
       process.exitCode = 1;
   }
 

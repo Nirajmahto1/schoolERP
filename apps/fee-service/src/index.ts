@@ -19,6 +19,7 @@ import {
   createGatewayRefundRoute,
   createSettlementsRoute,
 } from './gateway.routes';
+import { createMethodsRoutes } from './methods.routes';
 import { RazorpayClient } from './razorpay';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -206,6 +207,29 @@ r.post('/invoices', async (req, res) => {
 // ── Payments ──
 // Allocates oldest-due-first, updates invoice totals, posts the PAYMENT ledger
 // entry and honours the idempotency key (duplicate webhooks never double-credit).
+// List payments — filtered for receipt lookup (4.1.4) and payment history.
+r.get('/payments', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { studentId, invoiceId, status, limit } = req.query;
+    const where: Record<string, unknown> = { branchId };
+    if (studentId) where.studentId = studentId;
+    if (status) where.status = status;
+    if (invoiceId) where.allocations = { some: { invoiceId: invoiceId as string } };
+    const rows = await prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Number(limit) || 50, 200),
+      select: {
+        id: true, receiptNo: true, amount: true, method: true, status: true,
+        paidAt: true, createdAt: true, studentId: true,
+      },
+    });
+    res.json({ data: rows });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.post('/payments', async (req, res) => {
   try {
     const { branchId } = ctx(req);
@@ -573,6 +597,8 @@ r.post('/write-offs', async (req, res) => {
   mount('/reconcile', createReconcileRoute(gatewayOptions));
   mount('/refunds', createGatewayRefundRoute(gatewayOptions));
   mount('/settlements', createSettlementsRoute(gatewayOptions));
+  // Payment methods: cheques + deposits + virtual accounts + carry-forward + receipts.
+  mount('/', createMethodsRoutes(prisma));
 
   finalize();
 

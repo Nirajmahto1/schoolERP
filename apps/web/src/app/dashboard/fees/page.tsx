@@ -4,6 +4,16 @@ import { useState, useEffect, useCallback } from 'react';
 import { feeApi } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
 
+// Gateway base for direct file downloads (the receipt PDF is binary, so it
+// bypasses the JSON apiRequest helper and streams via fetch + blob).
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+
+function authHeaders(): HeadersInit {
+  if (typeof window === 'undefined') return {};
+  const token = window.localStorage.getItem('erp_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function FeesPage() {
   const { startLoading, stopLoading } = useLoading();
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -31,6 +41,35 @@ export default function FeesPage() {
   }, [statusFilter]);
 
   useEffect(() => { fetchInvoices(); }, [fetchInvoices]);
+
+  // 4.1.4: find the most recent SUCCESS payment on this invoice, then open
+  // its rendered PDF. The PDF renders (and caches) on first fetch.
+  const openReceipt = async (invoiceId: string) => {
+    startLoading('Opening receipt...');
+    try {
+      const { data } = await feeApi.getInvoiceReceipt(invoiceId);
+      if (!data?.length) { alert('No successful payment found for this invoice yet.'); return; }
+      const res = await fetch(`${API_BASE}/fees/payments/${data[0].id}/receipt.pdf`, { headers: authHeaders() });
+      if (!res.ok) { alert('Could not render the receipt. Please try again.'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err: any) { alert(err?.detail || 'Failed to open receipt.'); }
+    finally { stopLoading(); }
+  };
+
+  // 4.1.4: queue the receipt to the guardians' email + WhatsApp.
+  const sendReceipt = async (invoiceId: string) => {
+    startLoading('Sending receipt...');
+    try {
+      const { data } = await feeApi.getInvoiceReceipt(invoiceId);
+      if (!data?.length) { alert('No successful payment found for this invoice yet.'); return; }
+      const result = await feeApi.sendReceipt(data[0].id);
+      alert(`Receipt queued to ${result.guardians} guardian(s) over ${result.channels.join(' + ')}.`);
+    } catch (err: any) { alert(err?.detail || 'Failed to send receipt.'); }
+    finally { stopLoading(); }
+  };
 
   const filtered = invoices.filter(inv => {
     const name = `${inv.student?.firstName || ''} ${inv.student?.lastName || ''}`.toLowerCase();
@@ -202,7 +241,10 @@ export default function FeesPage() {
                         setPayForm({ ...payForm, amount: String(Number(inv.totalAmount) - Number(inv.paidAmount)) });
                       }}><span className="icon icon-sm">payment</span>Pay</button>
                     ) : (
-                      <button className="btn btn-sm btn-ghost"><span className="icon icon-sm">receipt</span>Receipt</button>
+                      <span className="flex gap-2">
+                        <button className="btn btn-sm btn-ghost" onClick={() => openReceipt(inv.id)}><span className="icon icon-sm">receipt</span>Receipt</button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => sendReceipt(inv.id)} title="Email + WhatsApp to guardians"><span className="icon icon-sm">send</span>Send</button>
+                      </span>
                     )}
                   </td>
                 </tr>

@@ -57,7 +57,7 @@ model Branch {
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
   userRoleAssignments    UserRoleAssignment[]
-  defaultBranchUsers     User[]              @relation("UserDefaultBranch")
+  defaultBranchUsers     User[]                     @relation("UserDefaultBranch")
   students               Student[]
   staff                  Staff[]
   staffBranchAssignments StaffBranchAssignment[]
@@ -88,9 +88,12 @@ model Branch {
   coScholasticAreas      CoScholasticArea[]
   subjectGroups          SubjectGroup[]
   attendanceSummaries    AttendanceMonthlySummary[]
-  admissionEnquiries     AdmissionEnquiry[]       @relation("AdmissionEnquiryBranch")
-  admissionApplications  AdmissionApplication[]   @relation("AdmissionApplicationBranch")
-  transferCertificates   TransferCertificate[]    @relation("TransferCertificateBranch")
+  admissionEnquiries     AdmissionEnquiry[]         @relation("AdmissionEnquiryBranch")
+  admissionApplications  AdmissionApplication[]     @relation("AdmissionApplicationBranch")
+  transferCertificates   TransferCertificate[]      @relation("TransferCertificateBranch")
+  chequePayments         ChequePayment[]
+  bankDeposits           BankDeposit[]
+  virtualAccounts        VirtualAccount[]
 
   @@unique([schoolId, code])
   @@map("branches")
@@ -123,11 +126,11 @@ model User {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  defaultBranch Branch?              @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id])
+  defaultBranch   Branch?              @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id])
   roleAssignments UserRoleAssignment[]
-  student        Student?
-  staff          Staff?
-  guardians      Guardian[]
+  student         Student?
+  staff           Staff?
+  guardians       Guardian[]
 
   @@index([email])
   @@map("users")
@@ -153,7 +156,7 @@ model Role {
 }
 
 model Permission {
-  id          String @id @default(cuid())
+  id          String  @id @default(cuid())
   module      String
   action      String
   description String?
@@ -224,28 +227,28 @@ model AcademicYear {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branch       Branch        @relation(fields: [branchId], references: [id])
-  classes      Class[]
-  examinations Examination[]
-  terms        Term[]
-  enrollments  StudentEnrollment[]
-  feeStructures FeeStructure[]
-  calendarEntries AcademicCalendar[]
-  holidays     Holiday[]
-  attendanceSessions AttendanceSession[]
-  attendanceSummaries AttendanceMonthlySummary[]
-  studentSubjects StudentSubject[]
-  concessions Concession[]
-  invoices    Invoice[]
-  payments    Payment[]
-  ledgerEntries FeeLedger[]
-  gradingSchemes GradingScheme[]
-  reportCardTemplates ReportCardTemplate[]
-  coScholastics StudentCoScholastic[]
-  fromPromotionBatches PromotionBatch[] @relation("PromotionFromYear")
-  toPromotionBatches   PromotionBatch[] @relation("PromotionToYear")
-  admissionEnquiries   AdmissionEnquiry[]      @relation("AdmissionEnquiryYear")
-  admissionApplications AdmissionApplication[] @relation("AdmissionApplicationYear")
+  branch                Branch                     @relation(fields: [branchId], references: [id])
+  classes               Class[]
+  examinations          Examination[]
+  terms                 Term[]
+  enrollments           StudentEnrollment[]
+  feeStructures         FeeStructure[]
+  calendarEntries       AcademicCalendar[]
+  holidays              Holiday[]
+  attendanceSessions    AttendanceSession[]
+  attendanceSummaries   AttendanceMonthlySummary[]
+  studentSubjects       StudentSubject[]
+  concessions           Concession[]
+  invoices              Invoice[]
+  payments              Payment[]
+  ledgerEntries         FeeLedger[]
+  gradingSchemes        GradingScheme[]
+  reportCardTemplates   ReportCardTemplate[]
+  coScholastics         StudentCoScholastic[]
+  fromPromotionBatches  PromotionBatch[]           @relation("PromotionFromYear")
+  toPromotionBatches    PromotionBatch[]           @relation("PromotionToYear")
+  admissionEnquiries    AdmissionEnquiry[]         @relation("AdmissionEnquiryYear")
+  admissionApplications AdmissionApplication[]     @relation("AdmissionApplicationYear")
 
   @@unique([branchId, name])
   @@index([branchId, isCurrent])
@@ -253,13 +256,13 @@ model AcademicYear {
 }
 
 model Term {
-  id            String   @id @default(cuid())
-  name          String
+  id             String   @id @default(cuid())
+  name           String
   academicYearId String
-  type          TermType @default(TERM)
-  startDate     DateTime
-  endDate       DateTime
-  createdAt     DateTime @default(now())
+  type           TermType @default(TERM)
+  startDate      DateTime
+  endDate        DateTime
+  createdAt      DateTime @default(now())
 
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
 
@@ -273,17 +276,17 @@ enum TermType {
 }
 
 model AcademicCalendar {
-  id            String   @id @default(cuid())
-  branchId      String
+  id             String            @id @default(cuid())
+  branchId       String
   academicYearId String
-  date          DateTime @db.Date
-  type          CalendarEntryType
-  title         String
-  description   String?
+  date           DateTime          @db.Date
+  type           CalendarEntryType
+  title          String
+  description    String?
   // NULL = applies to the whole school; otherwise class-scoped.
-  classId       String?
-  isWorkingDay  Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  classId        String?
+  isWorkingDay   Boolean           @default(true)
+  createdAt      DateTime          @default(now())
 
   branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
@@ -302,13 +305,13 @@ enum CalendarEntryType {
 }
 
 model Holiday {
-  id            String   @id @default(cuid())
-  branchId      String
+  id             String      @id @default(cuid())
+  branchId       String
   academicYearId String
-  date          DateTime @db.Date
-  name          String
-  type          HolidayType @default(SCHOOL)
-  createdAt     DateTime @default(now())
+  date           DateTime    @db.Date
+  name           String
+  type           HolidayType @default(SCHOOL)
+  createdAt      DateTime    @default(now())
 
   branch       Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
@@ -350,23 +353,24 @@ model Student {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user        User             @relation(fields: [userId], references: [id])
-  branch      Branch           @relation(fields: [branchId], references: [id])
-  guardians   StudentGuardian[]
-  enrollments StudentEnrollment[]
-  subjects    StudentSubject[]
-  leaves      StudentLeave[]
-  attendanceRecords AttendanceRecord[]
-  invoices    Invoice[]
-  concessions Concession[]
-  ledgerEntries FeeLedger[]
-  examResults ExamResult[]
-  coScholastics StudentCoScholastic[]
-  bookIssues  BookIssue[]
-  documents   Document[]
-  attendanceSummaries AttendanceMonthlySummary[]
-  transferCertificates TransferCertificate[] @relation("TransferCertificateStudent")
-  admissionApplications AdmissionApplication[] @relation("AdmissionApplicationStudent")
+  user                  User                       @relation(fields: [userId], references: [id])
+  branch                Branch                     @relation(fields: [branchId], references: [id])
+  guardians             StudentGuardian[]
+  enrollments           StudentEnrollment[]
+  subjects              StudentSubject[]
+  leaves                StudentLeave[]
+  attendanceRecords     AttendanceRecord[]
+  invoices              Invoice[]
+  concessions           Concession[]
+  ledgerEntries         FeeLedger[]
+  virtualAccount        VirtualAccount?
+  examResults           ExamResult[]
+  coScholastics         StudentCoScholastic[]
+  bookIssues            BookIssue[]
+  documents             Document[]
+  attendanceSummaries   AttendanceMonthlySummary[]
+  transferCertificates  TransferCertificate[]      @relation("TransferCertificateStudent")
+  admissionApplications AdmissionApplication[]     @relation("AdmissionApplicationStudent")
 
   @@unique([branchId, admissionNo])
   @@index([branchId])
@@ -376,22 +380,22 @@ model Student {
 }
 
 model StudentEnrollment {
-  id            String           @id @default(cuid())
-  studentId     String
-  academicYearId String
-  branchId      String
-  classId       String
-  sectionId     String
-  rollNo        String?
-  status        EnrollmentStatus @default(ENROLLED)
-  fromDate      DateTime
-  toDate        DateTime?
+  id               String           @id @default(cuid())
+  studentId        String
+  academicYearId   String
+  branchId         String
+  classId          String
+  sectionId        String
+  rollNo           String?
+  status           EnrollmentStatus @default(ENROLLED)
+  fromDate         DateTime
+  toDate           DateTime?
   // Set when this enrollment was created/closed by the promotion engine —
   // the reversal path deletes the next-year rows and restores this row.
   promotionBatchId String?
-  createdBy     String?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  createdBy        String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
@@ -418,16 +422,16 @@ enum EnrollmentStatus {
 
 // A promotion batch makes the March promotion preview → confirm → reversible.
 model PromotionBatch {
-  id                 String   @id @default(cuid())
+  id                 String               @id @default(cuid())
   branchId           String
   fromAcademicYearId String
   toAcademicYearId   String
   classId            String
   sectionId          String?
   status             PromotionBatchStatus @default(EXECUTED)
-  stats              Json     // { promoted, detained, carriedForward, reversed }
+  stats              Json // { promoted, detained, carriedForward, reversed }
   createdBy          String?
-  createdAt          DateTime @default(now())
+  createdAt          DateTime             @default(now())
   reversedAt         DateTime?
   reversedBy         String?
 
@@ -449,23 +453,23 @@ enum PromotionBatchStatus {
 // single guardians, grandparents, siblings sharing a guardian — all supported.
 
 model Guardian {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   // A guardian is a real person and (in 2.1) has their own login. A user row
   // can back at most one guardian.
-  userId      String?  @unique
+  userId      String?   @unique
   fullName    String
   phone       String?
   email       String?
   occupation  String?
   dateOfBirth DateTime?
   address     String?
-  isActive    Boolean  @default(true)
+  isActive    Boolean   @default(true)
   deletedAt   DateTime?
   deletedBy   String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  user     User?               @relation(fields: [userId], references: [id])
+  user     User?             @relation(fields: [userId], references: [id])
   students StudentGuardian[]
 
   @@index([fullName])
@@ -502,8 +506,8 @@ enum Gender {
 // ── Staff & HR ──
 
 model Staff {
-  id            String   @id @default(cuid())
-  userId        String   @unique
+  id            String    @id @default(cuid())
+  userId        String    @unique
   // Unique per branch (the staff's home branch): two branches may both have
   // "EMP-001" (BUILD_PLAN 2.3.3).
   employeeId    String
@@ -514,32 +518,32 @@ model Staff {
   designation   String
   department    String
   qualification String
-  experience    Int      @default(0)
+  experience    Int       @default(0)
   joinDate      DateTime
-  salary        Decimal  @db.Decimal(12, 2)
+  salary        Decimal   @db.Decimal(12, 2)
   address       String
   phone         String
   photo         String?
-  isActive      Boolean  @default(true)
+  isActive      Boolean   @default(true)
   // Home (primary) branch. Shared teachers also have StaffBranchAssignment rows
   // for every other branch they teach in.
   branchId      String
   deletedAt     DateTime?
   deletedBy     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  user           User            @relation(fields: [userId], references: [id])
-  branch         Branch          @relation(fields: [branchId], references: [id])
-  branchAssignments StaffBranchAssignment[]
-  staffAttendances StaffAttendance[]
-  leaveRequests  LeaveRequest[]
-  subjectTeachers SubjectTeacher[]
-  payrolls       Payroll[]
-  timetableSlots TimetableSlot[]
-  substitutionsAsOriginal  TimetableSubstitution[] @relation("TimetableOriginalStaff")
+  user                      User                    @relation(fields: [userId], references: [id])
+  branch                    Branch                  @relation(fields: [branchId], references: [id])
+  branchAssignments         StaffBranchAssignment[]
+  staffAttendances          StaffAttendance[]
+  leaveRequests             LeaveRequest[]
+  subjectTeachers           SubjectTeacher[]
+  payrolls                  Payroll[]
+  timetableSlots            TimetableSlot[]
+  substitutionsAsOriginal   TimetableSubstitution[] @relation("TimetableOriginalStaff")
   substitutionsAsSubstitute TimetableSubstitution[] @relation("TimetableSubstituteStaff")
-  documents      Document[]
+  documents                 Document[]
 
   @@unique([branchId, employeeId])
   @@index([branchId])
@@ -561,16 +565,16 @@ model StaffBranchAssignment {
 }
 
 model LeaveRequest {
-  id        String      @id @default(cuid())
-  staffId   String
-  leaveType String
-  startDate DateTime
-  endDate   DateTime
-  reason    String
-  status    LeaveStatus @default(PENDING)
+  id         String      @id @default(cuid())
+  staffId    String
+  leaveType  String
+  startDate  DateTime
+  endDate    DateTime
+  reason     String
+  status     LeaveStatus @default(PENDING)
   approvedBy String?
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 
   staff Staff @relation(fields: [staffId], references: [id])
 
@@ -578,18 +582,18 @@ model LeaveRequest {
 }
 
 model Payroll {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   staffId     String
   month       Int
   year        Int
-  basicSalary Decimal  @db.Decimal(12, 2)
-  allowances  Decimal  @default(0) @db.Decimal(12, 2)
-  deductions  Decimal  @default(0) @db.Decimal(12, 2)
-  netSalary   Decimal  @db.Decimal(12, 2)
+  basicSalary Decimal   @db.Decimal(12, 2)
+  allowances  Decimal   @default(0) @db.Decimal(12, 2)
+  deductions  Decimal   @default(0) @db.Decimal(12, 2)
+  netSalary   Decimal   @db.Decimal(12, 2)
   paidOn      DateTime?
-  status      String   @default("PENDING")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  status      String    @default("PENDING")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   staff Staff @relation(fields: [staffId], references: [id])
 
@@ -607,27 +611,27 @@ enum LeaveStatus {
 // ── Academics ──
 
 model Class {
-  id             String @id @default(cuid())
+  id             String    @id @default(cuid())
   name           String
   numericOrder   Int
   branchId       String
   academicYearId String
   deletedAt      DateTime?
   deletedBy      String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  branch       Branch       @relation(fields: [branchId], references: [id])
-  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
-  sections     Section[]
-  subjects     Subject[]
-  enrollments  StudentEnrollment[]
-  subjectGroups SubjectGroup[]
-  feeStructureClasses FeeStructureClass[]
-  calendarEntries AcademicCalendar[]
-  attendanceSessions AttendanceSession[]
-  promotionBatches PromotionBatch[]
-  admissionEnquiries    AdmissionEnquiry[]      @relation("AdmissionEnquiryClass")
+  branch                Branch                 @relation(fields: [branchId], references: [id])
+  academicYear          AcademicYear           @relation(fields: [academicYearId], references: [id])
+  sections              Section[]
+  subjects              Subject[]
+  enrollments           StudentEnrollment[]
+  subjectGroups         SubjectGroup[]
+  feeStructureClasses   FeeStructureClass[]
+  calendarEntries       AcademicCalendar[]
+  attendanceSessions    AttendanceSession[]
+  promotionBatches      PromotionBatch[]
+  admissionEnquiries    AdmissionEnquiry[]     @relation("AdmissionEnquiryClass")
   admissionApplications AdmissionApplication[] @relation("AdmissionApplicationClass")
 
   @@unique([branchId, name, academicYearId])
@@ -635,18 +639,18 @@ model Class {
 }
 
 model Section {
-  id       String @id @default(cuid())
-  name     String
-  classId  String
-  capacity Int    @default(40)
+  id        String    @id @default(cuid())
+  name      String
+  classId   String
+  capacity  Int       @default(40)
   deletedAt DateTime?
   deletedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
-  enrollments    StudentEnrollment[]
-  timetableSlots TimetableSlot[]
+  class              Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  enrollments        StudentEnrollment[]
+  timetableSlots     TimetableSlot[]
   attendanceSessions AttendanceSession[]
 
   @@unique([classId, name])
@@ -654,24 +658,24 @@ model Section {
 }
 
 model Subject {
-  id       String @id @default(cuid())
-  name     String
-  code     String
-  classId  String
+  id        String    @id @default(cuid())
+  name      String
+  code      String
+  classId   String
   // THEORY, PRACTICAL, ELECTIVE, OPTIONAL (BUILD_PLAN 2.2.4)
-  type     String @default("THEORY")
-  groupId  String?
+  type      String    @default("THEORY")
+  groupId   String?
   deletedAt DateTime?
   deletedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  class          Class           @relation(fields: [classId], references: [id], onDelete: Cascade)
-  group          SubjectGroup?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  teachers       SubjectTeacher[]
-  timetableSlots TimetableSlot[]
-  examSubjects   ExamSubject[]
-  studentSubjects StudentSubject[]
+  class              Class               @relation(fields: [classId], references: [id], onDelete: Cascade)
+  group              SubjectGroup?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  teachers           SubjectTeacher[]
+  timetableSlots     TimetableSlot[]
+  examSubjects       ExamSubject[]
+  studentSubjects    StudentSubject[]
   attendanceSessions AttendanceSession[]
 
   @@unique([classId, code])
@@ -699,12 +703,12 @@ model SubjectGroup {
 
 // Per-student optional/elective subject selection (2.2.4).
 model StudentSubject {
-  id            String @id @default(cuid())
-  studentId     String
-  subjectId     String
+  id             String   @id @default(cuid())
+  studentId      String
+  subjectId      String
   academicYearId String
-  isOptional    Boolean @default(false)
-  createdAt     DateTime @default(now())
+  isOptional     Boolean  @default(false)
+  createdAt      DateTime @default(now())
 
   student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   subject      Subject      @relation(fields: [subjectId], references: [id], onDelete: Cascade)
@@ -715,7 +719,7 @@ model StudentSubject {
 }
 
 model SubjectTeacher {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   subjectId String
   staffId   String
   createdAt DateTime @default(now())
@@ -734,25 +738,25 @@ model SubjectTeacher {
 // After lockedAt only a principal can amend, and every amendment is logged.
 
 model AttendanceSession {
-  id        String   @id @default(cuid())
-  branchId  String
-  date      DateTime @db.Date
-  classId   String
-  sectionId String
+  id             String    @id @default(cuid())
+  branchId       String
+  date           DateTime  @db.Date
+  classId        String
+  sectionId      String
   academicYearId String
   // Period-wise marking: subject + period number; NULL for daily marking.
-  subjectId String?
-  period    Int?
-  markedBy  String
-  lockedAt  DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  subjectId      String?
+  period         Int?
+  markedBy       String
+  lockedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  branch       Branch       @relation(fields: [branchId], references: [id])
-  class        Class        @relation(fields: [classId], references: [id])
-  section      Section      @relation(fields: [sectionId], references: [id])
-  subject      Subject?     @relation(fields: [subjectId], references: [id])
-  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  branch       Branch             @relation(fields: [branchId], references: [id])
+  class        Class              @relation(fields: [classId], references: [id])
+  section      Section            @relation(fields: [sectionId], references: [id])
+  subject      Subject?           @relation(fields: [subjectId], references: [id])
+  academicYear AcademicYear       @relation(fields: [academicYearId], references: [id])
   records      AttendanceRecord[]
 
   @@unique([branchId, date, classId, sectionId, subjectId, period])
@@ -772,10 +776,10 @@ model AttendanceRecord {
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
 
-  session       AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  student       Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  leave         StudentLeave?     @relation(fields: [leaveId], references: [id], onDelete: SetNull)
-  amendments    AttendanceAmendment[]
+  session    AttendanceSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student    Student               @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  leave      StudentLeave?         @relation(fields: [leaveId], references: [id], onDelete: SetNull)
+  amendments AttendanceAmendment[]
 
   @@unique([sessionId, studentId])
   @@index([studentId, createdAt])
@@ -785,13 +789,13 @@ model AttendanceRecord {
 // Every post-lock amendment is append-only (2.4.4) — the trail answers
 // "who changed my child's attendance, from what, to what, when".
 model AttendanceAmendment {
-  id          String   @id @default(cuid())
-  recordId    String
+  id           String           @id @default(cuid())
+  recordId     String
   beforeStatus AttendanceStatus
   afterStatus  AttendanceStatus
-  changedBy   String
-  reason      String?
-  createdAt   DateTime @default(now())
+  changedBy    String
+  reason       String?
+  createdAt    DateTime         @default(now())
 
   record AttendanceRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
 
@@ -819,22 +823,22 @@ model StaffAttendance {
 // Denormalised monthly summary (2.4.6): rebuilt by a job, never computed by
 // scanning raw rows at request time.
 model AttendanceMonthlySummary {
-  id            String @id @default(cuid())
-  studentId     String
-  branchId      String
+  id             String   @id @default(cuid())
+  studentId      String
+  branchId       String
   academicYearId String
-  year          Int
-  month         Int
-  workingDays   Int     @default(0)
-  presentDays   Int     @default(0)
-  absentDays    Int     @default(0)
-  lateDays      Int     @default(0)
-  halfDays      Int     @default(0)
-  leaveDays     Int     @default(0)
-  medicalDays   Int     @default(0)
-  excusedDays   Int     @default(0)
-  percentage    Decimal @default(0) @db.Decimal(5, 2)
-  rebuiltAt     DateTime @default(now())
+  year           Int
+  month          Int
+  workingDays    Int      @default(0)
+  presentDays    Int      @default(0)
+  absentDays     Int      @default(0)
+  lateDays       Int      @default(0)
+  halfDays       Int      @default(0)
+  leaveDays      Int      @default(0)
+  medicalDays    Int      @default(0)
+  excusedDays    Int      @default(0)
+  percentage     Decimal  @default(0) @db.Decimal(5, 2)
+  rebuiltAt      DateTime @default(now())
 
   student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   branch       Branch       @relation(fields: [branchId], references: [id])
@@ -846,18 +850,18 @@ model AttendanceMonthlySummary {
 }
 
 model StudentLeave {
-  id        String   @id @default(cuid())
-  studentId String
-  leaveType String
-  startDate DateTime @db.Date
-  endDate   DateTime @db.Date
-  reason    String
-  status    StudentLeaveStatus @default(PENDING)
+  id         String             @id @default(cuid())
+  studentId  String
+  leaveType  String
+  startDate  DateTime           @db.Date
+  endDate    DateTime           @db.Date
+  reason     String
+  status     StudentLeaveStatus @default(PENDING)
   approvedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
 
-  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  student Student            @relation(fields: [studentId], references: [id], onDelete: Cascade)
   records AttendanceRecord[]
 
   @@index([studentId, startDate])
@@ -890,26 +894,26 @@ enum AttendanceStatus {
 // machine with an idempotency key and deterministic allocation.
 
 model FeeHead {
-  id            String   @id @default(cuid())
+  id            String      @id @default(cuid())
   code          String
   name          String
   branchId      String
   type          FeeHeadType @default(TUITION)
-  isRecurring   Boolean  @default(true)
-  isRefundable  Boolean  @default(false)
-  gstApplicable Boolean  @default(false)
-  gstRate       Decimal? @db.Decimal(5, 2)
-  isActive      Boolean  @default(true)
+  isRecurring   Boolean     @default(true)
+  isRefundable  Boolean     @default(false)
+  gstApplicable Boolean     @default(false)
+  gstRate       Decimal?    @db.Decimal(5, 2)
+  isActive      Boolean     @default(true)
   deletedAt     DateTime?
   deletedBy     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
-  branch          Branch             @relation(fields: [branchId], references: [id])
-  structureLines  FeeStructureLine[]
-  invoiceLines    InvoiceLine[]
-  ledgerEntries   FeeLedger[]
-  concessions     Concession[]
+  branch         Branch             @relation(fields: [branchId], references: [id])
+  structureLines FeeStructureLine[]
+  invoiceLines   InvoiceLine[]
+  ledgerEntries  FeeLedger[]
+  concessions    Concession[]
 
   @@unique([branchId, code])
   @@index([branchId, type])
@@ -930,20 +934,20 @@ enum FeeHeadType {
 }
 
 model FeeStructure {
-  id             String   @id @default(cuid())
-  name           String
-  branchId       String
-  academicYearId String
+  id              String    @id @default(cuid())
+  name            String
+  branchId        String
+  academicYearId  String
   // Optional student category (e.g. "RTE", "STAFF_WARD") the structure applies to.
   studentCategory String?
-  isActive       Boolean  @default(true)
-  deletedAt      DateTime?
-  deletedBy      String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  isActive        Boolean   @default(true)
+  deletedAt       DateTime?
+  deletedBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  branch       Branch             @relation(fields: [branchId], references: [id])
-  academicYear AcademicYear       @relation(fields: [academicYearId], references: [id])
+  branch       Branch              @relation(fields: [branchId], references: [id])
+  academicYear AcademicYear        @relation(fields: [academicYearId], references: [id])
   lines        FeeStructureLine[]
   classes      FeeStructureClass[]
 
@@ -952,13 +956,13 @@ model FeeStructure {
 }
 
 model FeeStructureLine {
-  id               String   @id @default(cuid())
-  feeStructureId   String
-  feeHeadId        String
-  amount           Decimal  @db.Decimal(12, 2)
-  frequency        FeeFrequency @default(MONTHLY)
-  dueDay           Int      @default(10)
-  createdAt        DateTime @default(now())
+  id             String       @id @default(cuid())
+  feeStructureId String
+  feeHeadId      String
+  amount         Decimal      @db.Decimal(12, 2)
+  frequency      FeeFrequency @default(MONTHLY)
+  dueDay         Int          @default(10)
+  createdAt      DateTime     @default(now())
 
   feeStructure FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
   feeHead      FeeHead      @relation(fields: [feeHeadId], references: [id])
@@ -968,7 +972,7 @@ model FeeStructureLine {
 
 // Applicability join — the old unnormalised `classIds String[]` is gone (2.5.2).
 model FeeStructureClass {
-  id             String @id @default(cuid())
+  id             String   @id @default(cuid())
   feeStructureId String
   classId        String
   createdAt      DateTime @default(now())
@@ -989,27 +993,27 @@ enum FeeFrequency {
 }
 
 model Concession {
-  id            String            @id @default(cuid())
-  studentId     String
+  id             String             @id @default(cuid())
+  studentId      String
   academicYearId String
   // NULL = applies to the whole invoice; otherwise one fee head.
-  feeHeadId     String?
-  category      ConcessionCategory @default(OTHER)
-  type          ConcessionType     @default(FLAT)
+  feeHeadId      String?
+  category       ConcessionCategory @default(OTHER)
+  type           ConcessionType     @default(FLAT)
   // Percentage (0-100) when type = PERCENTAGE, else an amount.
-  value         Decimal            @db.Decimal(12, 2)
-  reason        String?
-  status        ConcessionStatus   @default(PENDING)
-  approvedBy    String?
-  approvedAt    DateTime?
-  validFrom     DateTime?
-  validTo       DateTime?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  value          Decimal            @db.Decimal(12, 2)
+  reason         String?
+  status         ConcessionStatus   @default(PENDING)
+  approvedBy     String?
+  approvedAt     DateTime?
+  validFrom      DateTime?
+  validTo        DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
-  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
-  feeHead      FeeHead?     @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
+  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  academicYear AcademicYear  @relation(fields: [academicYearId], references: [id])
+  feeHead      FeeHead?      @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
   invoiceLines InvoiceLine[]
 
   @@index([studentId, academicYearId])
@@ -1041,21 +1045,21 @@ enum ConcessionStatus {
 // Append-only. Never UPDATE or DELETE a row; corrections are ADJUSTMENT or
 // WRITE_OFF entries. Balance = SUM(amount) over the student's entries.
 model FeeLedger {
-  id            String        @id @default(cuid())
-  studentId     String
-  branchId      String
+  id             String        @id @default(cuid())
+  studentId      String
+  branchId       String
   academicYearId String
-  type          FeeLedgerType
+  type           FeeLedgerType
   // Signed: DEMAND +, PAYMENT −, CONCESSION −, LATE_FEE +, ADJUSTMENT ±,
   // REFUND +, WRITE_OFF −.
-  amount        Decimal       @db.Decimal(12, 2)
-  feeHeadId     String?
-  invoiceId     String?
-  paymentId     String?
-  description   String?
-  reference     String?
-  createdBy     String?
-  createdAt     DateTime      @default(now())
+  amount         Decimal       @db.Decimal(12, 2)
+  feeHeadId      String?
+  invoiceId      String?
+  paymentId      String?
+  description    String?
+  reference      String?
+  createdBy      String?
+  createdAt      DateTime      @default(now())
 
   student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
   branch       Branch       @relation(fields: [branchId], references: [id])
@@ -1099,12 +1103,12 @@ model Invoice {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  student      Student           @relation(fields: [studentId], references: [id])
-  branch       Branch            @relation(fields: [branchId], references: [id])
-  academicYear AcademicYear      @relation(fields: [academicYearId], references: [id])
-  lines        InvoiceLine[]
-  payments     Payment[]
-  allocations  PaymentAllocation[]
+  student       Student             @relation(fields: [studentId], references: [id])
+  branch        Branch              @relation(fields: [branchId], references: [id])
+  academicYear  AcademicYear        @relation(fields: [academicYearId], references: [id])
+  lines         InvoiceLine[]
+  payments      Payment[]
+  allocations   PaymentAllocation[]
   ledgerEntries FeeLedger[]
 
   @@unique([branchId, invoiceNo])
@@ -1124,8 +1128,8 @@ model InvoiceLine {
   concessionId String?
   createdAt    DateTime @default(now())
 
-  invoice    Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  feeHead    FeeHead    @relation(fields: [feeHeadId], references: [id])
+  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  feeHead    FeeHead     @relation(fields: [feeHeadId], references: [id])
   concession Concession? @relation(fields: [concessionId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId])
@@ -1144,29 +1148,31 @@ enum InvoiceStatus {
 }
 
 model Payment {
-  id               String            @id @default(cuid())
+  id               String                @id @default(cuid())
   studentId        String
   branchId         String
   academicYearId   String
   invoiceId        String?
-  amount           Decimal           @db.Decimal(12, 2)
+  amount           Decimal               @db.Decimal(12, 2)
   method           PaymentMethod
-  status           PaymentStatus     @default(INITIATED)
-  idempotencyKey   String?           @unique
+  status           PaymentStatus         @default(INITIATED)
+  idempotencyKey   String?               @unique
   gatewayOrderId   String?
   gatewayPaymentId String?
   gatewayProvider  String?
   rawWebhook       Json?
   allocationMode   PaymentAllocationMode @default(OLDEST_DUES_FIRST)
   receiptNo        String?
+  receiptPdf       String?
   paidAt           DateTime?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
 
-  invoice    Invoice?           @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  academicYear AcademicYear     @relation(fields: [academicYearId], references: [id])
-  allocations PaymentAllocation[]
+  invoice       Invoice?            @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  academicYear  AcademicYear        @relation(fields: [academicYearId], references: [id])
+  allocations   PaymentAllocation[]
   ledgerEntries FeeLedger[]
+  cheque        ChequePayment?
 
   @@unique([branchId, receiptNo])
   @@index([studentId])
@@ -1177,10 +1183,10 @@ model Payment {
 
 // Deterministic allocation of a payment across invoices (2.5.6).
 model PaymentAllocation {
-  id        String   @id @default(cuid())
-  paymentId String
-  invoiceId String
-  amount    Decimal  @db.Decimal(12, 2)
+  id          String   @id @default(cuid())
+  paymentId   String
+  invoiceId   String
+  amount      Decimal  @db.Decimal(12, 2)
   allocatedAt DateTime @default(now())
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
@@ -1217,19 +1223,102 @@ enum PaymentAllocationMode {
   MANUAL
 }
 
+// ── Payment methods & collections (BUILD_PLAN 4.1.3 / 4.1.8) ──
+
+enum ChequeStatus {
+  RECEIVED
+  DEPOSITED
+  CREDITED
+  BOUNCED
+  RETURNED_TO_PARENT
+}
+
+model ChequePayment {
+  id              String       @id @default(cuid())
+  paymentId       String       @unique
+  branchId        String
+  chequeNumber    String
+  bankName        String
+  branchName      String?
+  drawerName      String?
+  chequeDate      DateTime
+  status          ChequeStatus @default(RECEIVED)
+  depositedAt     DateTime?
+  bankDepositId   String?
+  bounceReason    String?
+  bouncedAt       DateTime?
+  penaltyLedgerId String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  payment     Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  branch      Branch       @relation(fields: [branchId], references: [id])
+  bankDeposit BankDeposit? @relation(fields: [bankDepositId], references: [id])
+
+  @@index([branchId, status])
+  @@index([chequeNumber])
+  @@map("cheque_payments")
+}
+
+model BankDeposit {
+  id            String    @id @default(cuid())
+  branchId      String
+  depositSlipNo String
+  depositedAt   DateTime
+  totalCash     Decimal   @default(0) @db.Decimal(12, 2)
+  totalCheques  Decimal   @default(0) @db.Decimal(12, 2)
+  bankName      String?
+  status        String    @default("PREPARED") // PREPARED | CREDITED | DISPUTED
+  creditedAt    DateTime?
+  notes         String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  branch  Branch          @relation(fields: [branchId], references: [id])
+  cheques ChequePayment[]
+
+  @@unique([branchId, depositSlipNo])
+  @@index([branchId, depositedAt])
+  @@map("bank_deposits")
+}
+
+// NEFT virtual account per student (4.1.3): the school's bank issues a
+// sub-account per student; NEFTs land with the account number as reference,
+// so reconciliation can auto-match. Created via the provider API.
+model VirtualAccount {
+  id              String    @id @default(cuid())
+  branchId        String
+  studentId       String    @unique
+  provider        String    @default("RAZORPAY")
+  accountNumber   String
+  ifsc            String
+  beneficiaryName String
+  isActive        Boolean   @default(true)
+  closedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, accountNumber])
+  @@map("virtual_accounts")
+}
+
 // ── Examinations & report cards (BUILD_PLAN 2.6) ──
 
 model AssessmentType {
-  id            String   @id @default(cuid())
-  name          String
-  code          String
-  branchId      String
-  weightage     Decimal  @default(0) @db.Decimal(5, 2)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id        String   @id @default(cuid())
+  name      String
+  code      String
+  branchId  String
+  weightage Decimal  @default(0) @db.Decimal(5, 2)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  branch       Branch       @relation(fields: [branchId], references: [id])
+  branch       Branch        @relation(fields: [branchId], references: [id])
   examinations Examination[]
 
   @@unique([branchId, code])
@@ -1237,14 +1326,14 @@ model AssessmentType {
 }
 
 model GradingScheme {
-  id          String   @id @default(cuid())
-  name        String
-  branchId    String
+  id             String   @id @default(cuid())
+  name           String
+  branchId       String
   academicYearId String
-  isDefault   Boolean  @default(false)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isDefault      Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   branch       Branch       @relation(fields: [branchId], references: [id])
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
@@ -1279,22 +1368,22 @@ model CoScholasticArea {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
 
-  branch     Branch              @relation(fields: [branchId], references: [id])
-  grades     StudentCoScholastic[]
+  branch Branch                @relation(fields: [branchId], references: [id])
+  grades StudentCoScholastic[]
 
   @@unique([branchId, code])
   @@map("co_scholastic_areas")
 }
 
 model StudentCoScholastic {
-  id            String   @id @default(cuid())
-  areaId        String
-  studentId     String
+  id             String   @id @default(cuid())
+  areaId         String
+  studentId      String
   academicYearId String
-  grade         String
-  remarks       String?
-  enteredBy     String?
-  createdAt     DateTime @default(now())
+  grade          String
+  remarks        String?
+  enteredBy      String?
+  createdAt      DateTime @default(now())
 
   area         CoScholasticArea @relation(fields: [areaId], references: [id], onDelete: Cascade)
   student      Student          @relation(fields: [studentId], references: [id], onDelete: Cascade)
@@ -1305,18 +1394,18 @@ model StudentCoScholastic {
 }
 
 model ReportCardTemplate {
-  id            String   @id @default(cuid())
-  name          String
-  board         String   @default("CBSE")
-  branchId      String
-  classId       String?
+  id             String   @id @default(cuid())
+  name           String
+  board          String   @default("CBSE")
+  branchId       String
+  classId        String?
   academicYearId String
   // weightage rules, best-of-N, term aggregation, rankEnabled, sections…
-  config        Json
-  isActive      Boolean  @default(true)
-  isDefault     Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  config         Json
+  isActive       Boolean  @default(true)
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   branch       Branch       @relation(fields: [branchId], references: [id])
   academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
@@ -1326,25 +1415,25 @@ model ReportCardTemplate {
 }
 
 model Examination {
-  id             String    @id @default(cuid())
-  name           String
-  academicYearId String
-  branchId       String
+  id               String     @id @default(cuid())
+  name             String
+  academicYearId   String
+  branchId         String
   assessmentTypeId String?
-  startDate      DateTime
-  endDate        DateTime
+  startDate        DateTime
+  endDate          DateTime
   // Publication workflow (2.6.5): ENTRY → SUBMITTED → VERIFIED → PUBLISHED.
   // Nothing is parent-visible until PUBLISHED.
-  status         ExamStatus @default(ENTRY)
-  publishedAt    DateTime?
-  publishedBy    String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  status           ExamStatus @default(ENTRY)
+  publishedAt      DateTime?
+  publishedBy      String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
-  academicYear AcademicYear  @relation(fields: [academicYearId], references: [id])
-  branch       Branch        @relation(fields: [branchId], references: [id])
+  academicYear   AcademicYear    @relation(fields: [academicYearId], references: [id])
+  branch         Branch          @relation(fields: [branchId], references: [id])
   assessmentType AssessmentType? @relation(fields: [assessmentTypeId], references: [id], onDelete: SetNull)
-  subjects     ExamSubject[]
+  subjects       ExamSubject[]
 
   @@map("examinations")
 }
@@ -1376,23 +1465,23 @@ model ExamSubject {
 }
 
 model ExamResult {
-  id            String    @id @default(cuid())
-  examSubjectId String
-  studentId     String
-  marksObtained Decimal   @db.Decimal(5, 2)
+  id             String   @id @default(cuid())
+  examSubjectId  String
+  studentId      String
+  marksObtained  Decimal  @db.Decimal(5, 2)
   moderatedMarks Decimal? @db.Decimal(5, 2)
-  grade         String?
-  isAbsent      Boolean   @default(false)
-  isExempt      Boolean   @default(false)
-  attemptNo     Int       @default(1)
-  enteredBy     String?
-  verifiedBy    String?
-  remarks       String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  grade          String?
+  isAbsent       Boolean  @default(false)
+  isExempt       Boolean  @default(false)
+  attemptNo      Int      @default(1)
+  enteredBy      String?
+  verifiedBy     String?
+  remarks        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  examSubject ExamSubject    @relation(fields: [examSubjectId], references: [id], onDelete: Cascade)
-  student     Student        @relation(fields: [studentId], references: [id])
+  examSubject ExamSubject      @relation(fields: [examSubjectId], references: [id], onDelete: Cascade)
+  student     Student          @relation(fields: [studentId], references: [id])
   auditTrail  MarkEntryAudit[]
 
   @@unique([examSubjectId, studentId])
@@ -1417,7 +1506,7 @@ model MarkEntryAudit {
 // ── Timetable ──
 
 model TimetableSlot {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   sectionId String
   subjectId String
   // The teacher taking the slot — the clash constraint input (2.7.6).
@@ -1429,9 +1518,9 @@ model TimetableSlot {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  section       Section                @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  subject       Subject                @relation(fields: [subjectId], references: [id])
-  staff         Staff?                 @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  section       Section                 @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject       Subject                 @relation(fields: [subjectId], references: [id])
+  staff         Staff?                  @relation(fields: [staffId], references: [id], onDelete: SetNull)
   substitutions TimetableSubstitution[]
 
   @@unique([sectionId, day, startTime])
@@ -1439,18 +1528,18 @@ model TimetableSlot {
 }
 
 model TimetableSubstitution {
-  id            String   @id @default(cuid())
-  slotId        String
-  originalStaffId String
+  id                String   @id @default(cuid())
+  slotId            String
+  originalStaffId   String
   substituteStaffId String
-  date          DateTime @db.Date
-  reason        String?
-  approvedBy    String?
-  createdAt     DateTime @default(now())
+  date              DateTime @db.Date
+  reason            String?
+  approvedBy        String?
+  createdAt         DateTime @default(now())
 
-  slot         TimetableSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
-  originalStaff Staff        @relation("TimetableOriginalStaff", fields: [originalStaffId], references: [id])
-  substituteStaff Staff      @relation("TimetableSubstituteStaff", fields: [substituteStaffId], references: [id])
+  slot            TimetableSlot @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  originalStaff   Staff         @relation("TimetableOriginalStaff", fields: [originalStaffId], references: [id])
+  substituteStaff Staff         @relation("TimetableSubstituteStaff", fields: [substituteStaffId], references: [id])
 
   @@index([slotId, date])
   @@map("timetable_substitutions")
@@ -1459,19 +1548,19 @@ model TimetableSubstitution {
 // ── Communication ──
 
 model Announcement {
-  id        String   @id @default(cuid())
-  title     String
-  content   String
-  type      String   @default("GENERAL") // GENERAL, CIRCULAR, EVENT, NOTICE
+  id          String    @id @default(cuid())
+  title       String
+  content     String
+  type        String    @default("GENERAL") // GENERAL, CIRCULAR, EVENT, NOTICE
   // Role CODES (system + custom), matching Role.code. The old UserRole enum no
   // longer exists; roles are rows in the roles table (BUILD_PLAN 2.1).
   targetRoles String[]
-  branchId  String
-  createdBy String
-  isActive  Boolean  @default(true)
-  expiresAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  branchId    String
+  createdBy   String
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   branch Branch @relation(fields: [branchId], references: [id])
 
@@ -1484,27 +1573,27 @@ model Announcement {
 // ── Admissions pipeline (BUILD_PLAN 3.2: enquiry → application → admission) ──
 
 model AdmissionEnquiry {
-  id              String    @id @default(cuid())
-  branchId        String
-  academicYearId  String
-  studentName     String
-  classAppliedId  String?
-  parentName      String
-  phone           String
-  email           String?
-  source          String    @default("WALK_IN") // WALK_IN, PHONE, WEBSITE, REFERRAL, EVENT
-  status          String    @default("NEW") // NEW, FOLLOW_UP, CONVERTED, CLOSED_LOST
-  followUpAt      DateTime?
-  notes           String?
+  id                     String    @id @default(cuid())
+  branchId               String
+  academicYearId         String
+  studentName            String
+  classAppliedId         String?
+  parentName             String
+  phone                  String
+  email                  String?
+  source                 String    @default("WALK_IN") // WALK_IN, PHONE, WEBSITE, REFERRAL, EVENT
+  status                 String    @default("NEW") // NEW, FOLLOW_UP, CONVERTED, CLOSED_LOST
+  followUpAt             DateTime?
+  notes                  String?
   convertedApplicationId String?
-  createdBy       String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdBy              String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  branch        Branch                @relation("AdmissionEnquiryBranch", fields: [branchId], references: [id])
-  academicYear  AcademicYear          @relation("AdmissionEnquiryYear", fields: [academicYearId], references: [id])
-  classApplied  Class?                @relation("AdmissionEnquiryClass", fields: [classAppliedId], references: [id])
-  applications  AdmissionApplication[]
+  branch       Branch                 @relation("AdmissionEnquiryBranch", fields: [branchId], references: [id])
+  academicYear AcademicYear           @relation("AdmissionEnquiryYear", fields: [academicYearId], references: [id])
+  classApplied Class?                 @relation("AdmissionEnquiryClass", fields: [classAppliedId], references: [id])
+  applications AdmissionApplication[]
 
   @@index([branchId, status])
   @@index([branchId, phone])
@@ -1512,35 +1601,35 @@ model AdmissionEnquiry {
 }
 
 model AdmissionApplication {
-  id              String    @id @default(cuid())
-  branchId        String
-  academicYearId  String
-  enquiryId       String?
-  applicationNo   String
-  firstName       String
-  lastName        String
-  dateOfBirth     DateTime
-  gender          Gender
-  previousSchool  String?
-  guardianName    String
-  guardianPhone   String
-  guardianEmail   String?
-  guardianRelation String   @default("FATHER")
-  classAppliedId  String
-  status          String    @default("SUBMITTED") // SUBMITTED, UNDER_REVIEW, INTERVIEW, APPROVED, REJECTED, ADMITTED
-  decidedBy       String?
-  decidedAt       DateTime?
+  id                String    @id @default(cuid())
+  branchId          String
+  academicYearId    String
+  enquiryId         String?
+  applicationNo     String
+  firstName         String
+  lastName          String
+  dateOfBirth       DateTime
+  gender            Gender
+  previousSchool    String?
+  guardianName      String
+  guardianPhone     String
+  guardianEmail     String?
+  guardianRelation  String    @default("FATHER")
+  classAppliedId    String
+  status            String    @default("SUBMITTED") // SUBMITTED, UNDER_REVIEW, INTERVIEW, APPROVED, REJECTED, ADMITTED
+  decidedBy         String?
+  decidedAt         DateTime?
   admittedStudentId String?
-  remarks         String?
-  createdBy       String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  remarks           String?
+  createdBy         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  branch          Branch        @relation("AdmissionApplicationBranch", fields: [branchId], references: [id])
-  academicYear    AcademicYear  @relation("AdmissionApplicationYear", fields: [academicYearId], references: [id])
+  branch          Branch            @relation("AdmissionApplicationBranch", fields: [branchId], references: [id])
+  academicYear    AcademicYear      @relation("AdmissionApplicationYear", fields: [academicYearId], references: [id])
   enquiry         AdmissionEnquiry? @relation(fields: [enquiryId], references: [id])
-  classApplied    Class         @relation("AdmissionApplicationClass", fields: [classAppliedId], references: [id])
-  admittedStudent Student?      @relation("AdmissionApplicationStudent", fields: [admittedStudentId], references: [id])
+  classApplied    Class             @relation("AdmissionApplicationClass", fields: [classAppliedId], references: [id])
+  admittedStudent Student?          @relation("AdmissionApplicationStudent", fields: [admittedStudentId], references: [id])
 
   @@unique([branchId, applicationNo])
   @@index([branchId, status])
@@ -1550,21 +1639,21 @@ model AdmissionApplication {
 // A TC is issued once per student leaving the school; the enrollment gets
 // status TC_ISSUED and the student row is soft-deactivated.
 model TransferCertificate {
-  id              String   @id @default(cuid())
-  branchId        String
-  studentId       String
-  enrollmentId    String?
-  tcNo            String
-  issueDate       DateTime @default(now())
-  reason          String?
-  remarks         String?
-  lastClassId     String?
-  feeDuesCleared  Boolean  @default(true)
-  issuedBy        String?
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  branchId       String
+  studentId      String
+  enrollmentId   String?
+  tcNo           String
+  issueDate      DateTime @default(now())
+  reason         String?
+  remarks        String?
+  lastClassId    String?
+  feeDuesCleared Boolean  @default(true)
+  issuedBy       String?
+  createdAt      DateTime @default(now())
 
-  branch    Branch   @relation("TransferCertificateBranch", fields: [branchId], references: [id])
-  student   Student  @relation("TransferCertificateStudent", fields: [studentId], references: [id])
+  branch  Branch  @relation("TransferCertificateBranch", fields: [branchId], references: [id])
+  student Student @relation("TransferCertificateStudent", fields: [studentId], references: [id])
 
   @@unique([branchId, tcNo])
   @@index([branchId])
@@ -1573,21 +1662,21 @@ model TransferCertificate {
 }
 
 model Book {
-  id        String @id @default(cuid())
-  title     String
-  author    String
+  id              String    @id @default(cuid())
+  title           String
+  author          String
   // Unique per branch (2.3.3): two branches may both stock the same ISBN.
-  isbn      String?
-  publisher String?
-  category  String
-  totalCopies Int   @default(1)
-  availableCopies Int @default(1)
-  shelfLocation String?
-  branchId  String
-  deletedAt DateTime?
-  deletedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isbn            String?
+  publisher       String?
+  category        String
+  totalCopies     Int       @default(1)
+  availableCopies Int       @default(1)
+  shelfLocation   String?
+  branchId        String
+  deletedAt       DateTime?
+  deletedBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   branch Branch      @relation(fields: [branchId], references: [id])
   issues BookIssue[]
@@ -1618,7 +1707,7 @@ model BookIssue {
 // ── Transport ──
 
 model Vehicle {
-  id              String @id @default(cuid())
+  id              String    @id @default(cuid())
   // Unique per branch (2.3.3): two branches may both run "DL-01-AB-1234".
   vehicleNo       String
   type            String
@@ -1627,12 +1716,12 @@ model Vehicle {
   driverPhone     String
   driverLicense   String
   insuranceExpiry DateTime?
-  isActive        Boolean @default(true)
+  isActive        Boolean   @default(true)
   branchId        String
   deletedAt       DateTime?
   deletedBy       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   branch Branch           @relation(fields: [branchId], references: [id])
   routes TransportRoute[]
@@ -1642,30 +1731,30 @@ model Vehicle {
 }
 
 model TransportRoute {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   name      String
   vehicleId String
   branchId  String
-  fare      Decimal @db.Decimal(8, 2)
-  isActive  Boolean @default(true)
+  fare      Decimal  @db.Decimal(8, 2)
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  vehicle Vehicle      @relation(fields: [vehicleId], references: [id])
-  branch  Branch       @relation(fields: [branchId], references: [id])
+  vehicle Vehicle     @relation(fields: [vehicleId], references: [id])
+  branch  Branch      @relation(fields: [branchId], references: [id])
   stops   RouteStop[]
 
   @@map("transport_routes")
 }
 
 model RouteStop {
-  id        String @id @default(cuid())
-  routeId   String
-  name      String
+  id         String   @id @default(cuid())
+  routeId    String
+  name       String
   pickupTime String
   dropTime   String
-  order     Int
-  createdAt DateTime @default(now())
+  order      Int
+  createdAt  DateTime @default(now())
 
   route TransportRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
 
@@ -1682,7 +1771,7 @@ model Sequence {
   branchId     String
   // e.g. ADMISSION, RECEIPT, INVOICE, TC, EMPLOYEE, BONAFIDE
   code         String
-  format       String?  // "DPS/{AY}/{SEQ}" — NULL falls back to "{CODE}-{SEQ}"
+  format       String? // "DPS/{AY}/{SEQ}" — NULL falls back to "{CODE}-{SEQ}"
   currentValue Int      @default(0)
   padding      Int      @default(5)
   updatedAt    DateTime @updatedAt
@@ -1718,7 +1807,7 @@ model AuditLog {
 }
 
 model Document {
-  id              String         @id @default(cuid())
+  id              String          @id @default(cuid())
   studentId       String?
   staffId         String?
   type            DocumentType
@@ -1729,16 +1818,16 @@ model Document {
   sizeBytes       Int?
   virusScanStatus VirusScanStatus @default(PENDING)
   retentionUntil  DateTime?
-  isVerified      Boolean        @default(false)
+  isVerified      Boolean         @default(false)
   uploadedBy      String?
   deletedAt       DateTime?
   deletedBy       String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
-  student     Student?           @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  staff       Staff?             @relation(fields: [staffId], references: [id], onDelete: Cascade)
-  accessLogs  DocumentAccessLog[]
+  student    Student?            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  staff      Staff?              @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  accessLogs DocumentAccessLog[]
 
   @@index([studentId])
   @@index([staffId])
@@ -1781,17 +1870,17 @@ model DocumentAccessLog {
 }
 
 model Setting {
-  id        String   @id @default(cuid())
+  id          String   @id @default(cuid())
   // NULL = tenant-wide setting; otherwise branch-scoped. Uniqueness of the
   // NULL case is enforced in app code (Postgres treats NULLs as distinct).
-  branchId  String?
-  key       String
-  value     Json
-  dataType  String   @default("string") // string, number, boolean, json
+  branchId    String?
+  key         String
+  value       Json
+  dataType    String   @default("string") // string, number, boolean, json
   description String?
-  updatedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   branch Branch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
@@ -1800,22 +1889,22 @@ model Setting {
 }
 
 model NotificationLog {
-  id              String   @id @default(cuid())
-  branchId        String
-  channel         NotificationChannel
-  template        String?
-  recipientType   String   // STUDENT, STAFF, GUARDIAN, USER
-  recipientId     String
-  recipient       String?  // address/phone/whatsapp number
-  subject         String?
-  body            String?
-  status          NotificationStatus @default(QUEUED)
-  provider        String?
+  id                String              @id @default(cuid())
+  branchId          String
+  channel           NotificationChannel
+  template          String?
+  recipientType     String // STUDENT, STAFF, GUARDIAN, USER
+  recipientId       String
+  recipient         String? // address/phone/whatsapp number
+  subject           String?
+  body              String?
+  status            NotificationStatus  @default(QUEUED)
+  provider          String?
   providerMessageId String?
-  cost            Decimal? @db.Decimal(10, 4)
-  error           String?
-  sentAt          DateTime?
-  createdAt       DateTime @default(now())
+  cost              Decimal?            @db.Decimal(10, 4)
+  error             String?
+  sentAt            DateTime?
+  createdAt         DateTime            @default(now())
 
   branch Branch @relation(fields: [branchId], references: [id])
 

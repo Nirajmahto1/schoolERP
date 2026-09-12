@@ -164,6 +164,15 @@ async function resolveLoginTenant(
     if (!record.datastore) {
       return { error: [503, 'tenant-unavailable', 'School Not Ready', 'This school is still being provisioned. Try again shortly.'] };
     }
+    // 4.2.3 dunning enforcement: a suspended (unpaid) tenant is read-only —
+    // no new sessions. CHURNED/DELETING are blocked outright. TRIAL and
+    // ACTIVE pass. Same generic problem shape as every other login error.
+    if (record.status === 'SUSPENDED') {
+      return { error: [403, 'tenant-suspended', 'Subscription Suspended', 'This school\'s subscription is suspended. Contact the school office or billing support.'] };
+    }
+    if (record.status === 'CHURNED' || record.status === 'DELETING') {
+      return { error: [403, 'tenant-closed', 'Account Closed', 'This school\'s account is no longer active.'] };
+    }
     prisma = new PrismaClient({ datasourceUrl: record.datastore.connRef });
     tenantId = record.id;
 
@@ -176,6 +185,12 @@ async function resolveLoginTenant(
       include: { datastore: true },
     });
     if (record?.datastore) {
+      if (record.status === 'SUSPENDED') {
+        return { error: [403, 'tenant-suspended', 'Subscription Suspended', 'This school\'s subscription is suspended. Contact the school office or billing support.'] };
+      }
+      if (record.status === 'CHURNED' || record.status === 'DELETING') {
+        return { error: [403, 'tenant-closed', 'Account Closed', 'This school\'s account is no longer active.'] };
+      }
       prisma = new PrismaClient({ datasourceUrl: record.datastore.connRef });
       tenantId = record.id;
     }
