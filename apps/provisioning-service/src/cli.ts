@@ -315,9 +315,31 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'metering': {
+      // The nightly fleet pass (BUILD_PLAN 4.2.4): measure every active
+      // tenant from its own database and push samples to the control plane.
+      // Cron: `0 2 * * *  npm run cli -- metering`
+      const { runFleetMeteringPass } = await import('./metering');
+      const result = await runFleetMeteringPass(cp, { actor: 'cli:metering' });
+      if (args['json'] !== true) {
+        console.log(`metering pass @ ${result.ranAt}: ${result.succeeded}/${result.tenants} tenants measured (${result.failed} failed)`);
+        for (const s of result.samples) {
+          if (!s.ok) {
+            console.log(`  ✗ ${s.slug}: ${s.error}`);
+          } else {
+            const u = s.usage;
+            console.log(`  ✓ ${s.slug}: students=${u.students ?? '?'} staff=${u.staff ?? '?'} storage=${u.storage_bytes ?? '?'}B credits=${u.messaging_credits ?? '?'} (${s.durationMs}ms)`);
+          }
+        }
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command ?? '(none)'}`);
-      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, invoice-pdf, dunning, usage, billing-recon');
+      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, invoice-pdf, dunning, usage, billing-recon, metering');
       process.exitCode = 1;
   }
 
