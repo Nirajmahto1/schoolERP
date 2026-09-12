@@ -10,5 +10,6 @@ export * from './promotion';
 export * from './fees';
 export * from './gateway-payments';
 export * from './payment-methods';
+export * from './gst';
 export * from './attendance';
 export { seedDemoTenant, type DemoSeedOptions, type DemoSeedResult } from './demo-seed';

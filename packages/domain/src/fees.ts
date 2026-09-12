@@ -11,6 +11,7 @@
 import type { PrismaClient } from '@school-erp/database';
 import type { PaymentMethod, PaymentAllocationMode } from '@prisma/client';
 import { nextSequenceValue, nextSequenceValueIn, type TxClient } from './sequences';
+import { assertCashWithin269ST } from './payment-methods';
 
 export interface DemandLine {
   feeHeadId: string;
@@ -164,6 +165,20 @@ export async function postPayment(prisma: PrismaClient, input: PostPaymentInput)
   }
 
   return prisma.$transaction(async (tx) => {
+    // Section 269ST, Income-tax Act: cash receipts ≥ ₹2,00,000 (single or
+    // aggregated per day per branch) attract a 100% penalty on the RECEIVER.
+    // The platform refuses the cash rather than create the liability. Only
+    // physical cash is restricted — every banking-channel method is exempt.
+    if (input.method === 'CASH' && input.amount > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const agg = await tx.payment.aggregate({
+        where: { branchId: input.branchId, method: 'CASH', status: 'SUCCESS', paidAt: { gte: startOfDay } },
+        _sum: { amount: true },
+      });
+      assertCashWithin269ST(input.amount, Number(agg._sum.amount ?? 0));
+    }
+
     const openInvoices = await tx.invoice.findMany({
       where: {
         studentId: input.studentId,

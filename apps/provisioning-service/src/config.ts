@@ -14,6 +14,12 @@ import { loadDotenv } from '@school-erp/config';
 export interface ProvisioningEnv {
   controlPlaneUrl: string;
   adminDatabaseUrl: string;
+  /** OUR GSTIN — printed on every SaaS tax invoice (Rule 46, CGST Rules). */
+  supplierGstin?: string;
+  /** Supplier legal name as it must appear on tax invoices. */
+  supplierName?: string;
+  /** Supplier registered address as it must appear on tax invoices. */
+  supplierAddress?: string;
 }
 
 export function loadProvisioningEnv(env: NodeJS.ProcessEnv = process.env): ProvisioningEnv {
@@ -36,7 +42,16 @@ export function loadProvisioningEnv(env: NodeJS.ProcessEnv = process.env): Provi
     throw new Error('DATABASE_URL is required to derive the maintenance/admin URL.');
   }
 
-  return { controlPlaneUrl, adminDatabaseUrl };
+  return {
+    controlPlaneUrl,
+    adminDatabaseUrl,
+    // Tax-invoice supplier identity (Rule 46). Optional at dev time; the
+    // convert/renew commands warn when missing because invoices issued
+    // without the supplier's GSTIN are not valid tax invoices.
+    supplierGstin: env.SUPPLIER_GSTIN?.trim() || undefined,
+    supplierName: env.SUPPLIER_NAME?.trim() || undefined,
+    supplierAddress: env.SUPPLIER_ADDRESS?.trim() || undefined,
+  };
 }
 
 /**

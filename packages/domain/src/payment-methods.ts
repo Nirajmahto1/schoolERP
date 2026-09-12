@@ -40,12 +40,72 @@ export interface ReceiveChequeResult {
   chequeStatus: string;
 }
 
+// ── Indian-law guards (Phase 4) ──
+
+/**
+ * RBI Clean Note Policy / Negotiable Instruments Act practice: a cheque is
+ * valid for **3 months** from its date (90 days for some older instruments).
+ * A cheque dated further back can never be credited — accepting it would
+ * post money the bank will refuse. A cheque post-dated more than 3 months
+ * out is equally suspicious (stale-dated forward).
+ */
+export const CHEQUE_VALIDITY_DAYS = 90;
+
+export function validateChequeDate(chequeDate: Date, now: Date = new Date()): void {
+  const ms = now.getTime() - chequeDate.getTime();
+  const days = ms / 86_400_000;
+  if (days > CHEQUE_VALIDITY_DAYS) {
+    throw new Error(
+      `Cheque is stale: dated more than ${CHEQUE_VALIDITY_DAYS} days ago. Banks will not honour it — request a fresh cheque.`,
+    );
+  }
+  if (days < -CHEQUE_VALIDITY_DAYS) {
+    throw new Error(
+      `Cheque is post-dated more than ${CHEQUE_VALIDITY_DAYS} days ahead — it cannot be deposited in the current cycle.`,
+    );
+  }
+}
+
+/**
+ * Section 269ST, Income-tax Act 1961: NO person shall receive ₹2,00,000 or
+ * more **in cash** — in aggregate per day, per transaction, or per person
+ * (per event). The penalty on the RECEIVER is 100% of the amount received.
+ * Schools taking ₹2.5 lakh cash at admission would cop a ₹2.5 lakh penalty,
+ * so the platform refuses the cash outright rather than create the liability.
+ */
+export const CASH_RECEIPT_LIMIT_269ST = 200_000;
+
+/**
+ * Aggregate-cash check for one branch per calendar day (the "per day" limb of
+ * 269ST). Called with the day's existing cash total before posting a new
+ * cash payment. (`per transaction` and `per person` are covered by the
+ * caller passing amount < limit — the strictest reading.)
+ */
+export function assertCashWithin269ST(amount: number, existingCashToday: number): void {
+  if (amount >= CASH_RECEIPT_LIMIT_269ST) {
+    throw new Error(
+      `Section 269ST (Income-tax Act): cash receipt of ₹${amount.toLocaleString('en-IN')} is prohibited. ` +
+        'Single cash receipts of ₹2,00,000 or more attract a 100% penalty — take this via cheque/NEFT/UPI instead.',
+    );
+  }
+  if (existingCashToday + amount >= CASH_RECEIPT_LIMIT_269ST) {
+    throw new Error(
+      `Section 269ST (Income-tax Act): this cash receipt would take today's cash collections to ` +
+        `₹${(existingCashToday + amount).toLocaleString('en-IN')}, crossing the ₹2,00,000 per-day aggregate. ` +
+        'Record the balance via a banking channel.',
+    );
+  }
+}
+
 /**
  * Record a cheque: the payment posts IMMEDIATELY (the parent has handed over
  * a signed instrument — the school shows the fee as covered), and the cheque
  * row tracks the risk window. Bounce reverses via `bounceCheque`.
  */
 export async function receiveCheque(prisma: PrismaClient, input: ReceiveChequeInput): Promise<ReceiveChequeResult> {
+  // RBI 3-month validity: a stale cheque can never be credited, so accepting
+  // it would book money the bank will bounce.
+  validateChequeDate(input.chequeDate);
   const receiptNo = await nextSequenceValue(prisma, { branchId: input.branchId, code: 'RECEIPT' });
   return prisma.$transaction(async (tx) => {
     // Reuse the domain payment engine for allocation + ledger; the cheque

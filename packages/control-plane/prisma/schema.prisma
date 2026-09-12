@@ -42,6 +42,9 @@ model Tenant {
   // The school's GSTIN — printed on OUR tax invoices for their input credit
   // (BUILD_PLAN 4.2.2). Optional: not every school is GST-registered.
   gstin       String?
+  // Whether the school is GST-registered — decides B2B vs B2C on the tax
+  // invoice and whether their GSTIN may appear on it.
+  isGstRegistered Boolean @default(false)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -139,9 +142,23 @@ model SaasInvoice {
   invoiceNo       String?       @unique // SI-2026-27-00042, from the control-plane sequence
   amount          Decimal       @db.Decimal(12, 2)
   gstAmount       Decimal       @default(0) @db.Decimal(12, 2)
+  // Rule 46 (CGST Rules) split: intra-state → CGST+SGST, inter-state → IGST.
+  // Kept per-head because GSTR filings reconcile against these columns.
+  cgstAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  sgstAmount      Decimal       @default(0) @db.Decimal(12, 2)
+  igstAmount      Decimal       @default(0) @db.Decimal(12, 2)
   gstRate         Decimal       @default(18) @db.Decimal(5, 2)
   sacCode         String        @default("997331")
+  // Rule 46 parties: legal names + addresses, not just GSTINs.
+  supplierName    String?
+  supplierAddress String?
   supplierGstin   String? // OUR GSTIN (SUPPLIER_GSTIN env / platform setting)
+  recipientName   String?
+  recipientAddress String?
+  placeOfSupply   String? // GST state code of the recipient
+  reverseCharge   Boolean       @default(false) // SaaS platform → tax paid by us, not the school
+  amountInWords   String? // "Rupees Three Lakh ... Only" — Rule 46(g)/(h)
+  issuedAt        DateTime? // tax-invoice issue date (distinct from created/updated)
   periodStart     DateTime?
   periodEnd       DateTime?
   seats           Int?

@@ -77,6 +77,9 @@ async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
   const env = loadProvisioningEnv();
+  if ((command === 'convert' || command === 'renew') && !env.supplierGstin) {
+    console.error('WARNING: SUPPLIER_GSTIN is not set — the invoice will lack the supplier GSTIN and is NOT a valid tax invoice under Rule 46. Set SUPPLIER_GSTIN / SUPPLIER_NAME / SUPPLIER_ADDRESS in .env before billing real schools.');
+  }
   const cp = await openControlPlane();
 
   switch (command) {
@@ -236,12 +239,14 @@ async function main(): Promise<void> {
     }
 
     case 'convert': {
-      // Trial → paid: issues the GST tax invoice in the same transaction.
+      // Trial → paid: issues the Rule 46 tax invoice in the same transaction.
       const result = await convertTenantToPaid(cp, {
         tenantId: requireArg(args, 'tenant-id'),
         planCode: requireArg(args, 'plan-code'),
         seats: typeof args['seats'] === 'string' ? Number(args['seats']) : requireArg(args, 'seats') as unknown as number,
-        supplierGstin: typeof args['supplier-gstin'] === 'string' ? args['supplier-gstin'] : undefined,
+        supplierGstin: (typeof args['supplier-gstin'] === 'string' ? args['supplier-gstin'] : undefined) ?? env.supplierGstin,
+        supplierName: env.supplierName,
+        supplierAddress: env.supplierAddress,
         actor: 'cli:convert',
       });
       console.log(JSON.stringify(result, null, 2));
@@ -252,6 +257,9 @@ async function main(): Promise<void> {
       const result = await issueRenewalInvoice(cp, {
         tenantId: requireArg(args, 'tenant-id'),
         seats: Number(requireArg(args, 'seats')),
+        supplierGstin: (typeof args['supplier-gstin'] === 'string' ? args['supplier-gstin'] : undefined) ?? env.supplierGstin,
+        supplierName: env.supplierName,
+        supplierAddress: env.supplierAddress,
         actor: 'cli:renew',
       });
       console.log(JSON.stringify(result, null, 2));

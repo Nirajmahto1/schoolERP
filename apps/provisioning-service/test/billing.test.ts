@@ -88,11 +88,14 @@ describe('4.2.1 plans & caps', () => {
 describe('4.2.2 trial → paid + GST invoice', () => {
   it('converts a trial tenant and issues a compliant tax invoice', async () => {
     const tenant = await makeTrialTenant();
+    // Checksum-valid MH supplier GSTIN (27AAECS1234A1Z + 'Y').
     const result = await convertTenantToPaid(cp, {
       tenantId: tenant.id,
       planCode: 'GROWTH',
       seats: 1200,
-      supplierGstin: '27AAECS1234A1Z5',
+      supplierGstin: '27AAECS1234A1ZY',
+      supplierName: 'VibeEd Technologies Pvt Ltd',
+      supplierAddress: '4th Floor, Tech Park, Pune 411001',
     });
 
     expect(result.tenantStatus).toBe('ACTIVE');
@@ -104,9 +107,61 @@ describe('4.2.2 trial → paid + GST invoice', () => {
     const invoice = await cp.saasInvoice.findUniqueOrThrow({ where: { id: result.invoiceId } });
     expect(Number(invoice.gstRate)).toBe(GST_RATE);
     expect(invoice.sacCode).toBe(SAC_CODE);
-    expect(invoice.supplierGstin).toBe('27AAECS1234A1Z5');
+    expect(invoice.supplierGstin).toBe('27AAECS1234A1ZY');
     expect(invoice.invoiceNo).toMatch(/^SI-\d{4}-\d{2}-\d{5}$/);
     expect(invoice.status).toBe('ISSUED');
+
+    // ── Rule 46 anatomy ──
+    // Unregistered (B2C) school → place of supply = supplier state → CGST+SGST.
+    expect(Number(invoice.cgstAmount)).toBe(27_000);
+    expect(Number(invoice.sgstAmount)).toBe(27_000);
+    expect(Number(invoice.igstAmount)).toBe(0);
+    expect(invoice.placeOfSupply).toBe('27 (Maharashtra)');
+    expect(invoice.reverseCharge).toBe(false);
+    expect(invoice.issuedAt).not.toBeNull();
+    expect(invoice.supplierName).toBe('VibeEd Technologies Pvt Ltd');
+    expect(invoice.supplierAddress).toBe('4th Floor, Tech Park, Pune 411001');
+    expect(invoice.recipientName).toBe(tenant.legalName);
+    // Rule 46(g): tax amount in words, Indian numbering.
+    expect(invoice.amountInWords).toBe('Rupees Three Lakh Fifty Four Thousand Only');
+    expect(result.amountInWords).toBe(invoice.amountInWords);
+    // PAN is embedded in the GSTIN (10 chars) — printed for TDS cross-reference.
+    expect(result.supplierPan).toBe('AAECS1234A');
+  });
+
+  it('charges IGST when the registered school is in another state', async () => {
+    const tenant = await makeTrialTenant();
+    await cp.tenant.update({
+      where: { id: tenant.id },
+      data: { isGstRegistered: true, gstin: '29AAECS1234A1ZU' }, // KA school
+    });
+
+    const result = await convertTenantToPaid(cp, {
+      tenantId: tenant.id,
+      planCode: 'STARTER',
+      seats: 100,
+      supplierGstin: '27AAECS1234A1ZY', // MH supplier
+    });
+
+    // 100 × ₹175 = ₹17,500; inter-state → IGST 18% = ₹3,150, no CGST/SGST.
+    expect(result.amount).toBe(17_500);
+    expect(result.igst).toBe(3_150);
+    expect(result.cgst).toBe(0);
+    expect(result.sgst).toBe(0);
+    expect(result.placeOfSupply).toBe('Karnataka');
+
+    const invoice = await cp.saasInvoice.findUniqueOrThrow({ where: { id: result.invoiceId } });
+    expect(Number(invoice.igstAmount)).toBe(3_150);
+    expect(Number(invoice.cgstAmount)).toBe(0);
+    expect(invoice.placeOfSupply).toBe('29 (Karnataka)');
+    expect(invoice.amountInWords).toBe('Rupees Twenty Thousand Six Hundred Fifty Only');
+  });
+
+  it('refuses to issue an invoice with a GSTIN that fails the checksum', async () => {
+    const tenant = await makeTrialTenant();
+    await expect(
+      convertTenantToPaid(cp, { tenantId: tenant.id, planCode: 'STARTER', seats: 10, supplierGstin: '27AAECS1234A1Z5' }),
+    ).rejects.toThrow(/fails checksum/);
   });
 
   it('renewal rolls a second, sequentially numbered invoice', async () => {

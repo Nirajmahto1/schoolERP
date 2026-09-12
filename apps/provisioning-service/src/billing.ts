@@ -14,6 +14,7 @@
 
 import type { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { audit } from './audit';
+import { isValidGstin, gstinStateCode, stateName, panFromGstin, splitGst, amountInWords, GST_RATE, SAC_CODE } from '@school-erp/domain';
 
 // ── 4.2.1 Plans ──
 
@@ -88,8 +89,9 @@ export async function checkStudentCap(
 
 // ── 4.2.2 Trial → paid + GST invoices ──
 
-export const GST_RATE = 18;
-export const SAC_CODE = '997331'; // Licensing of hosted ERP software
+// Rate/SAC live in domain/gst.ts (single source of truth); re-exported here
+// so callers of the billing engine keep their import surface.
+export { GST_RATE, SAC_CODE };
 
 export interface ConvertToPaidInput {
   tenantId: string;
@@ -97,6 +99,10 @@ export interface ConvertToPaidInput {
   seats: number;
   /** Supplier GSTIN falls back to env in production; overridable for tests. */
   supplierGstin?: string;
+  /** Rule 46(a): supplier legal name printed on the invoice. */
+  supplierName?: string;
+  /** Rule 46(a): supplier address printed on the invoice. */
+  supplierAddress?: string;
   actor?: string;
 }
 
@@ -107,6 +113,14 @@ export interface ConversionResult {
   invoiceNo: string;
   amount: number;
   gstAmount: number;
+  /** Rule 46 split — exactly one of these pairs is non-zero. */
+  cgst: number;
+  sgst: number;
+  igst: number;
+  placeOfSupply: string;
+  amountInWords: string;
+  /** PAN embedded in the supplier GSTIN (TDS forms reference it). */
+  supplierPan: string | null;
   total: number;
 }
 
@@ -148,16 +162,49 @@ export async function convertTenantToPaid(controlPlane: ControlPlaneClient, inpu
     const invoiceNo = `SI-${fiscalYear}-${String(fyCount + 1).padStart(5, '0')}`;
 
     const amount = Number(plan.pricePerStudentYear) * input.seats;
-    const gstAmount = Math.round(amount * GST_RATE) / 100;
+
+    // ── Rule 46, CGST Rules 2017: the tax-invoice anatomy ──
+    // Place of supply = the recipient's state, read from THEIR GSTIN when
+    // registered. Unregistered (B2C) schools fall back to OUR state — the
+    // default location of supply for a registered supplier under Sec 10(2)
+    // of the IGST Act (same-state supply → CGST+SGST).
+    const supplierGstin = (input.supplierGstin ?? '').trim().toUpperCase() || null;
+    if (supplierGstin && !isValidGstin(supplierGstin)) {
+      throw new Error(`SUPPLIER_GSTIN fails checksum validation: ${supplierGstin}`);
+    }
+    const supplierState = supplierGstin ? gstinStateCode(supplierGstin) : '27'; // platform default: Maharashtra
+    const recipientGstin = tenant.isGstRegistered && tenant.gstin ? tenant.gstin.trim().toUpperCase() : null;
+    if (recipientGstin && !isValidGstin(recipientGstin)) {
+      throw new Error(`School GSTIN fails checksum validation: ${recipientGstin} — fix the tenant record before invoicing.`);
+    }
+    const placeOfSupply = recipientGstin ? gstinStateCode(recipientGstin) : supplierState;
+    const split = splitGst(amount, supplierState, placeOfSupply);
+    const gstAmount = Math.round(split.totalTax * 100) / 100;
+
     const invoice = await tx.saasInvoice.create({
       data: {
         tenantId: tenant.id,
         invoiceNo,
         amount,
         gstAmount,
+        cgstAmount: Math.round(split.cgst * 100) / 100,
+        sgstAmount: Math.round(split.sgst * 100) / 100,
+        igstAmount: Math.round(split.igst * 100) / 100,
         gstRate: GST_RATE,
         sacCode: SAC_CODE,
-        supplierGstin: input.supplierGstin,
+        // Rule 46 parties: legal names + addresses. We hold the school's
+        // legal name; a billing address column does not exist, so the legal
+        // name doubles as the address line until tenant onboarding captures
+        // more. Supplier identity comes from env at CLI level.
+        supplierName: input.supplierName ?? null,
+        supplierAddress: input.supplierAddress ?? null,
+        supplierGstin,
+        recipientName: tenant.legalName,
+        recipientAddress: null,
+        placeOfSupply: `${placeOfSupply} (${stateName(placeOfSupply)})`,
+        reverseCharge: false, // platform collects and remits GST itself
+        amountInWords: amountInWords(amount + gstAmount),
+        issuedAt: now,
         periodStart: now,
         periodEnd,
         seats: input.seats,
@@ -179,6 +226,12 @@ export async function convertTenantToPaid(controlPlane: ControlPlaneClient, inpu
       invoiceNo,
       amount,
       gstAmount,
+      cgst: Math.round(split.cgst * 100) / 100,
+      sgst: Math.round(split.sgst * 100) / 100,
+      igst: Math.round(split.igst * 100) / 100,
+      placeOfSupply: stateName(placeOfSupply),
+      amountInWords: amountInWords(amount + gstAmount),
+      supplierPan: supplierGstin ? panFromGstin(supplierGstin) : null,
       total: amount + gstAmount,
     };
   });
@@ -188,6 +241,9 @@ export interface IssueRenewalInput {
   tenantId: string;
   seats: number;
   supplierGstin?: string;
+  /** Rule 46(a): supplier identity printed on the renewal invoice. */
+  supplierName?: string;
+  supplierAddress?: string;
   actor?: string;
 }
 
@@ -203,6 +259,8 @@ export async function issueRenewalInvoice(controlPlane: ControlPlaneClient, inpu
     planCode: tenant.plan.code,
     seats: input.seats,
     supplierGstin: input.supplierGstin,
+    supplierName: input.supplierName,
+    supplierAddress: input.supplierAddress,
     actor: input.actor,
   });
 }
