@@ -97,6 +97,18 @@ const messagingSchema = z.object({
   SMS_SENDER_HEADER: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).max(6).optional()),
   // Generic webhook secret for provider delivery callbacks (shared HMAC).
   MESSAGING_WEBHOOK_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // Email (§5.3) — exactly one provider is configured at a time; both set is
+  // a misconfiguration the service refuses (silent double-sending risk).
+  // SES: SMTP-interface credentials used against the HTTPS v2 SendEmail
+  // endpoint via SigV4 — region + access key + secret key.
+  AWS_SES_REGION: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  AWS_SES_ACCESS_KEY_ID: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  AWS_SES_SECRET_ACCESS_KEY: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // Postmark: one server token, simplest email API that exists.
+  POSTMARK_SERVER_TOKEN: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // Verified From address (either provider refuses unverified senders).
+  EMAIL_FROM_ADDRESS: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().email().optional()),
+  EMAIL_FROM_NAME: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
   // FCM push (§5.4): a Google service account with the
   // `https://www.googleapis.com/auth/firebase.messaging` scope. All three
   // vars are needed together; any missing → push channel unconfigured and

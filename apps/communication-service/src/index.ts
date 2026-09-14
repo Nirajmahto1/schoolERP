@@ -10,6 +10,7 @@ import { buildOpenApiDocument } from '@school-erp/http';
 import { WhatsAppClient, parseDeliveryStatuses } from './whatsapp';
 import { SmsClient } from './sms';
 import { FcmClient } from './fcm';
+import { EmailClient } from './email';
 import { Dispatcher } from './dispatcher';
 import { scanAbsencesForDate } from './absence-alerts';
 
@@ -23,6 +24,33 @@ const SERVICE_NAME = 'communication-service';
  */
 function messagingFromEnv() {
   const e = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
+  // Email: exactly one provider, or none. Both set is a refused
+  // misconfiguration (double-send risk), not a fallback.
+  const hasSes = !!(e.AWS_SES_REGION && e.AWS_SES_ACCESS_KEY_ID && e.AWS_SES_SECRET_ACCESS_KEY && e.EMAIL_FROM_ADDRESS);
+  const hasPostmark = !!(e.POSTMARK_SERVER_TOKEN && e.EMAIL_FROM_ADDRESS);
+  EmailClient.validate({
+    region: e.AWS_SES_REGION,
+    accessKeyId: e.AWS_SES_ACCESS_KEY_ID,
+    secretAccessKey: e.AWS_SES_SECRET_ACCESS_KEY,
+    serverToken: e.POSTMARK_SERVER_TOKEN,
+  });
+  const email = hasSes
+    ? new EmailClient({
+        provider: 'ses',
+        fromAddress: e.EMAIL_FROM_ADDRESS!,
+        fromName: e.EMAIL_FROM_NAME,
+        region: e.AWS_SES_REGION,
+        accessKeyId: e.AWS_SES_ACCESS_KEY_ID,
+        secretAccessKey: e.AWS_SES_SECRET_ACCESS_KEY,
+      })
+    : hasPostmark
+      ? new EmailClient({
+          provider: 'postmark',
+          fromAddress: e.EMAIL_FROM_ADDRESS!,
+          fromName: e.EMAIL_FROM_NAME,
+          serverToken: e.POSTMARK_SERVER_TOKEN,
+        })
+      : null;
   return {
     whatsapp:
       e.WHATSAPP_TOKEN && e.WHATSAPP_PHONE_NUMBER_ID
@@ -36,6 +64,7 @@ function messagingFromEnv() {
       e.FCM_PROJECT_ID && e.FCM_CLIENT_EMAIL && e.FCM_PRIVATE_KEY
         ? new FcmClient({ projectId: e.FCM_PROJECT_ID, clientEmail: e.FCM_CLIENT_EMAIL, privateKey: e.FCM_PRIVATE_KEY })
         : null,
+    email,
     whatsappWebhookSecret: e.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
     messagingWebhookSecret: e.MESSAGING_WEBHOOK_SECRET,
     quietHours: { start: e.QUIET_HOURS_START, end: e.QUIET_HOURS_END },
@@ -50,6 +79,7 @@ export interface CommunicationAppOptions {
     whatsapp: WhatsAppClient | null;
     sms: SmsClient | null;
     fcm?: FcmClient | null;
+    email?: EmailClient | null;
     whatsappWebhookSecret?: string;
     messagingWebhookSecret?: string;
     quietHours: { start: number; end: number };
@@ -71,6 +101,7 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
     whatsapp: messaging.whatsapp,
     sms: messaging.sms,
     fcm: messaging.fcm ?? null,
+    email: messaging.email ?? null,
     quietHours: messaging.quietHours,
   });
 
@@ -558,6 +589,7 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
         whatsapp: messaging.whatsapp,
         sms: messaging.sms,
         fcm: messaging.fcm ?? null,
+        email: messaging.email ?? null,
         quietHours: messaging.quietHours,
       }).drain();
     } catch (err) {

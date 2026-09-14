@@ -22,11 +22,13 @@ import type { PrismaClient, NotificationLog } from '@school-erp/database';
 import { WhatsAppClient } from './whatsapp';
 import { SmsClient } from './sms';
 import { FcmClient, type PushPayload } from './fcm';
+import { EmailClient } from './email';
 
 export interface DispatcherConfig {
   whatsapp: WhatsAppClient | null; // null = not configured → channel unavailable
   sms: SmsClient | null;
   fcm: FcmClient | null; // null = push unconfigured
+  email: EmailClient | null; // null = email unconfigured
   /** Quiet hours in server-local hours; non-urgent sends wait them out. */
   quietHours: { start: number; end: number };
   /** Rows per drain pass. */
@@ -38,10 +40,12 @@ export interface DispatcherConfig {
 const FALLBACK: Record<string, string[]> = {
   WHATSAPP: ['SMS', 'EMAIL'],
   SMS: ['WHATSAPP', 'EMAIL'],
-  EMAIL: ['WHATSAPP', 'SMS'],
+  // Email is the last resort everywhere: it is the cheapest to hold and the
+  // weakest for parent reach in India (§5.3) — but never a silent drop.
+  EMAIL: [],
   // Push without a device goes to SMS — a parent without the app installed
   // still hears about the absence alert.
-  PUSH: ['WHATSAPP', 'SMS'],
+  PUSH: ['WHATSAPP', 'SMS', 'EMAIL'],
 };
 
 /** A provider attempt's outcome — transport level, pre-DB-stamp. */
@@ -209,6 +213,14 @@ export class Dispatcher {
     // The guard above guarantees an address for every non-PUSH channel; PUSH
     // never reads this local (it fans out through the registry instead).
     const address = row.recipient as string;
+
+    if (channel === 'EMAIL') {
+      const email = this.config.email;
+      if (!email) return null;
+      // Plain-text bodies render acceptably in every client; subject comes
+      // from the row when the trigger set one.
+      return email.send(address, row.subject ?? 'School update', `<p>${(row.body ?? '').replace(/\n/g, '<br>')}</p>`, row.body ?? '');
+    }
 
     if (channel === 'WHATSAPP') {
       const wa = this.config.whatsapp;

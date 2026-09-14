@@ -22,6 +22,7 @@ import { createCommunicationApp } from '../src/index';
 import { WhatsAppClient } from '../src/whatsapp';
 import { SmsClient } from '../src/sms';
 import { FcmClient } from '../src/fcm';
+import { EmailClient } from '../src/email';
 import type { FetchLike } from '../src/whatsapp';
 
 const WEBHOOK_SECRET = testSecret(24);
@@ -48,6 +49,24 @@ const smsOk: FetchLike = async () => ({ ok: true, status: 200, json: async () =>
  */
 const pushState = { unregistered: new Set<string>() };
 const pushCalls: Array<{ token: string; title?: string; body?: string }> = [];
+
+/**
+ * Email stub recording sends; configurable per-test outcome.
+ */
+const emailCalls: Array<{ to: string; subject: string; html: string }> = [];
+let emailMode: 'ok' | 'fail' = 'ok';
+
+function emailStub(): EmailClient {
+  return new EmailClient(
+    { provider: 'postmark', fromAddress: 'school@test.local', serverToken: 'tok' },
+    async (url, init) => {
+      const body = JSON.parse(init?.body ?? '{}');
+      emailCalls.push({ to: body.To, subject: body.Subject, html: body.HtmlBody });
+      if (emailMode === 'fail') return { ok: false, status: 422, json: async () => ({ ErrorCode: 406, Message: 'Inactive recipient' }) };
+      return { ok: true, status: 200, json: async () => ({ MessageID: `pm-${emailCalls.length}` }) };
+    },
+  );
+}
 
 function fcmStub(): FcmClient {
   return new FcmClient(
@@ -108,6 +127,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
         whatsapp: waClient,
         sms: new SmsClient({ apiBase: 'https://sms.example.test', apiKey: 'k', senderHeader: 'COMMNO' }, smsOk),
         fcm: fcmStub(),
+        email: emailStub(),
         whatsappWebhookSecret: WEBHOOK_SECRET,
         quietHours: { start: 2, end: 3 }, // 02:00–03:00 local — tests run outside it
       },
@@ -257,10 +277,13 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     expect(drain.body.failed).toBeGreaterThanOrEqual(1);
   });
 
-  it('SMS without a DLT template id falls back to EMAIL, which is unconfigured (full chain visible)', async () => {
+  it('SMS fails (no DLT id) → WHATSAPP fails → EMAIL delivers: the full chain', async () => {
     // The dispatcher passes row.template stripped of the dlt: prefix — absent
-    // here, so the SmsClient must refuse before touching the network. EMAIL
-    // is then also unconfigured, so the whole chain lands in the error.
+    // here, so the SmsClient must refuse before touching the network. With
+    // WhatsApp also failing, EMAIL picks the row up: the complete chain.
+    wa.setMode('fail');
+    emailMode = 'ok';
+    emailCalls.length = 0;
     await prisma.notificationLog.create({
       data: { branchId: seed.branchId, channel: 'SMS', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000003', body: 'no dlt id', status: 'QUEUED' },
     });
@@ -268,9 +291,30 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     await request(app).post('/dispatch/drain').set('x-internal-assertion', asComm()).send({}).expect(200);
 
     const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'no dlt id' } });
+    expect(log.status).toBe('SENT');
+    expect(log.provider).toBe('EMAIL');
+    expect(emailCalls).toHaveLength(1);
+  });
+
+  it('bare app (no providers): the whole chain fails closed with a full trail', async () => {
+    // No providers at all: every channel's reason lands in the row's error —
+    // this is the delivery-dispute trail (§5.5).
+    const bare = createCommunicationApp({
+      env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
+      prisma,
+      messaging: { whatsapp: null, sms: null, quietHours: { start: 2, end: 3 } },
+    });
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'SMS', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000004', body: 'no dlt bare', status: 'QUEUED' },
+    });
+
+    await request(bare).post('/dispatch/drain').set('x-internal-assertion', asComm()).send({}).expect(200);
+
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'no dlt bare' } });
     expect(log.status).toBe('FAILED');
     const err = String(log.error);
-    expect(err).toContain('DLT template id'); // the real reason
+    expect(err).toContain('sms: not configured');
+    expect(err).toContain('whatsapp: not configured');
     expect(err).toContain('email: not configured'); // the chain kept going
   });
 
@@ -502,6 +546,69 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     expect(scan.body.studentsAbsent).toBe(0);
     const after = await prisma.notificationLog.count({ where: { template: 'absence_alert' } });
     expect(after).toBe(before);
+  });
+
+  it('EMAIL rows send via the configured provider with subject and body', async () => {
+    wa.setMode('ok');
+    emailMode = 'ok';
+    emailCalls.length = 0;
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'EMAIL', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: 'parent@example.test', subject: 'Report card', body: 'Term 2 report card is published.', status: 'QUEUED' },
+    });
+
+    const drain = await request(app)
+      .post('/dispatch/drain')
+      .set('x-internal-assertion', asComm())
+      .send({})
+      .expect(200);
+
+    expect(drain.body.sent).toBeGreaterThanOrEqual(1);
+    expect(emailCalls).toHaveLength(1);
+    expect(emailCalls[0].to).toBe('parent@example.test');
+    expect(emailCalls[0].subject).toBe('Report card');
+    expect(emailCalls[0].html).toContain('Term 2 report card is published.');
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'Term 2 report card is published.' } });
+    expect(log.status).toBe('SENT');
+    expect(log.provider).toBe('EMAIL');
+    expect(log.providerMessageId).toMatch(/^pm-/);
+  });
+
+  it('WHATSAPP failure falls through SMS to EMAIL when SMS also fails', async () => {
+    // The SMS client without a DLT template id refuses (fail-closed), so the
+    // WHATSAPP→SMS→EMAIL chain exercises its full length here.
+    wa.setMode('fail');
+    emailMode = 'ok';
+    emailCalls.length = 0;
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000007', body: 'chain-to-email', status: 'QUEUED' },
+    });
+
+    const drain = await request(app)
+      .post('/dispatch/drain')
+      .set('x-internal-assertion', asComm())
+      .send({})
+      .expect(200);
+
+    expect(drain.body.fallbacks).toBeGreaterThanOrEqual(1);
+    expect(emailCalls.map((c) => c.to)).toEqual(['919000000007']); // phone → email fallback target is the same row recipient
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'chain-to-email' } });
+    expect(log.status).toBe('SENT');
+    expect(log.provider).toBe('EMAIL');
+  });
+
+  it('EMAIL provider failure fails the row with the provider reason (no further fallback)', async () => {
+    emailMode = 'fail';
+    emailCalls.length = 0;
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'EMAIL', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: 'parent@example.test', subject: 'x', body: 'email-fail-row', status: 'QUEUED' },
+    });
+
+    await request(app).post('/dispatch/drain').set('x-internal-assertion', asComm()).send({}).expect(200);
+
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'email-fail-row' } });
+    expect(log.status).toBe('FAILED');
+    expect(String(log.error)).toContain('Inactive recipient');
+    expect(emailCalls).toHaveLength(1); // EMAIL is terminal — no WHATSAPP re-attempt
   });
 
   it('without messaging config the app still boots and fails sends closed', async () => {
