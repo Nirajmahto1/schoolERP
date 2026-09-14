@@ -1,158 +1,43 @@
 // ──────────────────────────────────────────────
-// School ERP — Timetable Engine (Go)
-// Constraint-based timetable generation
+// School ERP — Timetable Engine (Go), Phase 6.2
+//
+// The strongest Go case in the system: a constraint solver for school
+// timetables with a hard-constraint checker that refuses to emit anything
+// imperfect. Schools do this on paper over a week; the engine does it in
+// milliseconds, deterministic under a seed.
+//
+// REST surface (behind the gateway, internal assertion on every call):
+//   POST /timetable/validate       → check any timetable against the hard rules
+//   POST /timetable/generate       → solve; "solved" means ZERO violations
+//   POST /timetable/substitutions  → cover suggestions for absent teachers
+//   GET  /health
 // ──────────────────────────────────────────────
 
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// ── Models ──
+const assertionIssuer = "school-erp-gateway"
+const assertionAudience = "timetable-engine"
 
-type TimetableRequest struct {
-	BranchID       string       `json:"branch_id" binding:"required"`
-	AcademicYearID string       `json:"academic_year_id" binding:"required"`
-	Constraints    []Constraint `json:"constraints"`
-}
-
-type Constraint struct {
-	Type  string `json:"type"`  // NO_CONSECUTIVE, MAX_PER_DAY, TEACHER_UNAVAILABLE, ROOM_CAPACITY
-	Value string `json:"value"` // JSON-encoded constraint parameters
-}
-
-type TimetableSlot struct {
-	Day       string `json:"day"`
-	StartTime string `json:"start_time"`
-	EndTime   string `json:"end_time"`
-	SubjectID string `json:"subject_id"`
-	TeacherID string `json:"teacher_id"`
-	SectionID string `json:"section_id"`
-	Room      string `json:"room"`
-}
-
-type TimetableResponse struct {
-	Status    string          `json:"status"`
-	Message   string          `json:"message"`
-	Slots     []TimetableSlot `json:"slots"`
-	Conflicts []string        `json:"conflicts"`
-}
-
-type teacherUnavailableConstraint struct {
-	TeacherID string   `json:"teacher_id"`
-	Days      []string `json:"days"`
-}
-
-var weekdays = []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
-var subjectRotation = []string{"MATH", "SCI", "ENG", "HIST", "GEO", "COMP"}
-var teacherRotation = []string{"TCH-001", "TCH-002", "TCH-003", "TCH-004", "TCH-005", "TCH-006"}
-
-func normalizeDay(day string) string {
-	trimmed := strings.ToLower(strings.TrimSpace(day))
-	switch trimmed {
-	case "monday":
-		return "Monday"
-	case "tuesday":
-		return "Tuesday"
-	case "wednesday":
-		return "Wednesday"
-	case "thursday":
-		return "Thursday"
-	case "friday":
-		return "Friday"
-	default:
-		return ""
-	}
-}
-
-func parseMaxPerDay(constraints []Constraint) int {
-	maxPerDay := 6
-	for _, constraint := range constraints {
-		if strings.ToUpper(strings.TrimSpace(constraint.Type)) != "MAX_PER_DAY" {
-			continue
-		}
-		var parsed struct {
-			Value int `json:"value"`
-		}
-		if err := json.Unmarshal([]byte(constraint.Value), &parsed); err == nil && parsed.Value > 0 && parsed.Value <= 8 {
-			maxPerDay = parsed.Value
-		}
-	}
-	return maxPerDay
-}
-
-func parseTeacherUnavailability(constraints []Constraint) map[string]map[string]bool {
-	byTeacher := map[string]map[string]bool{}
-	for _, constraint := range constraints {
-		if strings.ToUpper(strings.TrimSpace(constraint.Type)) != "TEACHER_UNAVAILABLE" {
-			continue
-		}
-
-		var parsed teacherUnavailableConstraint
-		if err := json.Unmarshal([]byte(constraint.Value), &parsed); err != nil {
-			continue
-		}
-		if parsed.TeacherID == "" || len(parsed.Days) == 0 {
-			continue
-		}
-
-		if _, ok := byTeacher[parsed.TeacherID]; !ok {
-			byTeacher[parsed.TeacherID] = map[string]bool{}
-		}
-		for _, day := range parsed.Days {
-			dayName := normalizeDay(day)
-			if dayName != "" {
-				byTeacher[parsed.TeacherID][dayName] = true
-			}
-		}
-	}
-	return byTeacher
-}
-
-func slotTimes(period int) (string, string) {
-	start := time.Date(2000, time.January, 1, 8, 0, 0, 0, time.UTC).Add(time.Duration(period) * 50 * time.Minute)
-	end := start.Add(45 * time.Minute)
-	return start.Format("15:04"), end.Format("15:04")
-}
-
-func generateTimetable(constraints []Constraint) ([]TimetableSlot, []string) {
-	maxPerDay := parseMaxPerDay(constraints)
-	unavailableByTeacher := parseTeacherUnavailability(constraints)
-	conflicts := []string{}
-	slots := make([]TimetableSlot, 0, len(weekdays)*maxPerDay)
-
-	for dayIndex, day := range weekdays {
-		for period := 0; period < maxPerDay; period++ {
-			rotationIndex := (dayIndex*maxPerDay + period) % len(subjectRotation)
-			teacherID := teacherRotation[rotationIndex]
-			startTime, endTime := slotTimes(period)
-
-			if unavailableByTeacher[teacherID][day] {
-				conflicts = append(conflicts, "Teacher "+teacherID+" unavailable on "+day+" for slot "+startTime)
-				continue
-			}
-
-			slots = append(slots, TimetableSlot{
-				Day:       day,
-				StartTime: startTime,
-				EndTime:   endTime,
-				SubjectID: subjectRotation[rotationIndex],
-				TeacherID: teacherID,
-				SectionID: "SEC-A",
-				Room:      "R-" + string(rune('1'+(rotationIndex%5))),
-			})
-		}
-	}
-
-	return slots, conflicts
+// AssertionClaims mirrors @school-erp/auth's claim schema (only what the
+// engine logs is declared; jwt/v5 ignores the rest).
+type AssertionClaims struct {
+	Email    string   `json:"email"`
+	TenantID string   `json:"tenantId"`
+	Roles    []string `json:"roles"`
+	jwt.RegisteredClaims
 }
 
 func main() {
@@ -161,7 +46,33 @@ func main() {
 		port = "6003"
 	}
 
-	r := gin.Default()
+	auth, err := NewAuthenticator()
+	if err != nil {
+		log.Fatalf("timetable-engine: %v", err)
+	}
+
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Logger(), gin.Recovery())
+
+	authorise := func(c *gin.Context) *AssertionClaims {
+		token := c.GetHeader("x-internal-assertion")
+		if token == "" {
+			token = c.Query("assertion")
+		}
+		parsed, err := jwt.ParseWithClaims(token, &AssertionClaims{},
+			func(*jwt.Token) (interface{}, error) { return auth.key, nil },
+			jwt.WithValidMethods([]string{"RS256"}),
+			jwt.WithIssuer(assertionIssuer),
+			jwt.WithAudience(assertionAudience),
+			jwt.WithLeeway(5*time.Second),
+		)
+		if err != nil || !parsed.Valid || parsed.Claims.(*AssertionClaims).Subject == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing internal assertion"})
+			return nil
+		}
+		return parsed.Claims.(*AssertionClaims)
+	}
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -171,25 +82,76 @@ func main() {
 		})
 	})
 
-	r.POST("/timetable/generate", func(c *gin.Context) {
-		var req TimetableRequest
+	// Validate an externally-produced (hand-edited, imported, legacy)
+	// timetable against the hard rules. The checker is the same one the
+	// solver uses internally — one source of truth.
+	r.POST("/timetable/validate", func(c *gin.Context) {
+		if authorise(c) == nil {
+			return
+		}
+		var req struct {
+			Problem Problem `json:"problem"`
+			Slots   []Slot  `json:"slots"`
+		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-
-		slots, conflicts := generateTimetable(req.Constraints)
-
-		c.JSON(http.StatusOK, TimetableResponse{
-			Status:    "generated",
-			Message:   "Timetable generated successfully",
-			Slots:     slots,
-			Conflicts: conflicts,
-		})
+		if err := req.Problem.validate(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		vs := req.Problem.CheckFull(req.Slots)
+		status := "valid"
+		if len(vs) > 0 {
+			status = "violations"
+		}
+		c.JSON(http.StatusOK, gin.H{"status": status, "violations": vs, "checked": len(req.Slots)})
 	})
 
-	log.Printf("📅 Timetable Engine running on http://localhost:%s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	// Generate: solve the spec. "solved" guarantees zero hard violations.
+	r.POST("/timetable/generate", func(c *gin.Context) {
+		if authorise(c) == nil {
+			return
+		}
+		var p Problem
+		if err := c.ShouldBindJSON(&p); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := p.validate(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, p.Solve())
+	})
+
+	// Substitutions: cover suggestions for absent teachers on one day.
+	r.POST("/timetable/substitutions", func(c *gin.Context) {
+		if authorise(c) == nil {
+			return
+		}
+		var sp SubstitutionProblem
+		if err := c.ShouldBindJSON(&sp); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, SuggestSubstitutions(sp))
+	})
+
+	srv := &http.Server{Addr: ":" + port, Handler: r}
+	go func() {
+		log.Printf("📅 Timetable Engine (Phase 6.2) on http://localhost:%s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("timetable-engine: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
 }
