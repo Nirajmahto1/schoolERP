@@ -131,6 +131,7 @@ model User {
   student         Student?
   staff           Staff?
   guardians       Guardian[]
+  deviceTokens    DeviceToken[]
 
   @@index([email])
   @@map("users")
@@ -1886,6 +1887,29 @@ model Setting {
 
   @@unique([branchId, key])
   @@map("settings")
+}
+
+// ── Push notifications (BUILD_PLAN 5.4) ──
+// A device registers its FCM token after login; the dispatcher resolves a
+// PUSH row's userId to these rows. Several rows per user is normal (phone +
+// tablet), and a token that FCM reports unregistered/invalid is deleted on
+// sight — stale tokens are the #1 reason push "silently stops working".
+model DeviceToken {
+  id          String   @id @default(cuid())
+  userId      String
+  // FCM registration token — opaque, ~140–180 chars, rotates on app restore.
+  token       String   @unique
+  platform    String // ANDROID | IOS | WEB
+  // Human-readable label the app sends ("Ravi's Redmi", "iPad of Class 6B").
+  label       String?
+  isActive    Boolean  @default(true)
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("device_tokens")
 }
 
 model NotificationLog {

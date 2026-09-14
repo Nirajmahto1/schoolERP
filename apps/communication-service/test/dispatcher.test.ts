@@ -21,6 +21,7 @@ import { TestDatabase, assertionFor, seedTenant, testKeypair, testSecret, type T
 import { createCommunicationApp } from '../src/index';
 import { WhatsAppClient } from '../src/whatsapp';
 import { SmsClient } from '../src/sms';
+import { FcmClient } from '../src/fcm';
 import type { FetchLike } from '../src/whatsapp';
 
 const WEBHOOK_SECRET = testSecret(24);
@@ -37,8 +38,32 @@ function waFetch(mode: 'ok' | 'fail') {
   return { calls, fn };
 }
 
-/** SMS stub that always succeeds — the fallback target. */
+/** Configurable SMS stub — always succeeds; the fallback target. */
 const smsOk: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ type: 'success', request_id: 'sms-1' }) });
+
+/**
+ * FCM stub whose behavior is driven by a mutable list of registered device
+ * tokens: tokens in `pushState.unregistered` answer 404 UNREGISTERED (a
+ * stale device FCM has forgotten), everything else succeeds.
+ */
+const pushState = { unregistered: new Set<string>() };
+const pushCalls: Array<{ token: string; title?: string; body?: string }> = [];
+
+function fcmStub(): FcmClient {
+  return new FcmClient(
+    { projectId: 'push-test', clientEmail: 'push@test.iam.gserviceaccount.com', privateKey: 'test-key' },
+    async (url, init) => {
+      if (url.includes('oauth2')) return { ok: true, status: 200, json: async () => ({ access_token: 'ya29.test', expires_in: 3600 }) };
+      const msg = JSON.parse(init?.body ?? '{}').message;
+      pushCalls.push({ token: msg.token, title: msg.notification?.title, body: msg.notification?.body });
+      if (pushState.unregistered.has(msg.token)) {
+        return { ok: false, status: 404, json: async () => ({ error: { message: 'Requested entity was not found.', details: [{ errorCode: 'UNREGISTERED' }] } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ name: `projects/push-test/messages/${pushCalls.length}` }) };
+    },
+    () => 'signed-by-test',
+  );
+}
 
 describe('Phase 5: dispatcher + delivery receipts', () => {
   let db: TestDatabase;
@@ -82,6 +107,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
       messaging: {
         whatsapp: waClient,
         sms: new SmsClient({ apiBase: 'https://sms.example.test', apiKey: 'k', senderHeader: 'COMMNO' }, smsOk),
+        fcm: fcmStub(),
         whatsappWebhookSecret: WEBHOOK_SECRET,
         quietHours: { start: 2, end: 3 }, // 02:00–03:00 local — tests run outside it
       },
@@ -286,6 +312,127 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
       .get('/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=' + encodeURIComponent(WEBHOOK_SECRET) + '&hub.challenge=CHAL123')
       .expect(200);
     expect(challenge.text).toBe('CHAL123');
+  });
+
+  it('PUSH fans out to every registered device of the recipient user', async () => {
+    wa.setMode('ok'); // earlier tests flipped the WhatsApp stub to fail-mode
+    pushState.unregistered.clear();
+    pushCalls.length = 0;
+    await prisma.deviceToken.createMany({
+      data: [
+        { userId: seed.guardianUserId, token: 'fcm-tok-phone', platform: 'ANDROID', label: 'phone' },
+        { userId: seed.guardianUserId, token: 'fcm-tok-tablet', platform: 'IOS' },
+      ],
+    });
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'PUSH', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, subject: 'Fee due', body: 'Term 2 fee is due', template: 'link:app://fees/42', status: 'QUEUED' },
+    });
+
+    const drain = await request(app)
+      .post('/dispatch/drain')
+      .set('x-internal-assertion', asComm())
+      .send({})
+      .expect(200);
+
+    expect(drain.body.sent).toBeGreaterThanOrEqual(1);
+    expect(pushCalls.map((c) => c.token).sort()).toEqual(['fcm-tok-phone', 'fcm-tok-tablet']);
+    expect(pushCalls[0].title).toBe('Fee due');
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { channel: 'PUSH', body: 'Term 2 fee is due' } });
+    expect(log.status).toBe('SENT');
+    expect(log.provider).toBe('PUSH');
+  });
+
+  it('a stale token (FCM UNREGISTERED) is deleted; the row still sends via the healthy device', async () => {
+    pushState.unregistered.clear();
+    pushCalls.length = 0;
+    pushState.unregistered.add('fcm-tok-deleted-app');
+    await prisma.deviceToken.create({
+      data: { userId: seed.guardianUserId, token: 'fcm-tok-deleted-app', platform: 'ANDROID' },
+    });
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'PUSH', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, subject: 'PTM invite', body: 'PTM on Saturday', status: 'QUEUED' },
+    });
+
+    await request(app).post('/dispatch/drain').set('x-internal-assertion', asComm()).send({}).expect(200);
+
+    const stale = await prisma.deviceToken.findUnique({ where: { token: 'fcm-tok-deleted-app' } });
+    expect(stale).toBeNull(); // deleted on FCM's word
+    // One dead device does not fail the user's row: the two healthy devices
+    // registered in the previous test carry the fan-out.
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'PTM on Saturday' } });
+    expect(log.status).toBe('SENT');
+  });
+
+  it('PUSH with no registered devices falls back to SMS', async () => {
+    wa.setMode('ok');
+    pushState.unregistered.clear();
+    pushCalls.length = 0;
+    const otherUser = await prisma.user.create({
+      data: {
+        email: 'nodevices@comm.test',
+        passwordHash: 'x',
+        defaultBranchId: seed.branchId,
+        roleAssignments: { create: { roleId: 'sys_parent', branchId: seed.branchId } },
+      },
+      select: { id: true },
+    });
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'PUSH', recipientType: 'USER', recipientId: otherUser.id, recipient: '919000000009', subject: 'Holiday', body: 'School closed tomorrow', status: 'QUEUED' },
+    });
+
+    const drain = await request(app)
+      .post('/dispatch/drain')
+      .set('x-internal-assertion', asComm())
+      .send({})
+      .expect(200);
+
+    expect(drain.body.fallbacks).toBeGreaterThanOrEqual(1);
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'School closed tomorrow' } });
+    expect(log.status).toBe('SENT');
+    expect(log.provider).toBe('WHATSAPP'); // PUSH → WHATSAPP is the first fallback hop
+  });
+
+  it('device registration: upsert by token, validation, and ownership-scoped delete', async () => {
+    pushState.unregistered.clear();
+    pushCalls.length = 0;
+
+    // Register a device for the admin user.
+    const reg = await request(app)
+      .post('/devices')
+      .set('x-internal-assertion', asComm())
+      .send({ token: 'fcm-tok-new-registration-123456', platform: 'ANDROID', label: 'test phone' })
+      .expect(201);
+    expect(reg.body.id).toBeTruthy();
+
+    // Re-register the same token under the same user → same row, updated.
+    const again = await request(app)
+      .post('/devices')
+      .set('x-internal-assertion', asComm())
+      .send({ token: 'fcm-tok-new-registration-123456', platform: 'ANDROID' })
+      .expect(201);
+    expect(again.body.id).toBe(reg.body.id);
+    const rows = await prisma.deviceToken.findMany({ where: { token: 'fcm-tok-new-registration-123456' } });
+    expect(rows).toHaveLength(1);
+
+    // Validation: bad token / bad platform.
+    await request(app).post('/devices').set('x-internal-assertion', asComm()).send({ token: 'short', platform: 'ANDROID' }).expect(400);
+    await request(app).post('/devices').set('x-internal-assertion', asComm()).send({ token: 'fcm-tok-valid-enough-123456', platform: 'FLIP' }).expect(400);
+
+    // Another account cannot delete someone else's device (silently 404).
+    const strangerAssertion = assertionFor(keypair, SERVICE, {
+      userId: seed.guardianUserId,
+      email: 'parent@comm.test',
+      tenantId: seed.schoolId,
+      branchId: seed.branchId,
+      roles: ['PARENT'],
+      permissions: [],
+    } as never);
+    await request(app).delete(`/devices/${reg.body.id}`).set('x-internal-assertion', strangerAssertion).expect(404);
+
+    // Owner deletes fine.
+    await request(app).delete(`/devices/${reg.body.id}`).set('x-internal-assertion', asComm()).expect(204);
+    const gone = await prisma.deviceToken.findUnique({ where: { token: 'fcm-tok-new-registration-123456' } });
+    expect(gone).toBeNull();
   });
 
   it('without messaging config the app still boots and fails sends closed', async () => {

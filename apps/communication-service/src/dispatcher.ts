@@ -21,10 +21,12 @@
 import type { PrismaClient, NotificationLog } from '@school-erp/database';
 import { WhatsAppClient } from './whatsapp';
 import { SmsClient } from './sms';
+import { FcmClient, type PushPayload } from './fcm';
 
 export interface DispatcherConfig {
   whatsapp: WhatsAppClient | null; // null = not configured → channel unavailable
   sms: SmsClient | null;
+  fcm: FcmClient | null; // null = push unconfigured
   /** Quiet hours in server-local hours; non-urgent sends wait them out. */
   quietHours: { start: number; end: number };
   /** Rows per drain pass. */
@@ -37,7 +39,9 @@ const FALLBACK: Record<string, string[]> = {
   WHATSAPP: ['SMS', 'EMAIL'],
   SMS: ['WHATSAPP', 'EMAIL'],
   EMAIL: ['WHATSAPP', 'SMS'],
-  PUSH: [],
+  // Push without a device goes to SMS — a parent without the app installed
+  // still hears about the absence alert.
+  PUSH: ['WHATSAPP', 'SMS'],
 };
 
 /** A provider attempt's outcome — transport level, pre-DB-stamp. */
@@ -199,7 +203,12 @@ export class Dispatcher {
 
   /** Build a sender for one channel, or null when unavailable. */
   private async sendOn(channel: string, row: NotificationLog): Promise<Attempt | null> {
-    if (!row.recipient) return null;
+    // Address-based channels need an address on the row. PUSH does not — its
+    // recipients resolve through the device registry (§5.4), keyed by userId.
+    if (channel !== 'PUSH' && !row.recipient) return null;
+    // The guard above guarantees an address for every non-PUSH channel; PUSH
+    // never reads this local (it fans out through the registry instead).
+    const address = row.recipient as string;
 
     if (channel === 'WHATSAPP') {
       const wa = this.config.whatsapp;
@@ -207,7 +216,7 @@ export class Dispatcher {
       // Freeform text: the API side only queues template content, and Meta
       // rejects business-initiated freeform outside the 24h window — that
       // shows up as a failed attempt with Meta's reason.
-      return wa.sendText(row.recipient, row.body ?? '');
+      return wa.sendText(address, row.body ?? '');
     }
 
     if (channel === 'SMS') {
@@ -216,11 +225,52 @@ export class Dispatcher {
       // DLT template id rides the row's template reference when present;
       // without one the client fails closed (telcos would eat the message).
       const dltId = (row.template ?? '').replace(/^dlt:/, '') || '';
-      return sms.send(row.recipient, row.body ?? '', dltId);
+      return sms.send(address, row.body ?? '', dltId);
     }
 
-    // §5.3 email (SES/Postmark) and §5.4 push (FCM/APNs) land later in the
-    // phase; until wired, those channels fail closed with a clear error.
+    if (channel === 'PUSH') {
+      const fcm = this.config.fcm;
+      if (!fcm) return null;
+      // The recipientId of a PUSH row is a userId (§5.4): resolve it to the
+      // user's registered devices. No devices = nothing to send to.
+      const devices = await this.prisma.deviceToken.findMany({
+        where: { userId: row.recipientId, isActive: true },
+        select: { id: true, token: true },
+      });
+      if (devices.length === 0) {
+        return { ok: false, error: 'push: no registered devices for user' };
+      }
+      const payload: PushPayload = {
+        title: row.subject ?? 'School update',
+        body: row.body ?? '',
+        ...(row.template?.startsWith('link:') ? { deepLink: row.template.slice(5) } : {}),
+      };
+      let delivered = 0;
+      let lastError = '';
+      const staleDeviceIds: string[] = [];
+      for (const d of devices) {
+        const attempt = await fcm.send(d.token, payload);
+        if (attempt.ok) {
+          delivered++;
+        } else {
+          lastError = attempt.error ?? 'send failed';
+          if (attempt.tokenInvalid) staleDeviceIds.push(d.id); // FCM says: gone forever
+        }
+      }
+      // One dead token shouldn't fail the user's row — fan-out succeeded if
+      // any device accepted. Dead tokens are deleted on sight so the next
+      // dispatch doesn't retry them.
+      if (staleDeviceIds.length) {
+        await this.prisma.deviceToken.deleteMany({ where: { id: { in: staleDeviceIds } } });
+      }
+      if (delivered > 0) {
+        return { ok: true };
+      }
+      return { ok: false, error: `push: ${lastError || 'all devices rejected'}` };
+    }
+
+    // §5.3 email (SES/Postmark) lands later in the phase; until wired, that
+    // channel fails closed with a clear error.
     return null;
   }
 }

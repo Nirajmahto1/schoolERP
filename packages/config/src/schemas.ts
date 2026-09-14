@@ -97,6 +97,18 @@ const messagingSchema = z.object({
   SMS_SENDER_HEADER: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).max(6).optional()),
   // Generic webhook secret for provider delivery callbacks (shared HMAC).
   MESSAGING_WEBHOOK_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // FCM push (§5.4): a Google service account with the
+  // `https://www.googleapis.com/auth/firebase.messaging` scope. All three
+  // vars are needed together; any missing → push channel unconfigured and
+  // the dispatcher fails sends closed like the other channels.
+  FCM_PROJECT_ID: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  FCM_CLIENT_EMAIL: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().email().optional()),
+  // The service-account PEM with literal \n escapes (as pasted from the JSON
+  // key file) — normalized to real newlines here so the crypto layer just works.
+  FCM_PRIVATE_KEY: z.preprocess(
+    (v) => (typeof v !== 'string' || v.trim() === '' ? undefined : v.replace(/\\n/g, '\n')),
+    z.string().min(1).optional(),
+  ),
   // Quiet hours (IST, server-local hour numbers) — §5.8: no promotional or
   // non-urgent sends inside the window; transactional/urgent bypasses.
   QUIET_HOURS_START: z.coerce.number().int().min(0).max(23).default(21),
