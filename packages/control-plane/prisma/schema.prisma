@@ -58,6 +58,7 @@ model Tenant {
   supportGrants SupportGrant[]
   usageRecords  UsageRecord[]
   dunningEvents DunningEvent[]
+  creditEnvelope CreditEnvelope?
 
   @@index([status])
   @@map("tenants")
@@ -213,6 +214,26 @@ model DunningEvent {
 
   @@index([tenantId, createdAt])
   @@map("dunning_events")
+}
+
+// ── Messaging credit envelope (BUILD_PLAN 5.7) ──
+// One row per tenant: the balance is the row, decremented per send by the
+// dispatcher and topped up by purchase. Kept in the CONTROL PLANE (not the
+// tenant DB) so billing is ours, not theirs — a tenant can never inflate
+// its own balance, and the nightly metering pass already lives here.
+model CreditEnvelope {
+  id        String   @id @default(cuid())
+  tenantId  String   @unique
+  balance   Int      @default(0) // message units, never negative
+  // Cumulative purchases for quick reconciliation against invoices.
+  purchased Int      @default(0)
+  // Set when balance first crosses the low-water mark; cleared on top-up.
+  lowBalanceAt DateTime?
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("credit_envelopes")
 }
 
 // ── Login routing ──

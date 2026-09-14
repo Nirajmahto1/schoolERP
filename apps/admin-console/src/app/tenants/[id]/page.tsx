@@ -6,6 +6,7 @@ import TenantActions from "./tenant-actions";
 import BillingActions from "./billing-actions";
 import InvoicePaidButton from "./invoice-paid-button";
 import UsageCard from "./usage-card";
+import CreditsCard from "./credits-card";
 import GrantForm from "./grant-form";
 
 export const dynamic = "force-dynamic";
@@ -36,6 +37,7 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
     include: {
       datastore: true,
       plan: true,
+      creditEnvelope: true,
       subscriptions: { orderBy: { periodStart: "desc" }, take: 5 },
       invoices: { orderBy: { createdAt: "desc" }, take: 10 },
       migrationRuns: { orderBy: { createdAt: "desc" }, take: 20 },
@@ -189,6 +191,14 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
           />
         </div>
       </section>
+
+      {/* Messaging credits (5.7) */}
+      <CreditsCard
+        tenantId={tenant.id}
+        initialBalance={tenant.creditEnvelope?.balance ?? 0}
+        initialPurchased={tenant.creditEnvelope?.purchased ?? 0}
+        lowBalanceAt={tenant.creditEnvelope?.lowBalanceAt?.toISOString() ?? null}
+      />
 
       {/* Usage & metering (4.2.4) */}
       <UsageCard

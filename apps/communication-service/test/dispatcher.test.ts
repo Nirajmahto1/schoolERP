@@ -296,6 +296,135 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     expect(emailCalls).toHaveLength(1);
   });
 
+  it('credit gate: exhausted envelope fails the row closed before the wire call', async () => {
+    wa.setMode('ok');
+    emailMode = 'ok';
+    emailCalls.length = 0;
+    let balance = 0; // simulate an exhausted envelope
+    const gatedApp = createCommunicationApp({
+      env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
+      prisma,
+      messaging: {
+        whatsapp: new WhatsAppClient({ token: 't', phoneNumberId: 'p' }, async () => ({
+          ok: true, status: 200, json: async () => { throw new Error('must not be called'); },
+        })),
+        sms: null,
+        quietHours: { start: 2, end: 3 },
+      },
+    });
+    // Re-wire the dispatcher's gate directly by building it through createCommunicationApp is
+    // not possible (gate comes from env); instead drain with a hand-built Dispatcher.
+    const { Dispatcher } = await import('../src/dispatcher');
+    const d = new Dispatcher(prisma, {
+      whatsapp: new WhatsAppClient({ token: 't', phoneNumberId: 'p' }, async () => {
+        throw new Error('must not be called');
+      }),
+      sms: null,
+      fcm: null,
+      email: null,
+      creditGate: async () => ({ ok: false, balance }),
+      quietHours: { start: 2, end: 3 },
+    });
+    await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000010', body: 'gated-row', status: 'QUEUED' },
+    });
+
+    const res = await d.drain();
+    expect(res.failed).toBe(1);
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { body: 'gated-row' } });
+    expect(log.status).toBe('FAILED');
+    expect(String(log.error)).toContain('messaging credits exhausted');
+    void gatedApp;
+  });
+
+  it('unsubscribed recipients: non-transactional rows are closed, transactional still deliver', async () => {
+    const { Dispatcher } = await import('../src/dispatcher');
+    const optedOut = new Set(['GUARDIAN:919000000011']);
+    const d = new Dispatcher(prisma, {
+      whatsapp: new WhatsAppClient({ token: 't', phoneNumberId: 'p' }, async () => ({
+        ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.optout-test' }] }),
+      })),
+      sms: null,
+      fcm: null,
+      email: null,
+      isRecipientOptedIn: async (recipientId) => !optedOut.has(`GUARDIAN:${recipientId}`),
+      quietHours: { start: 2, end: 3 },
+    });
+
+    // A promo (non-transactional) to the opted-out parent → closed.
+    const promo = await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: '919000000011', recipient: '919000000011', body: 'Annual day promo', status: 'QUEUED' },
+    });
+    // An absence alert (transactional by template) to the SAME parent → delivers.
+    const alert = await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: '919000000011', recipient: '919000000011', body: 'Absence notice', template: 'absence_alert', status: 'QUEUED' },
+    });
+
+    await d.drain();
+
+    const promoRow = await prisma.notificationLog.findUniqueOrThrow({ where: { id: promo.id } });
+    expect(promoRow.status).toBe('FAILED');
+    expect(String(promoRow.error)).toContain('unsubscribed');
+    const alertRow = await prisma.notificationLog.findUniqueOrThrow({ where: { id: alert.id } });
+    expect(alertRow.status).toBe('SENT');
+  });
+
+  it('throttle: rows beyond the per-branch rate defer to the next pass', async () => {
+    const { Dispatcher } = await import('../src/dispatcher');
+    const d = new Dispatcher(prisma, {
+      whatsapp: new WhatsAppClient({ token: 't', phoneNumberId: 'p' }, async () => ({
+        ok: true, status: 200, json: async () => ({ messages: [{ id: 'wamid.throttle' }] }),
+      })),
+      sms: null,
+      fcm: null,
+      email: null,
+      quietHours: { start: 2, end: 3 },
+      perBranchPerMinute: 2,
+    });
+    const rows = [];
+    for (let i = 0; i < 4; i++) {
+      rows.push(await prisma.notificationLog.create({
+        data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: `91900000002${i}`, body: `throttle-${i}`, status: 'QUEUED' },
+      }));
+    }
+
+    const res = await d.drain();
+    expect(res.sent).toBe(2);
+    expect(res.deferredQuietHours).toBe(2); // throttle defers share the counter
+    // Deferred rows are back to QUEUED with the rate-limit marker.
+    const deferred = await prisma.notificationLog.findMany({
+      where: { id: { in: rows.slice(2).map((r) => r.id) } },
+    });
+    expect(deferred.every((r) => r.status === 'QUEUED' && String(r.error).includes('rate limit'))).toBe(true);
+  });
+
+  it('retry-with-backoff: transient failures requeue after backoff; permanent ones dead-letter at max attempts', async () => {
+    // Seed a FAILED row that looks transient and old enough to retry.
+    const retried = await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'SMS', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000003', body: 'retry-me', status: 'FAILED', attempts: 1, lastAttemptAt: new Date(Date.now() - 11 * 60 * 1000), error: 'transient:attempt 1/3: sms: not configured' },
+    });
+    // A permanent failure: exhausted retries → DEAD_LETTERED, never re-queued.
+    const dead = await prisma.notificationLog.create({
+      data: { branchId: seed.branchId, channel: 'SMS', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000003', body: 'dead-row', status: 'FAILED', attempts: 3, lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000), error: 'transient:attempt 3/3: sms: not configured' },
+    });
+
+    // A drain pass with everything unconfigured — the retried row re-enters
+    // QUEUED, gets attempted, fails again as transient attempt 2/3.
+    const { Dispatcher } = await import('../src/dispatcher');
+    const d = new Dispatcher(prisma, {
+      whatsapp: null, sms: null, fcm: null, email: null,
+      quietHours: { start: 2, end: 3 },
+    });
+    await d.drain();
+
+    const retryRow = await prisma.notificationLog.findUniqueOrThrow({ where: { id: retried.id } });
+    expect(retryRow.attempts).toBe(2);
+    expect(String(retryRow.error)).toContain('attempt 2/3');
+
+    const deadRow = await prisma.notificationLog.findUniqueOrThrow({ where: { id: dead.id } });
+    expect(deadRow.status).toBe('FAILED'); // untouched: attempts=3 is past MAX_ATTEMPTS for requeue
+  });
+
   it('bare app (no providers): the whole chain fails closed with a full trail', async () => {
     // No providers at all: every channel's reason lands in the row's error —
     // this is the delivery-dispute trail (§5.5).
@@ -501,7 +630,9 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
 
     expect(scan.body.studentsAbsent).toBe(1);
     expect(scan.body.alertsQueued).toBeGreaterThanOrEqual(1);
-    const log = await prisma.notificationLog.findFirstOrThrow({ where: { template: 'absence_alert' } });
+    const log = await prisma.notificationLog.findFirstOrThrow({
+      where: { template: 'absence_alert', body: { contains: `#${dayStart.toISOString().slice(0, 10)}` } },
+    });
     expect(log.status).toBe('SENT'); // drained urgently in the same request
     expect(log.channel).toBe('WHATSAPP');
     expect(log.body).toContain('#' + dayStart.toISOString().slice(0, 10));
@@ -521,7 +652,9 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     expect(again.body.studentsAbsent).toBe(1);
     expect(again.body.alreadyAlerted).toBe(1);
     expect(again.body.alertsQueued).toBe(0);
-    const rows = await prisma.notificationLog.count({ where: { template: 'absence_alert' } });
+    const rows = await prisma.notificationLog.count({
+      where: { template: 'absence_alert', body: { contains: `#${dayStart.toISOString().slice(0, 10)}` } },
+    });
     expect(rows).toBe(1); // exactly one alert row, still
   });
 

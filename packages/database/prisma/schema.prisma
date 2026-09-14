@@ -1923,6 +1923,10 @@ model NotificationLog {
   subject           String?
   body              String?
   status            NotificationStatus  @default(QUEUED)
+  // Retry bookkeeping (§5.5): the drainer increments per failed pass;
+  // MAX_ATTEMPTS (3) reached → DEAD_LETTERED for a human.
+  attempts          Int                 @default(0)
+  lastAttemptAt     DateTime?
   provider          String?
   providerMessageId String?
   cost              Decimal?            @db.Decimal(10, 4)

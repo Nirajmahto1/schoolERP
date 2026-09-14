@@ -4,6 +4,7 @@
 
 import express, { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
+import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
@@ -14,6 +15,7 @@ import { EmailClient } from './email';
 import { Dispatcher } from './dispatcher';
 import { scanAbsencesForDate } from './absence-alerts';
 import { scanFeeRemindersForDate } from './fee-reminders';
+import { tryDecrementCredits } from './credit-gate';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
@@ -98,11 +100,17 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
   // Providers come from env; null means "not configured" — the service and
   // dispatcher still run, sends fail closed with clear errors (§5.1/5.2).
   const messaging = options.messaging ?? messagingFromEnv();
+  // Credit gate (§5.7): active when the deployment names its control-plane
+  // tenant. Omitted in tests/single-school evals → every send passes.
+  const creditGate = process.env.COMMUNICATION_TENANT_ID
+    ? (units: number) => tryDecrementCredits(process.env.COMMUNICATION_TENANT_ID as string, units)
+    : undefined;
   const dispatcher = new Dispatcher(prisma, {
     whatsapp: messaging.whatsapp,
     sms: messaging.sms,
     fcm: messaging.fcm ?? null,
     email: messaging.email ?? null,
+    creditGate,
     quietHours: messaging.quietHours,
   });
 

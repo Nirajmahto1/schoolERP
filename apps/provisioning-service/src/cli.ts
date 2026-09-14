@@ -31,6 +31,7 @@ import { migrateAll, tenantFleetStatus } from './migrate';
 import { backupTenant, rehearseRestore } from './backup';
 import {
   convertTenantToPaid,
+  purchaseCreditTopUp,
   issueRenewalInvoice,
   latestUsage,
   markSaasInvoicePaid,
@@ -315,6 +316,33 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'credits': {
+      // Messaging credit envelope ops (BUILD_PLAN 5.7).
+      //   credits --tenant-id <id>                       → balance
+      //   credits --tenant-id <id> --top-up 1000        → purchase + invoice
+      const { getCreditBalance } = await import('./credits');
+      const tenantId = requireArg(args, 'tenant-id');
+      if (args['top-up'] !== undefined) {
+        const units = Number(args['top-up']);
+        if (!Number.isInteger(units) || units <= 0) {
+          throw new Error('--top-up must be a positive whole number of message units.');
+        }
+        const result = await purchaseCreditTopUp(cp, {
+          tenantId,
+          units,
+          supplierGstin: process.env.SUPPLIER_GSTIN,
+          supplierName: process.env.SUPPLIER_NAME,
+          supplierAddress: process.env.SUPPLIER_ADDRESS,
+          actor: 'cli:credits',
+        });
+        console.log(`top-up invoiced: ${result.invoiceNo} — ${result.units} units, ₹${result.total} (incl. GST) → balance ${result.balance}`);
+      } else {
+        const bal = await getCreditBalance(cp, tenantId);
+        console.log(JSON.stringify(bal, null, 2));
+      }
+      break;
+    }
+
     case 'metering': {
       // The nightly fleet pass (BUILD_PLAN 4.2.4): measure every active
       // tenant from its own database and push samples to the control plane.
@@ -339,7 +367,7 @@ async function main(): Promise<void> {
 
     default:
       console.error(`Unknown command: ${command ?? '(none)'}`);
-      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, invoice-pdf, dunning, usage, billing-recon, metering');
+      console.error('Commands: create, status, drift-check, suspend, resume, delete, hard-delete, migrate, export, seats, plan, backup, restore-drill, plans-seed, convert, renew, invoice-paid, invoice-pdf, dunning, usage, billing-recon, metering, credits');
       process.exitCode = 1;
   }
 

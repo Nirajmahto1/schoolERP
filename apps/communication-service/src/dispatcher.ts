@@ -29,6 +29,26 @@ export interface DispatcherConfig {
   sms: SmsClient | null;
   fcm: FcmClient | null; // null = push unconfigured
   email: EmailClient | null; // null = email unconfigured
+  /**
+   * Credit gate (§5.7): called once per cost-carrying send. `false` = the
+   * tenant's envelope is exhausted — the row fails closed with a clear
+   * error instead of sending on the platform's dime. Optional: deployments
+   * that don't bill per-message omit it and every send passes.
+   */
+  creditGate?: (units: number) => Promise<{ ok: boolean; balance: number }>;
+  /**
+   * §5.8 unsubscribe: returns false when the recipient opted out of
+   * NON-TRANSACTIONAL messaging on this channel (absence alerts, fee
+   * dues and emergency broadcasts are transactional and always deliver).
+   * Optional: absent = everything delivers.
+   */
+  isRecipientOptedIn?: (recipientId: string, channel: string, transactional: boolean) => Promise<boolean>;
+  /**
+   * §5.8 throttling: max sends per branch per minute. The drainer defers
+   * rows beyond the rate (back to QUEUED) so BSP limits and telco pipe
+   * limits are respected. 0/undefined = unthrottled.
+   */
+  perBranchPerMinute?: number;
   /** Quiet hours in server-local hours; non-urgent sends wait them out. */
   quietHours: { start: number; end: number };
   /** Rows per drain pass. */
@@ -47,6 +67,31 @@ const FALLBACK: Record<string, string[]> = {
   // still hears about the absence alert.
   PUSH: ['WHATSAPP', 'SMS', 'EMAIL'],
 };
+
+/**
+ * Transactional messages (§5.8) are ones the parent NEEDS: absence alerts,
+ * fee dues, emergency broadcasts. Everything else (newsletters, event
+ * promos, holiday notices that aren't schedule changes) honours opt-out.
+ * The template tag declares it: `txn:` prefix or known trigger templates
+ * are transactional; all else is not.
+ */
+const ALWAYS_TRANSACTIONAL = ['absence_alert', 'emergency_broadcast'];
+
+function isTransactional(row: NotificationLog): boolean {
+  const t = row.template ?? '';
+  if (t.startsWith('txn:')) return true;
+  if (t.startsWith('fee_reminder:')) return true; // money owed = transactional
+  return ALWAYS_TRANSACTIONAL.includes(t);
+}
+
+// ── Retry / dead-letter policy (§5.5) ──
+// A failure whose error carries the transient marker is retried with a
+// flat 10-minute backoff, up to MAX_ATTEMPTS total; then DEAD_LETTERED.
+// Permanent failures (unsubscribed, credits exhausted, UNREGISTERED
+// devices, provider 4xx policy rejections) never carry the marker.
+export const TRANSIENT_MARKER = 'transient:';
+export const MAX_ATTEMPTS = 3;
+export const RETRY_BACKOFF_MS = 10 * 60 * 1000;
 
 /** A provider attempt's outcome — transport level, pre-DB-stamp. */
 interface Attempt {
@@ -86,6 +131,22 @@ export class Dispatcher {
     return h >= start || h < end; // wraps midnight (e.g. 21 → 8)
   }
 
+  /** §5.8 per-branch sliding window: sends in the trailing minute. */
+  private branchWindows = new Map<string, number[]>();
+
+  private perBranchCount(branchId: string): number {
+    const windowStart = Date.now() - 60_000;
+    const arr = (this.branchWindows.get(branchId) ?? []).filter((t) => t > windowStart);
+    this.branchWindows.set(branchId, arr);
+    return arr.length;
+  }
+
+  private recordBranchSend(branchId: string): void {
+    const arr = this.branchWindows.get(branchId) ?? [];
+    arr.push(Date.now());
+    this.branchWindows.set(branchId, arr);
+  }
+
   /**
    * One drain pass over QUEUED rows. Non-urgent rows inside quiet hours are
    * re-queued (deferred), everything else gets a definitive outcome.
@@ -96,6 +157,27 @@ export class Dispatcher {
 
     // Claim: flip QUEUED → SENDING. The conditional updateMany is the
     // idempotency boundary — a second drainer cannot claim claimed rows.
+    // Retry-with-backoff (§5.5): a FAILED row whose error was transient
+    // (network/5xx, not unsubscribe/exhaustion) re-enters QUEUED after its
+    // backoff delay, up to MAX_ATTEMPTS; past that it is dead-lettered
+    // (DEAD_LETTERED) for a human — never silently deleted.
+    const retryables = await this.prisma.notificationLog.findMany({
+      where: {
+        status: 'FAILED',
+        attempts: { lt: MAX_ATTEMPTS },
+        error: { contains: TRANSIENT_MARKER },
+        lastAttemptAt: { lte: new Date(Date.now() - RETRY_BACKOFF_MS) },
+      },
+      select: { id: true },
+      take: batchSize,
+    });
+    if (retryables.length > 0) {
+      await this.prisma.notificationLog.updateMany({
+        where: { id: { in: retryables.map((r) => r.id) } },
+        data: { status: 'QUEUED' },
+      });
+    }
+
     const claimable = await this.prisma.notificationLog.findMany({
       where: { status: 'QUEUED', channel: { notIn: ['IN_APP'] } },
       take: batchSize,
@@ -133,6 +215,50 @@ export class Dispatcher {
         });
         result.deferredQuietHours++;
         continue;
+      }
+
+      // §5.8 unsubscribe: non-transactional rows to opted-out recipients
+      // are closed as UNSUBSCRIBED (not retried, not failed-with-retry) —
+      // the parent said no, and the log must show we honoured it.
+      if (this.config.isRecipientOptedIn && !isTransactional(row)) {
+        const optedIn = await this.config.isRecipientOptedIn(row.recipientId, row.channel, false);
+        if (!optedIn) {
+          await this.prisma.notificationLog.update({
+            where: { id: row.id },
+            data: { status: 'FAILED', error: 'recipient unsubscribed from non-transactional messages (§5.8)' },
+          });
+          result.failed++;
+          result.results.push({ logId: row.id, channel: row.channel, status: 'FAILED', error: 'unsubscribed' });
+          continue;
+        }
+      }
+
+      // §5.8 throttling: defer rows beyond the per-branch rate. They come
+      // back on the next pass — throttle is pacing, not refusal.
+      if (this.config.perBranchPerMinute && this.perBranchCount(row.branchId) >= this.config.perBranchPerMinute) {
+        await this.prisma.notificationLog.update({
+          where: { id: row.id },
+          data: { status: 'QUEUED', error: 'deferred: rate limit' },
+        });
+        result.deferredQuietHours++;
+        continue;
+      }
+      this.recordBranchSend(row.branchId);
+
+      // Credit gate (§5.7): cost-carrying channels decrement the tenant's
+      // envelope BEFORE the wire call. Exhausted = fail closed, row keeps
+      // its place in the dispute trail. IN_APP is free and never gated.
+      if (this.config.creditGate && row.channel !== 'IN_APP') {
+        const gate = await this.config.creditGate(1);
+        if (!gate.ok) {
+          await this.prisma.notificationLog.update({
+            where: { id: row.id },
+            data: { status: 'FAILED', error: `messaging credits exhausted (balance ${gate.balance}) — top up in billing` },
+          });
+          result.failed++;
+          result.results.push({ logId: row.id, channel: row.channel, status: 'FAILED', error: 'credits exhausted' });
+          continue;
+        }
       }
 
       const outcome = await this.deliver(row);
@@ -198,11 +324,23 @@ export class Dispatcher {
     }
 
     const lastError = errors.join('; ') || 'no provider configured';
+    const attempts = row.attempts + 1;
+    // Everything that reaches the end of the chain is retriable (provider
+    // outages, not-yet-configured channels, network) — permanent refusals
+    // (unsubscribed, credits exhausted) are closed BEFORE deliver. So:
+    // transient until MAX_ATTEMPTS, then DEAD_LETTERED for a human.
+    const transient = attempts < MAX_ATTEMPTS;
+    const failureText = transient ? `${TRANSIENT_MARKER}attempt ${attempts}/${MAX_ATTEMPTS}: ${lastError}` : `${lastError} (dead-lettered after ${attempts} attempts)`;
     await this.prisma.notificationLog.update({
       where: { id: row.id },
-      data: { status: 'FAILED', error: lastError },
+      data: {
+        status: transient ? 'FAILED' : 'DEAD_LETTERED',
+        attempts,
+        lastAttemptAt: new Date(),
+        error: failureText,
+      },
     });
-    return { status: 'FAILED', attemptedChannel: row.channel, error: lastError };
+    return { status: 'FAILED', attemptedChannel: row.channel, error: failureText };
   }
 
   /** Build a sender for one channel, or null when unavailable. */

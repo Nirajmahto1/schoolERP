@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const { id } = await context.params;
   const body = (await request.json().catch(() => null)) as
-    | { action?: string; reason?: string; retentionDays?: number; planCode?: string; seats?: number; invoiceId?: string; metric?: string; value?: number; limit?: number }
+    | { action?: string; reason?: string; retentionDays?: number; planCode?: string; seats?: number; invoiceId?: string; metric?: string; value?: number; limit?: number; units?: number }
     | null;
   const action = body?.action;
 
@@ -121,6 +121,28 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         const { reconcileMeteredBilling } = await import("@school-erp/provisioning-service/dist/billing.js");
         const recon = await reconcileMeteredBilling(cp, id);
         return NextResponse.json({ ok: true, ...recon });
+      }
+      case "credits-balance": {
+        // Messaging credit envelope (BUILD_PLAN 5.7) — balance + flags.
+        const { getCreditBalance } = await import("@school-erp/provisioning-service/dist/credits.js");
+        const bal = await getCreditBalance(cp, id);
+        return NextResponse.json({ ok: true, ...bal });
+      }
+      case "credits-top-up": {
+        // Purchase message units: Rule 46 invoice + envelope increment in
+        // one transaction (provisioning-service owns the math).
+        const units = Math.floor(Number(body?.units));
+        if (!Number.isInteger(units) || units <= 0) throw new Error("units must be a positive whole number.");
+        const { purchaseCreditTopUp } = await import("@school-erp/provisioning-service/dist/billing.js");
+        const result = await purchaseCreditTopUp(cp, {
+          tenantId: id,
+          units,
+          supplierGstin: process.env.SUPPLIER_GSTIN,
+          supplierName: process.env.SUPPLIER_NAME,
+          supplierAddress: process.env.SUPPLIER_ADDRESS,
+          actor,
+        });
+        return NextResponse.json({ ok: true, ...result });
       }
       case "usage-history": {
         // Recent samples per metric for the console's usage sparkline table.

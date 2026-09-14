@@ -244,6 +244,115 @@ export async function convertTenantToPaid(controlPlane: ControlPlaneClient, inpu
   });
 }
 
+export interface CreditTopUpInput {
+  tenantId: string;
+  /** Message units to purchase (integer, > 0). */
+  units: number;
+  /** Per-unit price in rupees (default ₹0.35/message — BSP pass-through + margin). */
+  pricePerUnit?: number;
+  supplierGstin?: string;
+  supplierName?: string;
+  supplierAddress?: string;
+  actor?: string;
+}
+
+/**
+ * Credit top-up purchase (BUILD_PLAN 5.7): issues a Rule 46 tax invoice for
+ * the units and credits the tenant's envelope in the same transaction. The
+ * envelope only grows when the invoice row commits — no invoice, no units.
+ */
+export async function purchaseCreditTopUp(controlPlane: ControlPlaneClient, input: CreditTopUpInput) {
+  if (!Number.isInteger(input.units) || input.units <= 0) {
+    throw new Error('Credit top-up units must be a positive whole number.');
+  }
+  const tenant = await controlPlane.tenant.findUniqueOrThrow({ where: { id: input.tenantId } });
+  const pricePerUnit = input.pricePerUnit ?? 0.35;
+  const amount = Math.round(input.units * pricePerUnit * 100) / 100;
+
+  const now = new Date();
+  const fiscalYear = now.getMonth() >= 3
+    ? `${now.getFullYear()}-${String(now.getFullYear() + 1).slice(2)}`
+    : `${now.getFullYear() - 1}-${String(now.getFullYear()).slice(2)}`;
+
+  return controlPlane.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('saas_invoice_numbering'))");
+
+    const fyCount = await tx.saasInvoice.count({
+      where: { invoiceNo: { startsWith: `SI-${fiscalYear}-` } },
+    });
+    const invoiceNo = `SI-${fiscalYear}-${String(fyCount + 1).padStart(5, '0')}`;
+
+    const supplierGstin = (input.supplierGstin ?? '').trim().toUpperCase() || null;
+    if (supplierGstin && !isValidGstin(supplierGstin)) {
+      throw new Error(`SUPPLIER_GSTIN fails checksum validation: ${supplierGstin}`);
+    }
+    const supplierState = supplierGstin ? gstinStateCode(supplierGstin) : '27';
+    const recipientGstin = tenant.isGstRegistered && tenant.gstin ? tenant.gstin.trim().toUpperCase() : null;
+    if (recipientGstin && !isValidGstin(recipientGstin)) {
+      throw new Error(`School GSTIN fails checksum validation: ${recipientGstin} — fix the tenant record before invoicing.`);
+    }
+    const placeOfSupply = recipientGstin ? gstinStateCode(recipientGstin) : supplierState;
+    const split = splitGst(amount, supplierState, placeOfSupply);
+    const gstAmount = Math.round(split.totalTax * 100) / 100;
+
+    const invoice = await tx.saasInvoice.create({
+      data: {
+        tenantId: tenant.id,
+        invoiceNo,
+        amount,
+        gstAmount,
+        cgstAmount: Math.round(split.cgst * 100) / 100,
+        sgstAmount: Math.round(split.sgst * 100) / 100,
+        igstAmount: Math.round(split.igst * 100) / 100,
+        gstRate: GST_RATE,
+        sacCode: SAC_CODE, // 997331 covers messaging as part of the SaaS service
+        supplierName: input.supplierName ?? null,
+        supplierAddress: input.supplierAddress ?? null,
+        supplierGstin,
+        recipientName: tenant.legalName,
+        recipientAddress: null,
+        placeOfSupply: `${placeOfSupply} (${stateName(placeOfSupply)})`,
+        reverseCharge: false,
+        amountInWords: amountInWords(amount + gstAmount),
+        issuedAt: now,
+        // Top-up invoices are point-in-time, not a subscription period.
+        periodStart: now,
+        periodEnd: now,
+        seats: null,
+        pricePerStudent: null,
+        status: 'ISSUED',
+      },
+    });
+
+    // Envelope grows only after the invoice row exists — same transaction.
+    const envelope = await tx.creditEnvelope.upsert({
+      where: { tenantId: tenant.id },
+      create: { tenantId: tenant.id, balance: input.units, purchased: input.units, lowBalanceAt: null },
+      update: {
+        balance: { increment: input.units },
+        purchased: { increment: input.units },
+        lowBalanceAt: null, // money arrived; the low-balance flag clears
+      },
+    });
+
+    const actor = input.actor ?? 'cli';
+    await audit(tx as unknown as ControlPlaneClient, actor, 'credits.top-up', tenant.id, { units: input.units, pricePerUnit, invoiceNo });
+
+    return {
+      invoiceId: invoice.id,
+      invoiceNo,
+      units: input.units,
+      amount,
+      gstAmount,
+      total: amount + gstAmount,
+      balance: envelope.balance,
+      purchasedTotal: envelope.purchased,
+      placeOfSupply: stateName(placeOfSupply),
+      amountInWords: amountInWords(amount + gstAmount),
+    };
+  });
+}
+
 export interface IssueRenewalInput {
   tenantId: string;
   seats: number;
