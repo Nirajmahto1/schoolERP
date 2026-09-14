@@ -15,6 +15,7 @@ import { EmailClient } from './email';
 import { Dispatcher } from './dispatcher';
 import { scanAbsencesForDate } from './absence-alerts';
 import { scanFeeRemindersForDate } from './fee-reminders';
+import { scanExamSchedules, notifyResultsPublished } from './exam-triggers';
 import { tryDecrementCredits } from './credit-gate';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -177,6 +178,20 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
           summary: 'Scan invoices for due-soon/overdue fee reminders (idempotent per invoice + kind)', tags: ['triggers'],
           requestBody: { type: 'object', properties: { date: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'EMAIL', 'PUSH'] }, drain: { type: 'boolean' }, dueSoonDays: { type: 'number' } } },
           responses: { '200': { description: 'Scan result' } },
+        },
+      },
+      '/exam-triggers/schedule-scan': {
+        post: {
+          summary: 'Queue examination-schedule notices for exams starting within the window (idempotent per exam)', tags: ['triggers'],
+          requestBody: { type: 'object', properties: { date: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'EMAIL', 'PUSH'] }, daysAhead: { type: 'number' }, drain: { type: 'boolean' } } },
+          responses: { '200': { description: 'Scan result' } },
+        },
+      },
+      '/exam-triggers/results-published': {
+        post: {
+          summary: 'Notify guardians an examination\'s results are PUBLISHED (idempotent per exam; 409 unless PUBLISHED)', tags: ['triggers'],
+          requestBody: { type: 'object', properties: { examinationId: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'EMAIL', 'PUSH'] }, drain: { type: 'boolean' } }, required: ['examinationId'] },
+          responses: { '200': { description: 'Queued' }, '404': { description: 'Exam not in branch' }, '409': { description: 'Not PUBLISHED yet' } },
         },
       },
     },
@@ -512,6 +527,63 @@ r.post('/fee-reminders/scan', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Automated trigger: exam schedule (§5.6) ──
+// Daily sweep + manual re-fire; idempotent per examination.
+
+r.post('/exam-triggers/schedule-scan', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch — cannot scan examinations.' }); return; }
+    const { date, channel, daysAhead, drain } = req.body ?? {};
+    const day = date ? new Date(date) : new Date();
+    if (Number.isNaN(day.getTime())) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date must be a valid date (YYYY-MM-DD).' });
+      return;
+    }
+
+    const scan = await scanExamSchedules(prisma, branchId, day, { channel, daysAhead });
+    let drained: Awaited<ReturnType<Dispatcher['drain']>> | null = null;
+    if (drain === true) drained = await dispatcher.drain();
+    res.json({ ...scan, drained });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Automated trigger: results published (§5.6 / 2.6.5) ──
+// Called by ops right after the PUBLISHED transition (exam-service will be
+// the natural caller). Refuses non-published exams: parents must never get
+// a results notice before the results are actually visible.
+
+r.post('/exam-triggers/results-published', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch — cannot notify results.' }); return; }
+    const { examinationId, channel, drain } = req.body ?? {};
+    if (!examinationId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'examinationId is required.' });
+      return;
+    }
+
+    let scan: Awaited<ReturnType<typeof notifyResultsPublished>>;
+    try {
+      scan = await notifyResultsPublished(prisma, branchId, examinationId, { channel });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/not PUBLISHED/.test(msg)) {
+        res.status(409).json({ type: 'state-conflict', title: 'Wrong State', status: 409, detail: msg });
+        return;
+      }
+      if (/not found/.test(msg)) {
+        res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: msg });
+        return;
+      }
+      throw err;
+    }
+    let drained: Awaited<ReturnType<Dispatcher['drain']>> | null = null;
+    if (drain === true) drained = await dispatcher.drain();
+    res.json({ ...scan, drained });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.get('/dispatch-logs', async (req, res) => {
   try {
     const { branchId } = ctx(req);
@@ -628,6 +700,7 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
 
   // ── Nightly fee-reminder sweep (§5.6 #2) ──
   // Once a day, in the morning window, per branch. Idempotent per invoice.
+  // The same pass scans exam schedules (§5.6) — one cron, two triggers.
   const feeTimer = setInterval(
     async () => {
       try {
@@ -636,6 +709,7 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
           const branches = await prisma.branch.findMany({ select: { id: true } });
           for (const b of branches) {
             await scanFeeRemindersForDate(prisma, b.id, new Date());
+            await scanExamSchedules(prisma, b.id, new Date());
           }
         }
       } catch (err) {
