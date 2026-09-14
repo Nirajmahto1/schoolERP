@@ -11,6 +11,7 @@ import { WhatsAppClient, parseDeliveryStatuses } from './whatsapp';
 import { SmsClient } from './sms';
 import { FcmClient } from './fcm';
 import { Dispatcher } from './dispatcher';
+import { scanAbsencesForDate } from './absence-alerts';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
@@ -123,6 +124,13 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
       },
       '/devices/{id}': {
         delete: { summary: 'Remove a registered device (logout / token rotation)', tags: ['push'], responses: { '204': { description: 'Removed' } } },
+      },
+      '/absence-alerts/scan': {
+        post: {
+          summary: 'Scan a date\'s attendance for ABSENT records and queue urgent guardian alerts (idempotent per date)', tags: ['triggers'],
+          requestBody: { type: 'object', properties: { date: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'PUSH'] }, drain: { type: 'boolean' } } },
+          responses: { '200': { description: 'Scan result' } },
+        },
       },
     },
   });
@@ -393,6 +401,41 @@ r.delete('/devices/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Automated trigger: absence alert (BUILD_PLAN 5.6 #1 / GATE 5) ──
+// Called two ways: attendance-service fires it right after /mark (the live
+// path — phone buzzes within minutes of the teacher tapping), and the cron
+// sweeps every morning (catches late marking or a failed live call). The
+// scan is idempotent per (branch, date), so double-firing queues nothing.
+// `drain: true` makes the live path also kick the drainer immediately so
+// the alert goes out within the same request window.
+
+r.post('/absence-alerts/scan', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch — cannot scan attendance.' }); return; }
+    const { date, channel, drain } = req.body ?? {};
+    const day = date ? new Date(date) : new Date();
+    if (Number.isNaN(day.getTime())) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date must be a valid date (YYYY-MM-DD).' });
+      return;
+    }
+    if (channel && !['WHATSAPP', 'SMS', 'PUSH'].includes(channel)) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'channel must be WHATSAPP, SMS, or PUSH.' });
+      return;
+    }
+
+    const scan = await scanAbsencesForDate(prisma, branchId, day, { channel });
+
+    // The live path wants the alert out the door now: drain urgently —
+    // quiet hours never delay a same-morning absence notice (§5.8).
+    let drained: Awaited<ReturnType<Dispatcher['drain']>> | null = null;
+    if (drain === true) {
+      drained = await dispatcher.drain({ urgent: true });
+    }
+    res.json({ ...scan, drained });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.get('/dispatch-logs', async (req, res) => {
   try {
     const { branchId } = ctx(req);
@@ -478,6 +521,50 @@ const app = createCommunicationApp({ env, prisma });
 // the module must NOT listen — vitest would hit EADDRINUSE across suites.
 if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+
+  // ── Morning absence sweep + queue drain (BUILD_PLAN 5.6 #1) ──
+  // The live path (attendance-service firing the scan after /mark) is the
+  // normal producer; this sweep is the safety net for late marking or a
+  // failed live call. The scan is idempotent per date, so the sweep can
+  // never double-alert what the live path already covered. Also drains the
+  // queue every 5 minutes so a live-path drain failure self-heals.
+  const ABSENCE_SWEEP_MS = 15 * 60 * 1000;
+  const DRAIN_MS = 5 * 60 * 1000;
+  const absenceTimer = setInterval(
+    async () => {
+      try {
+        const hour = new Date().getHours();
+        // Sweep mornings only (06:00–11:59) — absence alerts are a same-
+        // morning product; afternoon sweeps would just re-litigate history.
+        if (hour >= 6 && hour < 12) {
+          const branches = await prisma.branch.findMany({ select: { id: true } });
+          for (const b of branches) {
+            await scanAbsencesForDate(prisma, b.id, new Date());
+          }
+        }
+      } catch (err) {
+        // A sweep failure must never kill the interval or the service.
+        console.error('[absence-sweep] failed:', (err as Error).message);
+      }
+    },
+    ABSENCE_SWEEP_MS,
+  );
+  absenceTimer.unref?.();
+
+  const drainTimer = setInterval(async () => {
+    try {
+      const messaging = messagingFromEnv();
+      await new Dispatcher(prisma, {
+        whatsapp: messaging.whatsapp,
+        sms: messaging.sms,
+        fcm: messaging.fcm ?? null,
+        quietHours: messaging.quietHours,
+      }).drain();
+    } catch (err) {
+      console.error('[queue-drain] failed:', (err as Error).message);
+    }
+  }, DRAIN_MS);
+  drainTimer.unref?.();
 }
 
 export { app, prisma };

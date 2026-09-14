@@ -435,6 +435,75 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     expect(gone).toBeNull();
   });
 
+  it('absence alert: scan queues urgent WHATSAPP rows for opted-in guardians of absent students', async () => {
+    wa.setMode('ok');
+    pushState.unregistered.clear();
+    pushCalls.length = 0;
+    // Mark the seeded student ABSENT today.
+    const today = new Date();
+    const dayStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const session = await prisma.attendanceSession.create({
+      data: { branchId: seed.branchId, date: dayStart, classId: seed.classId, sectionId: seed.sectionId, academicYearId: seed.academicYearId, markedBy: seed.adminUserId },
+    });
+    await prisma.attendanceRecord.create({
+      data: { sessionId: session.id, studentId: seed.studentId, status: 'ABSENT' },
+    });
+
+    const scan = await request(app)
+      .post('/absence-alerts/scan')
+      .set('x-internal-assertion', asComm())
+      .send({ date: dayStart.toISOString().slice(0, 10), drain: true })
+      .expect(200);
+
+    expect(scan.body.studentsAbsent).toBe(1);
+    expect(scan.body.alertsQueued).toBeGreaterThanOrEqual(1);
+    const log = await prisma.notificationLog.findFirstOrThrow({ where: { template: 'absence_alert' } });
+    expect(log.status).toBe('SENT'); // drained urgently in the same request
+    expect(log.channel).toBe('WHATSAPP');
+    expect(log.body).toContain('#' + dayStart.toISOString().slice(0, 10));
+    expect(log.body).toContain('ABSENT');
+  });
+
+  it('absence alert: re-scanning the same date never double-alerts (live path + cron share it)', async () => {
+    const today = new Date();
+    const dayStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+
+    const again = await request(app)
+      .post('/absence-alerts/scan')
+      .set('x-internal-assertion', asComm())
+      .send({ date: dayStart.toISOString().slice(0, 10) })
+      .expect(200);
+
+    expect(again.body.studentsAbsent).toBe(1);
+    expect(again.body.alreadyAlerted).toBe(1);
+    expect(again.body.alertsQueued).toBe(0);
+    const rows = await prisma.notificationLog.count({ where: { template: 'absence_alert' } });
+    expect(rows).toBe(1); // exactly one alert row, still
+  });
+
+  it('absence alert: ON_LEAVE is not an absence — no alert for the leave-backed record', async () => {
+    const today = new Date();
+    const dayStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    // A second class/section session with the same student would double-count;
+    // instead use a fresh session for a class the student is not in — simpler:
+    // flip the existing record to ON_LEAVE and prove no new row appears.
+    await prisma.attendanceRecord.updateMany({
+      where: { studentId: seed.studentId, status: 'ABSENT' },
+      data: { status: 'ON_LEAVE' },
+    });
+    const before = await prisma.notificationLog.count({ where: { template: 'absence_alert' } });
+
+    const scan = await request(app)
+      .post('/absence-alerts/scan')
+      .set('x-internal-assertion', asComm())
+      .send({ date: dayStart.toISOString().slice(0, 10) })
+      .expect(200);
+
+    expect(scan.body.studentsAbsent).toBe(0);
+    const after = await prisma.notificationLog.count({ where: { template: 'absence_alert' } });
+    expect(after).toBe(before);
+  });
+
   it('without messaging config the app still boots and fails sends closed', async () => {
     const bare = createCommunicationApp({
       env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
