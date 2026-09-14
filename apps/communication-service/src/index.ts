@@ -13,6 +13,7 @@ import { FcmClient } from './fcm';
 import { EmailClient } from './email';
 import { Dispatcher } from './dispatcher';
 import { scanAbsencesForDate } from './absence-alerts';
+import { scanFeeRemindersForDate } from './fee-reminders';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
@@ -160,6 +161,13 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
         post: {
           summary: 'Scan a date\'s attendance for ABSENT records and queue urgent guardian alerts (idempotent per date)', tags: ['triggers'],
           requestBody: { type: 'object', properties: { date: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'PUSH'] }, drain: { type: 'boolean' } } },
+          responses: { '200': { description: 'Scan result' } },
+        },
+      },
+      '/fee-reminders/scan': {
+        post: {
+          summary: 'Scan invoices for due-soon/overdue fee reminders (idempotent per invoice + kind)', tags: ['triggers'],
+          requestBody: { type: 'object', properties: { date: { type: 'string' }, channel: { type: 'string', enum: ['WHATSAPP', 'SMS', 'EMAIL', 'PUSH'] }, drain: { type: 'boolean' }, dueSoonDays: { type: 'number' } } },
           responses: { '200': { description: 'Scan result' } },
         },
       },
@@ -467,6 +475,35 @@ r.post('/absence-alerts/scan', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Automated trigger: fee due/overdue reminders (BUILD_PLAN 5.6 #2) ──
+// Fired by the nightly sweep and manually by ops. Idempotent per
+// (invoice, kind) — the log rows dedupe, so re-firing never spams.
+
+r.post('/fee-reminders/scan', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch — cannot scan invoices.' }); return; }
+    const { date, channel, drain, dueSoonDays } = req.body ?? {};
+    const day = date ? new Date(date) : new Date();
+    if (Number.isNaN(day.getTime())) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date must be a valid date (YYYY-MM-DD).' });
+      return;
+    }
+    if (channel && !['WHATSAPP', 'SMS', 'EMAIL', 'PUSH'].includes(channel)) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'channel must be WHATSAPP, SMS, EMAIL, or PUSH.' });
+      return;
+    }
+
+    const scan = await scanFeeRemindersForDate(prisma, branchId, day, { channel, dueSoonDays });
+
+    let drained: Awaited<ReturnType<Dispatcher['drain']>> | null = null;
+    if (drain === true) {
+      drained = await dispatcher.drain();
+    }
+    res.json({ ...scan, drained });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.get('/dispatch-logs', async (req, res) => {
   try {
     const { branchId } = ctx(req);
@@ -580,6 +617,26 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
     },
     ABSENCE_SWEEP_MS,
   );
+
+  // ── Nightly fee-reminder sweep (§5.6 #2) ──
+  // Once a day, in the morning window, per branch. Idempotent per invoice.
+  const feeTimer = setInterval(
+    async () => {
+      try {
+        const hour = new Date().getHours();
+        if (hour >= 6 && hour < 12) {
+          const branches = await prisma.branch.findMany({ select: { id: true } });
+          for (const b of branches) {
+            await scanFeeRemindersForDate(prisma, b.id, new Date());
+          }
+        }
+      } catch (err) {
+        console.error('[fee-reminder-sweep] failed:', (err as Error).message);
+      }
+    },
+    ABSENCE_SWEEP_MS,
+  );
+  feeTimer.unref?.();
   absenceTimer.unref?.();
 
   const drainTimer = setInterval(async () => {
