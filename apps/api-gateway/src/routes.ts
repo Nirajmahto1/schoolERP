@@ -123,6 +123,18 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       port: env.PORT_FEE_SERVICE,
       rewriteTo: '',
     },
+    // ── Provider delivery callbacks (BUILD_PLAN 5.1/5.2): Meta and the SMS
+    // aggregators cannot carry a Bearer token, so this prefix is public.
+    // Authenticity is the webhook HMAC verified at communication-service over
+    // the raw body — same shape as the fee-service Razorpay webhook.
+    {
+      path: '/api/v1/communication/webhooks',
+      service: 'communication-service',
+      host,
+      port: env.PORT_COMMUNICATION_SERVICE,
+      rewriteTo: '/webhooks',
+      public: true,
+    },
     {
       path: '/api/v1/communication',
       service: 'communication-service',

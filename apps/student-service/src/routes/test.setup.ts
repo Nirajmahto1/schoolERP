@@ -26,6 +26,10 @@ export function makeIdentityTestEnv(
     CONTROL_PLANE_DATABASE_URL: databaseUrl,
     PORT: 4001,
     INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey,
+    // Messaging quiet hours (§5.8) — defaults the schema would supply when
+    // parsing real env; explicit here because this object IS the env.
+    QUIET_HOURS_START: 21,
+    QUIET_HOURS_END: 8,
   };
 }
 

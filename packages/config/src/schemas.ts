@@ -77,6 +77,32 @@ const razorpaySchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
 });
 
+// ── Messaging providers (BUILD_PLAN 5.1 / 5.2) ──
+// All optional: a school boots (and the dispatcher queues rows) without any
+// provider configured — sends then fail CLOSED into NotificationLog FAILED
+// rows with a clear error, never a crash. WhatsApp uses the Meta Cloud API
+// directly (no BSP middleman needed to start); SMS rides a DLT-registered
+// REST gateway whose shape every Indian aggregator (MSG91, Kaleyra, Textlocal)
+// shares closely enough for the adapter.
+const messagingSchema = z.object({
+  // Meta WhatsApp Cloud API — the phone-number-id scopes templates + sends.
+  WHATSAPP_TOKEN: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  WHATSAPP_PHONE_NUMBER_ID: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // Meta signs webhook callbacks with this secret over the raw body.
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // DLT SMS gateway: TRAI-registered sender header (e.g. `DPSNOT`) + DLT
+  // template IDs ride per-send; the base URL + key are the aggregator's.
+  SMS_API_BASE: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().url().optional()),
+  SMS_API_KEY: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  SMS_SENDER_HEADER: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).max(6).optional()),
+  // Generic webhook secret for provider delivery callbacks (shared HMAC).
+  MESSAGING_WEBHOOK_SECRET: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().min(1).optional()),
+  // Quiet hours (IST, server-local hour numbers) — §5.8: no promotional or
+  // non-urgent sends inside the window; transactional/urgent bypasses.
+  QUIET_HOURS_START: z.coerce.number().int().min(0).max(23).default(21),
+  QUIET_HOURS_END: z.coerce.number().int().min(0).max(23).default(8),
+});
+
 // ── Gateway ──
 
 export const gatewayEnvSchema = baseSchema
@@ -167,6 +193,7 @@ export const serviceEnvSchema = baseSchema
   .merge(assertionVerifierSchema)
   .merge(controlPlaneSchema)
   .merge(razorpaySchema)
+  .merge(messagingSchema)
   .extend({
     PORT: port(4000),
   });

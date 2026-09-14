@@ -2,18 +2,51 @@
 // School ERP — Communication Service
 // ──────────────────────────────────────────────
 
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
+import { WhatsAppClient, parseDeliveryStatuses } from './whatsapp';
+import { SmsClient } from './sms';
+import { Dispatcher } from './dispatcher';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
 
+/**
+ * Messaging providers from process env. Every key is optional — the service
+ * runs unconfigured (the dispatcher fails sends closed with clear errors)
+ * exactly like fee-service boots without Razorpay keys.
+ */
+function messagingFromEnv() {
+  const e = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
+  return {
+    whatsapp:
+      e.WHATSAPP_TOKEN && e.WHATSAPP_PHONE_NUMBER_ID
+        ? new WhatsAppClient({ token: e.WHATSAPP_TOKEN, phoneNumberId: e.WHATSAPP_PHONE_NUMBER_ID })
+        : null,
+    sms:
+      e.SMS_API_BASE && e.SMS_API_KEY && e.SMS_SENDER_HEADER
+        ? new SmsClient({ apiBase: e.SMS_API_BASE, apiKey: e.SMS_API_KEY, senderHeader: e.SMS_SENDER_HEADER })
+        : null,
+    whatsappWebhookSecret: e.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+    messagingWebhookSecret: e.MESSAGING_WEBHOOK_SECRET,
+    quietHours: { start: e.QUIET_HOURS_START, end: e.QUIET_HOURS_END },
+  };
+}
+
 export interface CommunicationAppOptions {
   env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
   prisma: PrismaClient;
+  /** Injected messaging config (defaults from loadServiceEnv). */
+  messaging?: {
+    whatsapp: WhatsAppClient | null;
+    sms: SmsClient | null;
+    whatsappWebhookSecret?: string;
+    messagingWebhookSecret?: string;
+    quietHours: { start: number; end: number };
+  };
 }
 
 /**
@@ -24,9 +57,19 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
   const { prisma } = options;
   const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
 
-  const { app, mount, finalize } = createServiceApp({
+  // Providers come from env; null means "not configured" — the service and
+  // dispatcher still run, sends fail closed with clear errors (§5.1/5.2).
+  const messaging = options.messaging ?? messagingFromEnv();
+  const dispatcher = new Dispatcher(prisma, {
+    whatsapp: messaging.whatsapp,
+    sms: messaging.sms,
+    quietHours: messaging.quietHours,
+  });
+
+  const { app, mount, mountPublicWebhook, finalize } = createServiceApp({
     serviceName: SERVICE_NAME,
     assertionPublicKey: env.INTERNAL_ASSERTION_PUBLIC_KEY,
+    rawBodyPaths: ['/webhooks'],
     readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
   });
 
@@ -197,22 +240,20 @@ r.post('/dispatch', async (req, res) => {
     }
 
     // Resolve the audience: guardians of students in the targeted
-    // classes/sections (or all when none given), plus staff holding any of
-    // the targeted roles.
-    const audienceStudentIds: string[] = [];
-    if (classIds || sectionIds) {
-      const enrollments = await prisma.studentEnrollment.findMany({
-        where: {
-          branchId,
-          status: 'ENROLLED',
-          toDate: null,
-          ...(sectionIds && { sectionId: { in: sectionIds } }),
-          ...(classIds && { classId: { in: classIds } }),
-        },
-        select: { studentId: true },
-      });
-      audienceStudentIds.push(...enrollments.map((e) => e.studentId));
-    }
+    // classes/sections — or ALL enrolled students of the branch when no
+    // filter is given (school-wide circulars are the most common dispatch).
+    // Plus staff holding any of the targeted roles.
+    const enrollments = await prisma.studentEnrollment.findMany({
+      where: {
+        branchId,
+        status: 'ENROLLED',
+        toDate: null,
+        ...(sectionIds && { sectionId: { in: sectionIds } }),
+        ...(classIds && { classId: { in: classIds } }),
+      },
+      select: { studentId: true },
+    });
+    const audienceStudentIds: string[] = enrollments.map((e) => e.studentId);
 
     const guardians = audienceStudentIds.length
       ? await prisma.studentGuardian.findMany({
@@ -276,6 +317,23 @@ r.post('/dispatch', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Dispatcher (BUILD_PLAN 5.5): drain QUEUED → providers ──
+// Manual/ops trigger for the queue drainer; a cron or the notification-engine
+// calls this on a schedule in production.
+
+r.post('/dispatch/drain', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    const result = await dispatcher.drain({
+      // urgent=true bypasses quiet hours — for absence alerts/emergencies.
+      urgent: req.body?.urgent === true,
+      limit: typeof req.body?.limit === 'number' ? Math.min(200, Math.max(1, req.body.limit)) : undefined,
+    });
+    void branchId;
+    res.json(result);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.get('/dispatch-logs', async (req, res) => {
   try {
     const { branchId } = ctx(req);
@@ -290,10 +348,66 @@ r.get('/dispatch-logs', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+  // Provider delivery callbacks (public + raw body; HMAC is the handler's
+  // job) — Meta WhatsApp statuses land here (§5.1 delivery receipts).
+  mountPublicWebhook('/webhooks', createProviderWebhookRoute(prisma, messaging));
+
   mount('/', r);
   finalize();
 
   return app;
+}
+
+// ── Provider webhook: delivery receipts (BUILD_PLAN 5.1 / 5.5) ──
+// Meta's servers cannot carry a Bearer token; authenticity is the HMAC over
+// the raw body. Statuses update the NotificationLog rows the dispatcher
+// stamped — closing the delivery-receipt loop with per-message costs.
+function createProviderWebhookRoute(
+  prisma: PrismaClient,
+  messaging: { whatsappWebhookSecret?: string; messagingWebhookSecret?: string },
+) {
+  return async (req: express.Request, res: express.Response) => {
+    const secret = messaging.whatsappWebhookSecret ?? messaging.messagingWebhookSecret;
+    const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
+
+    // Meta webhook verification handshake (hub.challenge echo).
+    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token']) {
+      if (!secret || req.query['hub.verify_token'] !== secret) {
+        res.status(403).json({ detail: 'verification token mismatch' });
+        return;
+      }
+      res.status(200).send(req.query['hub.challenge'] ?? '');
+      return;
+    }
+
+    if (!secret) {
+      res.status(503).json({ type: 'not-configured', title: 'Not Configured', status: 503, detail: 'No webhook secret configured — every payload fails closed.' });
+      return;
+    }
+    if (!raw || !WhatsAppClient.verifySignature(raw, req.header('x-hub-signature-256'), secret)) {
+      res.status(401).json({ type: 'authentication-error', title: 'Unauthorized', status: 401, detail: 'Invalid or missing signature.' });
+      return;
+    }
+
+    try {
+      const statuses = parseDeliveryStatuses(req.body);
+      let matched = 0;
+      for (const s of statuses) {
+        const updated = await prisma.notificationLog.updateMany({
+          where: { providerMessageId: s.providerMessageId },
+          data: {
+            status: s.status,
+            ...(s.error ? { error: s.error } : {}),
+            ...(s.status === 'DELIVERED' || s.status === 'READ' ? { sentAt: s.timestamp ?? new Date() } : {}),
+          },
+        });
+        matched += updated.count;
+      }
+      res.json({ received: statuses.length, matched });
+    } catch (e) {
+      res.status(500).json({ detail: (e as Error).message });
+    }
+  };
 }
 
 // ── Entrypoint ──
