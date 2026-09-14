@@ -13,6 +13,7 @@ import { loadServiceEnv } from '@school-erp/config';
 import { rebuildMonthlySummary } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx, requireAssertion } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
+import { mintAssertion } from '@school-erp/auth';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -21,6 +22,20 @@ const SERVICE_NAME = 'attendance-service';
 export interface AttendanceAppOptions {
   env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
   prisma: PrismaClient;
+  /**
+   * Where to POST absence-alert scans (peer call, not gateway round-trip).
+   * Default: COMMUNICATION_SERVICE_URL from env.
+   */
+  communicationBaseUrl?: string;
+  /**
+   * Private assertion-signing key — a peer call mints its own 30-second
+   * assertion. Optional: without it the live absence-alert path is skipped
+   * (the communication-service morning sweep still covers the alert, so
+   * marking must NEVER fail or slow down because of this).
+   */
+  internalAssertionPrivateKey?: string;
+  /** Test seam: the fetch used for the peer call. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -30,6 +45,47 @@ export interface AttendanceAppOptions {
 export function createAttendanceApp(options: AttendanceAppOptions) {
   const { prisma } = options;
   const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+
+  // ── Live absence-alert fire (BUILD_PLAN 5.6 #1 / GATE 5) ──
+  // After a successful /mark commit, tell communication-service to scan the
+  // day's sessions. Fire-and-forget with a timeout: an alert is a same-
+  // morning product with a cron safety net — marking must never block on it
+  // (or fail because communication-service is down). The peer call mints a
+  // 30-second assertion carrying the MARKER's identity, so the scan is
+  // branch-scoped exactly like a direct user request would be.
+  const communicationBaseUrl = options.communicationBaseUrl ?? process.env.COMMUNICATION_SERVICE_URL ?? 'http://localhost:4005';
+  const peerFetch = options.fetchImpl ?? fetch;
+  const fireAbsenceScan = (identity: { userId: string; email: string; tenantId: string; branchId: string | null }, date: Date): void => {
+    if (!options.internalAssertionPrivateKey || !identity.branchId) return;
+    const assertion = mintAssertion(
+      {
+        userId: identity.userId,
+        email: identity.email,
+        tenantId: identity.tenantId,
+        branchId: identity.branchId,
+        roles: ['SYSTEM'],
+        audience: 'communication-service',
+      },
+      { privateKey: options.internalAssertionPrivateKey, ttlSeconds: 30 },
+    );
+    // Not awaited: run behind the response. A 5s timeout bounds the socket;
+    // failures log and vanish — the sweep retries in ≤15 minutes anyway.
+    void peerFetch(`${communicationBaseUrl}/absence-alerts/scan`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-internal-assertion': assertion,
+      },
+      body: JSON.stringify({ date: date.toISOString().slice(0, 10), channel: 'WHATSAPP', drain: true }),
+      signal: AbortSignal.timeout(5_000),
+    })
+      .then((res) => {
+        if (!res.ok) logger.warn(`absence-scan peer call ${res.status} (sweep will cover)`);
+      })
+      .catch((err: unknown) => {
+        logger.warn(`absence-scan peer call failed: ${(err as Error).message} (sweep will cover)`);
+      });
+  };
 
   const { app, mount, finalize } = createServiceApp({
     serviceName: SERVICE_NAME,
@@ -155,6 +211,10 @@ r.post('/attendance/mark', async (req, res) => {
       year,
       month,
     });
+
+    // Live absence alerts (5.6 #1): fire after the commit, behind the
+    // response — never blocks or fails the marking itself.
+    fireAbsenceScan({ userId, email: ctx(req).email, tenantId: ctx(req).tenantId, branchId }, day);
 
     res.json({ count: result.length, sessionId: session.id, message: 'Attendance marked successfully' });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
@@ -557,7 +617,15 @@ r.get('/attendance/defaulters', async (req, res) => {
 // ── Entrypoint ──
 const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
 const prisma = new PrismaClient();
-const app = createAttendanceApp({ env, prisma });
+const app = createAttendanceApp({
+  env,
+  prisma,
+  communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+  // Peer-call signing material (optional per ADR-3): present here so the
+  // live absence-alert fire works; a deployment without it still marks
+  // attendance and relies on the communication-service morning sweep.
+  internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+});
 
 // Only bind a port when run directly. Imported by tests or the e2e suite,
 // the module must NOT listen — vitest would hit EADDRINUSE across suites.

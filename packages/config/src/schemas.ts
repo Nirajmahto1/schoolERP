@@ -199,6 +199,24 @@ export type IdentityEnv = z.infer<typeof identityEnvSchema>;
 export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'identity-service');
 
 // ── Generic downstream service (staff, academic, fee, attendance, comms) ──
+// Where a service calls a PEER service directly (not through the gateway),
+// it needs the peer's base URL. Optional with a localhost default so single-
+// machine dev just works, and so CI suites that never call peers don't need
+// the variable. Direct peer calls mint their own short-lived assertions —
+// which requires the PRIVATE key; a service without it (leaf services hold
+// only the public key per ADR-3) simply skips the peer call, which is why
+// every peer call must be an enhancement, never a correctness dependency.
+const peerServicesSchema = z.object({
+  COMMUNICATION_SERVICE_URL: z.string().url().default('http://localhost:4005'),
+  // Private signing material for direct peer calls (a service minting its
+  // own assertion for a peer). Optional — leaf services hold only the
+  // public key per ADR-3, and a service without it skips peer enhancements
+  // (e.g. the live absence-alert fire; the morning sweep still covers it).
+  INTERNAL_ASSERTION_PRIVATE_KEY: z.preprocess(
+    (v) => (typeof v !== 'string' || v.trim() === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
+});
 
 export const serviceEnvSchema = baseSchema
   .merge(databaseSchema)
@@ -206,6 +224,7 @@ export const serviceEnvSchema = baseSchema
   .merge(controlPlaneSchema)
   .merge(razorpaySchema)
   .merge(messagingSchema)
+  .merge(peerServicesSchema)
   .extend({
     PORT: port(4000),
   });

@@ -30,6 +30,8 @@ export function makeIdentityTestEnv(
     // parsing real env; explicit here because this object IS the env.
     QUIET_HOURS_START: 21,
     QUIET_HOURS_END: 8,
+    // Peer-call base URL (absence-alert fire); never exercised by these suites.
+    COMMUNICATION_SERVICE_URL: 'http://localhost:4005',
   };
 }
 
