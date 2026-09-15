@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback } from 'react';
-import { examApi, studentApi, academicApi } from '@/lib/api';
+import { examApi, studentApi, academicApi, analyticsApi } from '@/lib/api';
 
 export default function ExamsPage() {
   const [activeTab, setActiveTab] = useState('Examinations');
@@ -10,6 +10,7 @@ export default function ExamsPage() {
   const [selectedExamId, setSelectedExamId] = useState('');
   const [reportCards, setReportCards] = useState<any[]>([]);
   const [resultsLoading, setResultsLoading] = useState(false);
+  const [perf, setPerf] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +28,14 @@ export default function ExamsPage() {
   }, []);
 
   useEffect(() => { fetchExams(); }, [fetchExams]);
+
+  // Grade-band distribution per subject from analytics-service — computed
+  // over PUBLISHED results only. Enrichment: a failed call hides the panel.
+  useEffect(() => {
+    analyticsApi.getPerformance()
+      .then((rows) => setPerf(rows ?? []))
+      .catch(() => setPerf([]));
+  }, []);
 
   // Results / Report Cards read per-student report cards — only available
   // once the exam is PUBLISHED (the service 404s anything less, deliberately).
@@ -123,6 +132,49 @@ export default function ExamsPage() {
                 {examinations.length === 0 && <div className="card" style={{ gridColumn: 'span 3', padding: 24, textAlign: 'center', color: '#9CA3AF' }}>No examinations found</div>}
               </div>
             )}
+
+            {activeTab === 'Results' && perf.length > 0 && (() => {
+              const maxBand = Math.max(1, ...perf.map((p) => Number(p.a1) + Number(p.b_band) + Number(p.c_band) + Number(p.d_band)));
+              const BANDS = [
+                { key: 'a1', label: 'A1', color: '#10B981' },
+                { key: 'b_band', label: 'A2–B1', color: '#5048E5' },
+                { key: 'c_band', label: 'B2–C2', color: '#F59E0B' },
+                { key: 'd_band', label: 'D–E2', color: '#EF4444' },
+              ] as const;
+              return (
+                <div className="card animate-fadeIn mb-6"><div className="card-body">
+                  <div className="flex items-center justify-between mb-4" style={{ flexWrap: 'wrap', gap: 8 }}>
+                    <h3 className="m-0"><span className="icon icon-sm text-primary">bar_chart</span> Performance Distribution — grade bands by subject (published results)</h3>
+                    <div className="flex gap-3 text-xs text-gray">
+                      {BANDS.map((b) => (<span key={b.key}><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: b.color, marginRight: 4 }}></span>{b.label}</span>))}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 18, height: 160, overflowX: 'auto' }}>
+                    {perf.map((p) => {
+                      const total = Number(p.a1) + Number(p.b_band) + Number(p.c_band) + Number(p.d_band);
+                      return (
+                        <div key={p.subject} style={{ flex: 1, minWidth: 90, textAlign: 'center' }} title={`${p.subject}: ${total} results — A1 ${p.a1}, A2–B1 ${p.b_band}, B2–C2 ${p.c_band}, D–E2 ${p.d_band}`}>
+                          <div style={{ height: 140, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+                            {BANDS.map((b) => {
+                              const v = Number(p[b.key]);
+                              if (v === 0) return null;
+                              return (
+                                <div key={b.key} style={{ height: `${(v / maxBand) * 100}%`, background: b.color, borderRadius: v === Number(p.a1) ? '4px 4px 0 0' : 0 }}></div>
+                              );
+                            })}
+                          </div>
+                          <div className="text-xs font-semibold" style={{ marginTop: 4 }}>{p.subject}</div>
+                          <div className="text-xs text-gray">{total}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-xs text-gray" style={{ marginTop: 8 }}>
+                    CBSE bands: A1 (91–100) · A2–B1 (75–90) · B2–C2 (51–74) · D–E2 (≤33–50). Counts include every published subject entry across exams.
+                  </div>
+                </div></div>
+              );
+            })()}
 
             {(activeTab === 'Results' || activeTab === 'Report Cards') && (
               <div className="card animate-fadeIn mb-6">
