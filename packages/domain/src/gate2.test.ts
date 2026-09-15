@@ -114,8 +114,12 @@ describe('GATE 2 — domain model redesign', () => {
     expect(pctTotal).toBeGreaterThan(40);
 
     // Previous year's attendance percentage: the denormalised summary must
-    // equal a recompute over that year's raw records.
-    const summaryPct = await attendancePercentage(prisma, { studentId: student.id, year: 2024 });
+    // equal a recompute over that year's raw records. The summary's calendar
+    // year comes from the year's own April (never hardwired — the seed's
+    // "current" year tracks the wall clock, so the past year moves too).
+    const pastYear = await prisma.academicYear.findUniqueOrThrow({ where: { id: seed.academicYearIds.past } });
+    const pastStartYear = pastYear.startDate.getUTCFullYear();
+    const summaryPct = await attendancePercentage(prisma, { studentId: student.id, year: pastStartYear });
     expect(summaryPct).toBeGreaterThan(80);
     const records = await prisma.attendanceRecord.findMany({
       where: { studentId: student.id, session: { academicYearId: seed.academicYearIds.past } },
@@ -194,12 +198,15 @@ describe('GATE 2 — domain model redesign', () => {
     });
     const branchId = seed.branchIds[0];
 
-    // A future academic year + classes to promote into.
+    // A future academic year + classes to promote into — derived from the
+    // current year so the test holds no matter when it runs.
+    const currentAy = await prisma.academicYear.findUniqueOrThrow({ where: { id: seed.academicYearIds.current } });
+    const nextStart = currentAy.startDate.getUTCFullYear() + 1;
     const future = await prisma.academicYear.create({
       data: {
-        name: '2026-27',
-        startDate: new Date('2026-04-01'),
-        endDate: new Date('2027-03-31'),
+        name: `${nextStart}-${String(nextStart + 1).slice(2)}`,
+        startDate: new Date(Date.UTC(nextStart, 3, 1)),
+        endDate: new Date(Date.UTC(nextStart + 1, 2, 31)),
         isCurrent: false,
         branchId,
       },
@@ -314,7 +321,12 @@ describe('GATE 2 — domain model redesign', () => {
     });
     const a = await nextSequenceValue(prisma, { branchId, code: 'ADMISSION' });
     const b = await nextSequenceValue(prisma, { branchId, code: 'ADMISSION' });
-    expect(a).toMatch(/^DPS\/2025-26\/\d+$/);
+    // {AY} resolves to the branch's LIVE academic year — assert against
+    // whatever that is now, not a hardcoded label.
+    const currentAy = await prisma.academicYear.findUniqueOrThrow({
+      where: { id: seed.academicYearIds.current },
+    });
+    expect(a).toMatch(new RegExp(`^DPS\\/${currentAy.name}\\/\\d+$`));
     expect(Number(b.split('/')[2])).toBe(Number(a.split('/')[2]) + 1);
   });
 });

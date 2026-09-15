@@ -120,16 +120,37 @@ function monthDay(year: number, month: number, day: number): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
+/** n calendar days before `base` (UTC). */
+function daysBefore(n: number, base: Date): Date {
+  const d = new Date(base);
+  d.setUTCDate(d.getUTCDate() - n);
+  return d;
+}
+
+/**
+ * The school year the real calendar is in right now (Indian year: April–
+ * March), expressed as the calendar year of its April 1. The seed used to
+ * hardwire "2025-26" as current, so every demo aged past its own April:
+ * attendance analytics went quiet, invoices lived a year back, and the
+ * timetable engine's current-year scoping had nothing to chew on.
+ */
+export function currentSchoolYearStart(now: Date = new Date()): number {
+  return now.getUTCMonth() + 1 >= 4 ? now.getUTCFullYear() : now.getUTCFullYear() - 1;
+}
+
 function isWeekend(d: Date): boolean {
   const day = d.getDay();
   return day === 0 || day === 6;
 }
 
-/** The first N weekdays of the academic year starting April 1. */
-export function schoolDays(yearStart: number, count: number): Date[] {
+/** The first N weekdays of the academic year starting April 1.
+ *  `endBefore` (exclusive) stops generation there — the live year cannot
+ *  have school days in the future. */
+export function schoolDays(yearStart: number, count: number, endBefore?: Date): Date[] {
   const days: Date[] = [];
   const d = monthDay(yearStart, 4, 1);
   while (days.length < count) {
+    if (endBefore && d.getTime() >= endBefore.getTime()) break;
     if (!isWeekend(d)) days.push(new Date(d));
     d.setUTCDate(d.getUTCDate() + 1);
   }
@@ -156,6 +177,7 @@ export async function seedDemoTenant(
   const attDays = options.attendanceDaysPerYear ?? 30;
   const offset = options.offset ?? 0;
   const rand = prand(20260830 + offset);
+  const now = new Date();
 
   // ── 1. School + branches ──
   const school = await prisma.school.upsert({
@@ -196,8 +218,13 @@ export async function seedDemoTenant(
     branches.push(branch);
   }
 
-  // ── 2. Academic years: 2024-25 (past) + 2025-26 (current) ──
-  const years = ['2024-25', '2025-26'];
+  // ── 2. Academic years: previous + the school year that contains TODAY ──
+  // Derived from the wall clock (Apr–Mar), so the demo never ages: whatever
+  // day you seed on, "current" is the year you are actually living in.
+  const curStart = currentSchoolYearStart();
+  const curLabel = `${curStart}-${String(curStart + 1).slice(2)}`;
+  const pastLabel = `${curStart - 1}-${String(curStart).slice(2)}`;
+  const years = [pastLabel, curLabel];
   const yearRows: Record<string, Record<string, string>> = {}; // branchId -> name -> id
   for (const branch of branches) {
     for (const name of years) {
@@ -209,15 +236,15 @@ export async function seedDemoTenant(
           name,
           startDate: monthDay(startYear, 4, 1),
           endDate: monthDay(startYear + 1, 3, 31),
-          isCurrent: name === '2025-26',
+          isCurrent: name === curLabel,
           branchId: branch.id,
         },
       });
       (yearRows[branch.id] ??= {})[name] = row.id;
     }
   }
-  const currentYear = '2025-26';
-  const pastYear = '2024-25';
+  const currentYear = curLabel;
+  const pastYear = pastLabel;
 
   // ── 3. Classes + sections per branch per year ──
   const classIds: Record<string, Record<string, string[]>> = {}; // branchId -> yearName -> [classId]
@@ -432,7 +459,7 @@ export async function seedDemoTenant(
               sectionId: prevSecId,
               rollNo: pastRoll,
               status: 'ENROLLED',
-              fromDate: monthDay(2024, 4, 1),
+              fromDate: monthDay(curStart - 1, 4, 1),
               createdBy: 'seed',
             },
             {
@@ -444,7 +471,7 @@ export async function seedDemoTenant(
               sectionId: curSecId,
               rollNo: curRoll,
               status: 'ENROLLED',
-              fromDate: monthDay(2025, 4, 1),
+              fromDate: monthDay(curStart, 4, 1),
               createdBy: 'seed',
             },
           );
@@ -527,11 +554,24 @@ export async function seedDemoTenant(
 
   const dayKey = (d: Date) => d.toISOString().slice(0, 10);
 
+  // yearId → id-scope tag + calendar start year (used for collision-free ids
+  // and for summary rows that must carry the right calendar year).
+  const yearMeta = new Map<string, { dayTag: string; startYear: number }>();
+  for (const branch of branches) {
+    for (const [yearName, yearId] of Object.entries(yearRows[branch.id])) {
+      const sy = Number(yearName.split('-')[0]);
+      yearMeta.set(yearId, { dayTag: `${yearName === pastYear ? 'p' : 'c'}${sy}`, startYear: sy });
+    }
+  }
+
   for (let b = 0; b < branches.length; b++) {
     const branch = branches[b];
     for (const [yearName, yearId] of Object.entries(yearRows[branch.id])) {
       const startYear = Number(yearName.split('-')[0]);
-      const days = schoolDays(startYear, attDays);
+      // The live year cannot have school days in the future — attendance in
+      // the "current" year stops at today (so rate dashboards light up),
+      // while the past year keeps its full window.
+      const days = schoolDays(startYear, attDays, yearName === currentYear ? daysBefore(1, now) : undefined);
       const yearClasses = classIds[branch.id][yearName];
 
       // Map section -> students (from the in-memory enrollments).
@@ -544,7 +584,9 @@ export async function seedDemoTenant(
         }
       }
 
-      const dayIdx = yearName === pastYear ? 0 : attDays; // distinct ids across years
+      // Year-scoped ids: the same day index across two years must not share
+      // one id (the old single-window ids collided across years).
+      const dayTag = yearName === pastYear ? `p${startYear}` : `c${startYear}`;
       for (let di = 0; di < days.length; di++) {
         const date = days[di];
         for (const clsId of yearClasses) {
@@ -552,7 +594,7 @@ export async function seedDemoTenant(
           for (const secId of sections) {
             const students = sectionStudents.get(secId) ?? [];
             if (students.length === 0) continue;
-            const sessionId = `ats_${branch.id}_${yearName}_${di}_${clsId}_${secId}`;
+            const sessionId = `ats_${branch.id}_${dayTag}_${di}_${clsId}_${secId}`;
             sessionRows.push({
               id: sessionId,
               branchId: branch.id,
@@ -601,11 +643,11 @@ export async function seedDemoTenant(
       const attended = acc.present + acc.half + acc.late;
       const percentage = acc.workingDays > 0 ? Math.round((attended / acc.workingDays) * 10000) / 100 : 0;
       summaryRows.push({
-        id: `sum_${branchId}_${studentId}_${m}`,
+        id: `sum_${branchId}_${yearMeta.get(yearId)?.dayTag}_${studentId}_${m}`,
         studentId,
         branchId,
         academicYearId: yearId,
-        year: yearId === yearRows[branchId][pastYear] ? 2024 : 2025,
+        year: yearMeta.get(yearId)?.startYear ?? 0,
         month: m,
         workingDays: acc.workingDays,
         presentDays: acc.present,
@@ -649,10 +691,10 @@ export async function seedDemoTenant(
         academicYearId: yearId,
         branchId: branch.id,
         assessmentTypeId: null,
-        startDate: monthDay(Number(yearName.split('-')[0]), 2, 20),
-        endDate: monthDay(Number(yearName.split('-')[0]), 3, 5),
+        startDate: monthDay(Number(yearName.split('-')[0]), 12, 1),
+        endDate: monthDay(Number(yearName.split('-')[0]), 12, 14),
         status: 'PUBLISHED',
-        publishedAt: monthDay(Number(yearName.split('-')[0]), 3, 10),
+        publishedAt: monthDay(Number(yearName.split('-')[0]), 12, 18),
         publishedBy: `usr_${sc}_${bcode}_principal`,
       });
 
@@ -677,7 +719,7 @@ export async function seedDemoTenant(
             id: esId,
             examinationId: examId,
             subjectId,
-            examDate: monthDay(Number(yearName.split('-')[0]), 2, 20 + s),
+            examDate: monthDay(Number(yearName.split('-')[0]), 12, 1 + s),
             startTime: '09:00',
             endTime: '12:00',
             maxMarks: 100,
@@ -816,18 +858,18 @@ export async function seedDemoTenant(
       invoiceRows.push(
         {
           id: inv1Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
-          academicYearId: currentYearId, periodStart: monthDay(2025, 4, 1), periodEnd: monthDay(2025, 4, 30),
-          dueDate: monthDay(2025, 4, 10), totalAmount: tuition - disc1, discountAmount: disc1, paidAmount: 0, status: 'ISSUED',
+          academicYearId: currentYearId, periodStart: monthDay(curStart, 4, 1), periodEnd: monthDay(curStart, 4, 30),
+          dueDate: monthDay(curStart, 4, 10), totalAmount: tuition - disc1, discountAmount: disc1, paidAmount: 0, status: 'ISSUED',
         },
         {
           id: inv2Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
-          academicYearId: currentYearId, periodStart: monthDay(2025, 5, 1), periodEnd: monthDay(2025, 5, 31),
-          dueDate: monthDay(2025, 5, 10), totalAmount: tuition, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
+          academicYearId: currentYearId, periodStart: monthDay(curStart, 5, 1), periodEnd: monthDay(curStart, 5, 31),
+          dueDate: monthDay(curStart, 5, 10), totalAmount: tuition, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
         },
         {
           id: inv3Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
           academicYearId: currentYearId, periodStart: null as unknown as Date, periodEnd: null as unknown as Date,
-          dueDate: monthDay(2025, 6, 15), totalAmount: annual, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
+          dueDate: monthDay(curStart, 6, 15), totalAmount: annual, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
         },
       );
       lineRows.push(
@@ -845,18 +887,18 @@ export async function seedDemoTenant(
       const roll = Number(s.id.slice(-2));
       if (roll % 10 < 7 || roll % 10 === 0) {
         const pid = `pay_${branch.id}_${s.id}_apr`;
-        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv1Id, amount: tuition - disc1, method: 'UPI', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(2025, 4, 11) });
+        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv1Id, amount: tuition - disc1, method: 'UPI', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 4, 11) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -(tuition - disc1), feeHeadId: null, invoiceId: inv1Id, paymentId: pid, description: 'Payment via UPI', reference: `REC-${branchCodes[b]}` });
       }
       if (roll % 5 < 3) {
         const pid = `pay_${branch.id}_${s.id}_may`;
-        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv2Id, amount: tuition, method: 'CASH', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(2025, 5, 11) });
+        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv2Id, amount: tuition, method: 'CASH', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 5, 11) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -tuition, feeHeadId: null, invoiceId: inv2Id, paymentId: pid, description: 'Payment via CASH', reference: `REC-${branchCodes[b]}` });
       }
       if (roll % 10 < 2) {
         const pid = `pay_${branch.id}_${s.id}_annual`;
         const partial = Math.round(annual * 0.6);
-        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv3Id, amount: partial, method: 'ONLINE', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(2025, 6, 16) });
+        paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv3Id, amount: partial, method: 'ONLINE', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 6, 16) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -partial, feeHeadId: null, invoiceId: inv3Id, paymentId: pid, description: 'Payment via ONLINE', reference: `REC-${branchCodes[b]}` });
       }
     }
