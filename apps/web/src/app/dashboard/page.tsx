@@ -5,21 +5,31 @@ import styles from './page.module.css';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useLoading } from '@/context/LoadingContext';
-import { aiApi, teacherApi, adminApi, studentApi } from '@/lib/api';
+import { aiApi, teacherApi, studentApi, analyticsApi } from '@/lib/api';
 import { useState } from 'react';
 
-/* ─── Admin / Principal Dashboard ─── */
+/* ─── Admin / Principal Dashboard — live data from analytics-service (Phase 7.1) ─── */
 function AdminDashboard() {
   const { user } = useAuth();
   const [data, setData] = useState<any>(null);
+  const [attendance, setAttendance] = useState<any[]>([]);
+  const [atRisk, setAtRisk] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const res = await adminApi.getDashboard();
-        setData(res);
+        // All three from analytics-service, branch-scoped by the caller's
+        // assertion — the numbers a principal sees are the numbers in the DB.
+        const [dash, att, risk] = await Promise.all([
+          analyticsApi.getDashboard(),
+          analyticsApi.getAttendanceTrend(30),
+          analyticsApi.getAtRisk(6),
+        ]);
+        setData(dash);
+        setAttendance(att ?? []);
+        setAtRisk((risk ?? []).slice(0, 6));
       } catch (err: any) {
         setError(err.detail || err.message || 'Failed to load dashboard');
       } finally {
@@ -32,16 +42,18 @@ function AdminDashboard() {
   if (loading) return <div className="p-12 text-center text-primary animate-pulse">Loading dashboard...</div>;
   if (error || !data) return <div className="p-12 text-center text-danger">Failed to load dashboard: {error || 'No data'}</div>;
 
+  const maxPresent = Math.max(1, ...attendance.map((a) => Number(a.present) + Number(a.absent) + Number(a.late)));
+
   return (
     <>
       <Topbar title="Dashboard" subtitle={`Welcome back, ${user?.name || 'Admin'}`} />
       <div className={styles.content}>
         <div className="grid grid-4 gap-4 animate-fadeIn">
           {[
-            { label: 'Total Students', value: String(data.totalStudents ?? 0), icon: 'group', color: '#5048E5', bg: '#EEF0FF' },
-            { label: 'Total Staff', value: String(data.totalStaff ?? 0), icon: 'badge', color: '#10B981', bg: '#D1FAE5' },
-            { label: "Today's Attendance", value: `${data.attendanceRate ?? 0}%`, icon: 'event_available', color: '#F59E0B', bg: '#FEF3C7' },
-            { label: 'Fee Collection (all time)', value: `₹${(Number(data.feeCollection ?? 0) / 100000).toFixed(1)}L`, icon: 'payments', color: '#EF4444', bg: '#FEE2E2' }
+            { label: 'Total Students', value: String(data.total_students ?? 0), icon: 'group', color: '#5048E5', bg: '#EEF0FF' },
+            { label: 'Total Staff', value: String(data.total_staff ?? 0), icon: 'badge', color: '#10B981', bg: '#D1FAE5' },
+            { label: 'Attendance Rate (30d)', value: `${data.attendance_rate ?? 0}%`, icon: 'event_available', color: '#F59E0B', bg: '#FEF3C7' },
+            { label: 'Fee Collected (all time)', value: `₹${(Number(data.total_revenue ?? 0) / 100000).toFixed(1)}L`, icon: 'payments', color: '#EF4444', bg: '#FEE2E2' },
           ].map(s => (
             <div key={s.label} className="stat-card" style={{ borderLeftColor: s.color }}>
               <div className="stat-icon" style={{ background: s.bg, color: s.color }}><span className="icon">{s.icon}</span></div>
@@ -52,26 +64,77 @@ function AdminDashboard() {
             </div>
           ))}
         </div>
+
         <div className={`grid grid-2 gap-4 mt-6 ${styles.chartsRow}`}>
-          <div className="card"><div className="card-body"><h3>Weekly Attendance Trend</h3><div className={styles.chartPlaceholder}><div className={styles.barChart}>
-            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((d, i) => (<div key={d} className={styles.barGroup}><div className={styles.bar} style={{ height: `${65 + Math.random() * 30}%`, background: i === 4 ? 'var(--primary-light)' : 'var(--primary)' }}></div><span>{d}</span></div>))}
-          </div></div></div></div>
-          <div className="card"><div className="card-body"><h3>Fee Collection Trend (6 Months)</h3><div className={styles.chartPlaceholder}><div className={styles.lineChart}><svg viewBox="0 0 300 120" className={styles.svg}><defs><linearGradient id="grad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stopColor="var(--primary)" stopOpacity="0.2" /><stop offset="100%" stopColor="var(--primary)" stopOpacity="0" /></linearGradient></defs><path d="M0,100 L50,70 L100,80 L150,40 L200,50 L250,20 L300,30" fill="none" stroke="var(--primary)" strokeWidth="2.5" /><path d="M0,100 L50,70 L100,80 L150,40 L200,50 L250,20 L300,30 L300,120 L0,120 Z" fill="url(#grad)" /></svg><div className={styles.lineLabels}>{['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'].map(m => <span key={m}>{m}</span>)}</div></div></div></div></div>
+          <div className="card"><div className="card-body">
+            <h3 className="mb-4"><span className="icon icon-sm text-primary">insights</span> Daily Attendance — last {attendance.length} school days</h3>
+            {attendance.length === 0 ? (
+              <div className="text-sm text-gray">No attendance recorded yet.</div>
+            ) : (
+              <div className={styles.chartPlaceholder}><div className={styles.barChart}>
+                {attendance.map((a, i) => {
+                  const total = Number(a.present) + Number(a.absent) + Number(a.late);
+                  const h = Math.round((total / maxPresent) * 100);
+                  const rate = Number(a.attendance_rate ?? 0);
+                  return (
+                    <div key={a.date ?? i} className={styles.barGroup} title={`${a.date}: ${a.present} present, ${a.absent} absent, ${rate}%`}>
+                      <div className={styles.bar} style={{ height: `${Math.max(h, 6)}%`, background: rate >= 90 ? 'var(--primary)' : rate >= 75 ? '#F59E0B' : '#EF4444' }}></div>
+                      <span>{String(new Date(a.date).getUTCDate()).padStart(2, '0')}</span>
+                    </div>
+                  );
+                })}
+              </div></div>
+            )}
+          </div></div>
+
+          <div className="card"><div className="card-body">
+            <h3 className="mb-4"><span className="icon icon-sm text-primary">account_balance_wallet</span> Fees at a Glance</h3>
+            <div className="grid grid-2 gap-4">
+              <div className="stat-card" style={{ borderLeftColor: '#10B981' }}>
+                <div><div className="stat-value">₹{(Number(data.total_revenue ?? 0) / 100000).toFixed(1)}L</div><div className="stat-label">Collected (all time)</div></div>
+              </div>
+              <div className="stat-card" style={{ borderLeftColor: '#EF4444' }}>
+                <div><div className="stat-value">₹{(Number(data.pending_fees ?? 0) / 100000).toFixed(1)}L</div><div className="stat-label">Pending</div></div>
+              </div>
+            </div>
+            <div className="mt-4 text-sm text-gray">
+              {data.new_admissions_this_month > 0
+                ? `${data.new_admissions_this_month} new admission${data.new_admissions_this_month === 1 ? '' : 's'} this month`
+                : 'No new admissions this month yet.'}
+            </div>
+          </div></div>
         </div>
+
         <div className={`grid grid-3 gap-4 mt-6 ${styles.bottomRow}`}>
-          <div className="card"><div className="card-body"><div className="flex items-center justify-between mb-4"><h3><span className="icon icon-sm text-primary">campaign</span> Announcements</h3><a href="/dashboard/communication" className="btn btn-ghost btn-sm text-primary">View All</a></div>
-            {[{ t: 'Annual Sports Meet 2025', d: '2h ago', c: '#5048E5' }, { t: 'Mid-term Exam Schedule', d: '5h ago', c: '#F59E0B' }, { t: 'Parent-Teacher Meeting', d: '1d ago', c: '#CBD5E1' }].map((a, i) => (
-              <div key={i} className={styles.announcementItem}><div className={styles.announcementDot} style={{ background: a.c }}></div><div><div className={styles.announcementTitle}>{a.t}</div><span className={styles.announcementTime}>{a.d}</span></div></div>
-            ))}
+          <div className="card" style={{ gridColumn: 'span 2' }}><div className="card-body">
+            <div className="flex items-center justify-between mb-4">
+              <h3><span className="icon icon-sm text-primary">warning_amber</span> Students Needing Attention</h3>
+              <a href="/dashboard/students" className="btn btn-ghost btn-sm text-primary">View Students</a>
+            </div>
+            {atRisk.length === 0 ? (
+              <div className="text-sm text-gray">No at-risk students — all clear.</div>
+            ) : (
+              <table className="table">
+                <thead><tr><th>Student</th><th>Class</th><th>Attendance</th><th>Avg Marks</th><th>Fees Due</th><th>Risk</th></tr></thead>
+                <tbody>
+                  {atRisk.map((r) => (
+                    <tr key={r.studentId}>
+                      <td>{r.studentName}</td>
+                      <td>{r.class}</td>
+                      <td>{r.attendanceRate != null ? `${r.attendanceRate}%` : '—'}</td>
+                      <td>{r.averageMarksPct != null ? `${r.averageMarksPct}%` : '—'}</td>
+                      <td>{r.feeOutstanding > 0 ? `₹${Number(r.feeOutstanding).toLocaleString('en-IN')}` : '—'}</td>
+                      <td><span className="badge" style={{ background: r.riskLevel === 'HIGH' ? '#FEE2E2' : '#FEF3C7', color: r.riskLevel === 'HIGH' ? '#B91C1C' : '#92400E' }}>{r.riskLevel}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div></div>
-          <div className="card"><div className="card-body"><h3 className="mb-4"><span className="icon icon-sm text-primary">calendar_month</span> Upcoming Events</h3>
-            {[{ t: 'Science Exhibition', time: 'Mar 15 • 9 AM', c: '#5048E5' }, { t: "Teachers' Workshop", time: 'Mar 18 • 2 PM', c: '#10B981' }, { t: 'Inter-school Debate', time: 'Mar 22 • 10:30 AM', c: '#F59E0B' }].map((e, i) => (
-              <div key={i} className={styles.eventItem}><div className={styles.eventDate} style={{ background: e.c + '15', color: e.c }}><span className={styles.eventDay}>{e.time.split(' ')[1]}</span><span className={styles.eventMonth}>{e.time.split(' ')[0]}</span></div><div><div className="font-semibold" style={{ fontSize: '0.875rem' }}>{e.t}</div><div className="text-sm text-gray">{e.time}</div></div></div>
-            ))}
-          </div></div>
+
           <div className="card"><div className="card-body"><h3 className="mb-4"><span className="icon icon-sm text-primary">rocket_launch</span> Quick Actions</h3>
             <div className={styles.quickGrid}>
-              {[{ l: 'Add Student', i: 'person_add', h: '/dashboard/students' }, { l: 'Mark Attendance', i: 'fact_check', h: '/dashboard/attendance' }, { l: 'Collect Fee', i: 'receipt_long', h: '/dashboard/fees' }, { l: 'Send Notice', i: 'send', h: '/dashboard/communication' }, { l: 'View Reports', i: 'bar_chart', h: '/dashboard/exams' }, { l: 'Timetable', i: 'calendar_month', h: '/dashboard/academics' }].map(a => (
+              {[{ l: 'Add Student', i: 'person_add', h: '/dashboard/students' }, { l: 'Mark Attendance', i: 'fact_check', h: '/dashboard/attendance' }, { l: 'Collect Fee', i: 'receipt_long', h: '/dashboard/fees' }, { l: 'Send Notice', i: 'send', h: '/dashboard/communication' }, { l: 'View Reports', i: 'bar_chart', h: '/dashboard/financial-reports' }, { l: 'Timetable', i: 'calendar_month', h: '/dashboard/timetable' }].map(a => (
                 <a key={a.l} href={a.h} className={styles.quickAction}><span className="icon" style={{ color: 'var(--primary)', fontSize: 22 }}>{a.i}</span><span>{a.l}</span></a>
               ))}
             </div>

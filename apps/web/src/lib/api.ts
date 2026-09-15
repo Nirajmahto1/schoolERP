@@ -3,7 +3,7 @@
 // Central fetch wrapper for all backend API calls
 // ──────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
 
 interface ApiOptions extends RequestInit {
   token?: string;
@@ -549,14 +549,34 @@ export const aiApi = {
     apiRequest<any>(`/ai/analytics/student-performance/${studentId}`),
 };
 
-// ── Analytics (FastAPI, gateway-injected user headers) ──
+// ── Analytics service (FastAPI, Phase 7.1 — real DB-backed dashboards) ──
 export const analyticsApi = {
   getDashboard: () => apiRequest<any>('/analytics/dashboard'),
-  getAttendanceReport: (startDate: string, endDate: string, classId?: string) => {
-    const qs = new URLSearchParams({ start_date: startDate, end_date: endDate });
-    if (classId) qs.set('class_id', classId);
-    return apiRequest<any[]>(`/analytics/attendance?${qs}`);
-  },
+
+  /** Daily present/absent/late + rate for the trailing N days. */
+  getAttendanceTrend: (days = 30) =>
+    apiRequest<any[]>(`/analytics/attendance?days=${days}`),
+
+  /** Ranked list with reasons — never a black-box score. */
+  getAtRisk: (limit = 50, branchId?: string) =>
+    apiRequest<any[]>(`/analytics/at-risk?limit=${limit}${branchId ? `&branchId=${branchId}` : ''}`),
+
+  /** Invoiced → collected → pending by invoice status. */
+  getFeeFunnel: (academicYearId?: string) =>
+    apiRequest<any>(`/analytics/fees${academicYearId ? `?academicYearId=${academicYearId}` : ''}`),
+
+  /** Grade-band distribution per subject over published results. */
+  getPerformance: () => apiRequest<any[]>('/analytics/performance'),
+
+  /** Periods/week per teacher from the live timetable. */
+  getTeacherWorkload: () => apiRequest<any[]>('/analytics/teacher-workload'),
+
+  /** All branches of the caller's school side by side (management view). */
+  getBranchComparison: () => apiRequest<any[]>('/analytics/branch-comparison'),
+
+  /** Excel export — the service sets the attachment filename. */
+  exportAtRiskXlsx: () => '/analytics/export/at-risk.xlsx',
+  exportBranchComparisonXlsx: () => '/analytics/export/branch-comparison.xlsx',
 };
 
 export const adminApi = {
