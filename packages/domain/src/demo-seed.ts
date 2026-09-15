@@ -288,7 +288,11 @@ export async function seedDemoTenant(
   }> = [];
   const teacherUsers: Array<{ id: string; branchId: string }> = [];
 
-  const TEACHERS_PER_BRANCH = 10;
+  // Sized for the timetable (BUILD_PLAN 6.2): 15 classes × 2 sections × 5
+  // subjects at the default 4 periods/week needs ~30 teachers per branch for
+  // the solver's static pre-check to pass — 10 leaves a 240-vs-36 gap that
+  // makes every generated timetable infeasible.
+  const TEACHERS_PER_BRANCH = 30;
   for (let b = 0; b < branches.length; b++) {
     const branch = branches[b];
     const bcode = branchCodes[b].toLowerCase();
@@ -653,13 +657,18 @@ export async function seedDemoTenant(
       });
 
       for (const clsId of classIds[branch.id][yearName]) {
+        const classIdx = classIds[branch.id][yearName].indexOf(clsId);
         const classEnrollments = enrollmentsByYearClass.get(`${yearId}|${clsId}`) ?? [];
         for (let s = 0; s < SUBJECTS.length; s++) {
           const sub = SUBJECTS[s];
           const subjectId = `sub_${clsId}_${sub.code}`;
           subjectRows.push({ id: subjectId, name: sub.name, code: sub.code, classId: clsId, type: 'THEORY' });
           if (TEACHERS_PER_BRANCH > 0) {
-            const teacherIdx = (b * 5 + s) % TEACHERS_PER_BRANCH;
+            // Spread across the FULL staff pool, keyed by class index within
+            // the year — the old (b*5+s)%10 pinned all allocations to 5 of the
+            // 10 teachers (240 demanded lessons/week vs a 36 cap), which the
+            // timetable engine's static pre-check rightly rejects.
+            const teacherIdx = (b * 7 + classIdx * SUBJECTS.length + s) % TEACHERS_PER_BRANCH;
             const staffId = `stf_${sc}_${bcode}_${teacherIdx}`;
             subjectTeacherRows.push({ id: `st_${subjectId}_${staffId}`, subjectId, staffId });
           }
@@ -683,7 +692,7 @@ export async function seedDemoTenant(
               studentId: e.studentId,
               marksObtained: marks,
               grade: gradeFor(marks),
-              enteredBy: `usr_${sc}_${bcode}_teach${s % TEACHERS_PER_BRANCH}`,
+              enteredBy: `usr_${sc}_${bcode}_teach${(classIdx * SUBJECTS.length + s) % TEACHERS_PER_BRANCH}`,
             });
           }
         }

@@ -106,9 +106,14 @@ export async function generateAndPersist(
   const periodTimes = problem.periodTimes as PeriodTimeSpec[];
   const keep = new Set(opts.keepSectionIds ?? []);
 
-  // Sections being regenerated = every branch section minus the frozen ones.
+  // Sections being regenerated = every branch section (current year) minus the
+  // frozen ones.
+  const currentYear = await prisma.academicYear.findFirst({
+    where: { branchId, isCurrent: true },
+    select: { id: true },
+  });
   const branchSections = await prisma.class.findMany({
-    where: { branchId, deletedAt: null },
+    where: { branchId, deletedAt: null, academicYearId: currentYear?.id ?? undefined },
     select: { sections: { where: { deletedAt: null }, select: { id: true } } },
   });
   const regenerateIds = branchSections
@@ -278,9 +283,16 @@ export async function buildProblem(
   const keep = new Set(opts.keepSectionIds ?? []);
 
   // Sections (strength = active enrollments) + their class's subjects, with
-  // the allocated teacher per subject.
+  // the allocated teacher per subject — scoped to the CURRENT academic year.
+  // Without the scoping, a tenant with a seeded past year gets every
+  // class-subject demanded twice (once per year), doubling teacher demand and
+  // making otherwise-feasible problems statically infeasible.
+  const currentYear = await prisma.academicYear.findFirst({
+    where: { branchId, isCurrent: true },
+    select: { id: true },
+  });
   const classes = await prisma.class.findMany({
-    where: { branchId, deletedAt: null },
+    where: { branchId, deletedAt: null, academicYearId: currentYear?.id ?? undefined },
     select: {
       id: true,
       name: true,
