@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback } from 'react';
-import { attendanceApi, academicApi, studentApi } from '@/lib/api';
+import { attendanceApi, academicApi, studentApi, analyticsApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useLoading } from '@/context/LoadingContext';
 
@@ -32,6 +32,15 @@ export default function AttendancePage() {
   const [processing, setProcessing] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
+  const [trend, setTrend] = useState<any[]>([]);
+
+  // Branch-level trend from analytics-service — enrichment for the marking
+  // screen; a failed analytics call must never block taking attendance.
+  useEffect(() => {
+    analyticsApi.getAttendanceTrend(14)
+      .then((rows) => setTrend(rows ?? []))
+      .catch(() => setTrend([]));
+  }, []);
 
   // Load classes on mount
   useEffect(() => {
@@ -212,6 +221,34 @@ export default function AttendancePage() {
             <div key={s.l} className="stat-card" style={{ borderLeftColor: s.c }}><div className="stat-icon" style={{ background: s.c + '15', color: s.c }}><span className="icon">{s.icon}</span></div><div><div className="stat-value">{s.v}</div><div className="stat-label">{s.l}</div></div></div>
           ))}
         </div>
+
+        {trend.length > 0 && (() => {
+          const maxTotal = Math.max(1, ...trend.map((t) => Number(t.present) + Number(t.absent) + Number(t.late)));
+          return (
+            <div className="card mb-6 animate-fadeIn"><div className="card-body">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="m-0"><span className="icon icon-sm text-primary">trending_up</span> Branch Trend — last {trend.length} school days</h3>
+                <span className="text-sm text-gray">avg {Math.round(trend.reduce((s, t) => s + Number(t.attendance_rate ?? 0), 0) / trend.length)}%</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 90 }}>
+                {trend.map((t) => {
+                  const rate = Number(t.attendance_rate ?? 0);
+                  const h = Math.max(8, Math.round((100 - rate) * 0.9)); // absent+late share, taller = worse
+                  const total = Number(t.present) + Number(t.absent) + Number(t.late);
+                  return (
+                    <div key={t.date} style={{ flex: 1, textAlign: 'center' }} title={`${t.date}: ${rate}% (${t.present} present, ${t.absent} absent, ${t.late} late of ${total})`}>
+                      <div style={{ height: 90, display: 'flex', alignItems: 'flex-end' }}>
+                        <div style={{ width: '100%', height: `${h}%`, borderRadius: '4px 4px 0 0', background: rate >= 90 ? 'var(--primary)' : rate >= 75 ? '#F59E0B' : '#EF4444' }}></div>
+                      </div>
+                      <div className="text-xs text-gray" style={{ marginTop: 2 }}>{String(new Date(t.date).getUTCDate()).padStart(2, '0')}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-xs text-gray" style={{ marginTop: 6 }}>Bar height = share of students not present. Green ≥90%, amber ≥75%, red below. Branch-wide (max {maxTotal} records/day).</div>
+            </div></div>
+          );
+        })()}
 
         {error && (
           <div className="card mb-4" style={{ padding: 24, background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12 }}>

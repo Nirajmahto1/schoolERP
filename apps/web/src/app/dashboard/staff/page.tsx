@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback } from 'react';
-import { hrApi } from '@/lib/api';
+import { hrApi, analyticsApi } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
 
 const ROLES = ['Teacher', 'Principal', 'Accountant', 'Librarian', 'Transport Manager', 'Lab Assistant', 'Clerk', 'Peon', 'Security'];
@@ -11,6 +11,7 @@ const GENDERS = ['MALE', 'FEMALE', 'OTHER'];
 export default function StaffPage() {
   const { startLoading, stopLoading } = useLoading();
   const [staff, setStaff] = useState<any[]>([]);
+  const [workload, setWorkload] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -41,6 +42,14 @@ export default function StaffPage() {
   }, [search, filterDept]);
 
   useEffect(() => { fetchStaff(); }, [fetchStaff]);
+
+  // Teaching load from analytics-service — periods/week per teacher from the
+  // live timetable, joined to the HR list by employeeId.
+  useEffect(() => {
+    analyticsApi.getTeacherWorkload()
+      .then((rows) => setWorkload(rows ?? []))
+      .catch(() => setWorkload([])); // workload is enrichment — never block the HR list
+  }, []);
 
   const filtered = staff.filter(s => {
     const name = `${s.firstName} ${s.lastName}`.toLowerCase();
@@ -104,6 +113,33 @@ export default function StaffPage() {
             <div key={s.l} className="stat-card" style={{ borderLeftColor: s.c }}><div className="stat-icon" style={{ background: s.c + '15', color: s.c }}><span className="icon">badge</span></div><div><div className="stat-value">{s.v}</div><div className="stat-label">{s.l}</div></div></div>
           ))}
         </div>
+
+        {workload.length > 0 && (
+          <div className="card mb-6 animate-fadeIn"><div className="card-body">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="m-0"><span className="icon icon-sm text-primary">balance</span> Teaching Load — periods/week from the live timetable</h3>
+              <span className="text-sm text-gray">{workload.filter(w => w.periods_per_week > 0).length} teaching · {workload.length} total staff</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 12 }}>
+              {workload.filter(w => w.periods_per_week > 0).map((w) => {
+                const pct = Math.min(100, Math.round((Number(w.periods_per_week) / 36) * 100));
+                const color = pct > 85 ? '#EF4444' : pct > 60 ? '#F59E0B' : '#10B981';
+                return (
+                  <div key={w.employeeId ?? w.teacher} style={{ padding: '10px 14px', background: 'var(--gray-50)', borderRadius: 10, border: '1px solid var(--gray-100)' }}>
+                    <div className="flex justify-between items-center">
+                      <span className="font-semibold" style={{ fontSize: '0.8125rem' }}>{w.teacher}</span>
+                      <span className="font-bold" style={{ fontSize: '0.8125rem', color }}>{w.periods_per_week}/wk</span>
+                    </div>
+                    <div style={{ height: 5, background: 'var(--gray-100)', borderRadius: 3, marginTop: 6 }}>
+                      <div style={{ height: '100%', width: `${Math.max(pct, 4)}%`, borderRadius: 3, background: color }}></div>
+                    </div>
+                    <div className="text-xs text-gray" style={{ marginTop: 4 }}>{w.subjects} subject{w.subjects === 1 ? '' : 's'} · {w.teaching_days} day{w.teaching_days === 1 ? '' : 's'}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div></div>
+        )}
 
         <div className="flex items-center justify-between mb-4" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div className="flex gap-3"><div className="search-bar"><span className="icon">search</span><input placeholder="Search staff..." value={search} onChange={e => setSearch(e.target.value)} /></div>
