@@ -43,8 +43,14 @@ describe('tenant roles + backup drill (real cluster)', () => {
 
   afterAll(async () => {
     if (!hasRealCluster) return;
-    await dropTenantRole(adminUrl(), dbName, slug);
+    // Database first, role second. The tenant role is a cluster-wide object
+    // and this run's database owns objects/default-ACLs for it, so dropping
+    // the role while that database still exists depends on DROP OWNED having
+    // removed every dependent. If it hasn't (or a database from an interrupted
+    // run lingers), DROP ROLE fails and leaves a role that poisons every later
+    // run. Removing the database first removes its dependents with it.
     await dropDatabase(adminUrl(), dbName);
+    await dropTenantRole(adminUrl(), dbName, slug);
     if (dumpFile && existsSync(dumpFile)) unlinkSync(dumpFile);
   });
 

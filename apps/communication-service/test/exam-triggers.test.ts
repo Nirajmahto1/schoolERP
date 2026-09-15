@@ -51,17 +51,16 @@ describe('exam triggers', () => {
   }
 
   beforeAll(async () => {
-    db = await TestDatabase.create(
-      process.env.DATABASE_URL ?? 'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp',
-      { project: 'database' },
-    );
+    db = await TestDatabase.create(process.env.DATABASE_URL, { project: 'database' });
     prisma = db.client();
     seed = await seedTenant(prisma, { code: 'EXAMTRIG', name: 'Exam Trigger School' });
     keypair = testKeypair();
     app = createCommunicationApp({
       env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
       prisma,
-      messaging: { whatsapp: null, sms: null, quietHours: { start: 2, end: 3 } },
+      // Degenerate window = never quiet, so these tests never depend on
+      // wall-clock time (quiet hours have their own pinned-clock suite).
+      messaging: { whatsapp: null, sms: null, quietHours: { start: 0, end: 0 } },
     });
   });
 

@@ -594,14 +594,12 @@ r.post('/calendar', async (req, res) => {
 }
 
 // ── Entrypoint ──
-const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
-const prisma = new PrismaClient();
-const app = createAcademicApp({ env, prisma });
-
-// Only bind a port when run directly. Imported by tests or the e2e suite,
-// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+// Boot ONLY when run directly — importing this module (tests, e2e) must be
+// side-effect-free; module-scope loadServiceEnv exits CI suites that import
+// the app factory without a real .env.
 if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
+  const env = loadServiceEnv(SERVICE_NAME, 'PORT_ACADEMIC_SERVICE');
+  const prisma = new PrismaClient();
+  const app = createAcademicApp({ env, prisma });
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 }
-
-export { app, prisma };

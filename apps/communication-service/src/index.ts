@@ -661,13 +661,14 @@ function createProviderWebhookRoute(
 }
 
 // ── Entrypoint ──
-const env = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
-const prisma = new PrismaClient();
-const app = createCommunicationApp({ env, prisma });
-
-// Only bind a port when run directly. Imported by tests or the e2e suite,
-// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+// Boot happens ONLY when this file is the process entry. Importing this
+// module (tests, e2e, gateway probes) must have zero side effects: module-
+// scope loadServiceEnv process.exit(1)'d CI suites that merely imported the
+// app factory without a real .env.
 if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
+  const env = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
+  const prisma = new PrismaClient();
+  const app = createCommunicationApp({ env, prisma });
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 
   // ── Morning absence sweep + queue drain (BUILD_PLAN 5.6 #1) ──
@@ -737,5 +738,3 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
   }, DRAIN_MS);
   drainTimer.unref?.();
 }
-
-export { app, prisma };

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { PrismaClient } from '@school-erp/database';
+import { loadDotenv } from '@school-erp/config';
 
 /** Every Prisma project the harness can migrate (BUILD_PLAN 0.9 / 1.1). */
 export type PrismaProject = 'database' | 'control-plane';
@@ -61,6 +62,15 @@ export class TestDatabase {
     options: { project?: PrismaProject } = {},
   ): Promise<TestDatabase> {
     if (!baseUrl) {
+      // Service entrypoints are side-effect-free on import now (boot lives
+      // behind the run-directly guard), so the dotenv load that used to ride
+      // along with a service module's boot has to happen here: local suites
+      // read the root .env for their base URL. CI passes DATABASE_URL via
+      // workflow env, which dotenv never overrides.
+      loadDotenv();
+      baseUrl = process.env[PROJECTS[options.project ?? 'database'].envVar];
+    }
+    if (!baseUrl) {
       throw new Error(
         'DATABASE_URL is not set. Point it at a scratch Postgres before running ' +
         'tests (the harness creates and drops throwaway schemas on it). In CI it ' +
@@ -80,19 +90,35 @@ export class TestDatabase {
     // Call the CLI via node directly — `npx` is npx.cmd on Windows (ENOENT with
     // execFileSync) and `spawn().output()` needs Node >= 20.12. stderr is
     // captured for the error report.
-    try {
-      execFileSync(
-        process.execPath,
-        [prismaCli(project), 'migrate', 'deploy'],
-        {
-          cwd: projectDir,
-          env: { ...process.env, [spec.envVar]: this.url },
-          stdio: 'pipe',
-        },
-      );
-    } catch (err) {
-      const stderr = (err as Error & { stderr?: Buffer }).stderr?.toString() ?? (err as Error).message;
-      throw new Error(`prisma migrate deploy (${project}) failed for schema ${this.schema}: ${stderr}`);
+    //
+    // Advisory-lock retry: every schema lives in ONE database, and
+    // `prisma migrate deploy` takes a database-wide advisory lock with a
+    // fixed 10s acquire timeout — suites migrating schemas concurrently
+    // (vitest files x turbo packages) can easily exceed it and fail with
+    // P1002. The lock is only held for one migration, so back off and retry
+    // instead of failing the suite on scheduling.
+    const ATTEMPTS = 5;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        execFileSync(
+          process.execPath,
+          [prismaCli(project), 'migrate', 'deploy'],
+          {
+            cwd: projectDir,
+            env: { ...process.env, [spec.envVar]: this.url },
+            stdio: 'pipe',
+          },
+        );
+        return;
+      } catch (err) {
+        const stderr = (err as Error & { stderr?: Buffer }).stderr?.toString() ?? (err as Error).message;
+        const lockContention = /advisory lock|P1002/.test(stderr);
+        if (lockContention && attempt < ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, 2_000 * attempt));
+          continue;
+        }
+        throw new Error(`prisma migrate deploy (${project}) failed for schema ${this.schema}: ${stderr}`);
+      }
     }
   }
 

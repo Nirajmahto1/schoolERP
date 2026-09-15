@@ -16,9 +16,11 @@ import { purchaseCreditTopUp } from '../src/billing';
 let controlDb: TestDatabase;
 let cp: ControlPlaneClient;
 
-const CONTROL_URL =
-  process.env.CONTROL_PLANE_DATABASE_URL ??
-  'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp_control';
+// Base URL is DATABASE_URL (CI's only provisioned variable) — TestDatabase
+// creates an isolated control-plane schema on it, so no second database is
+// needed. CONTROL_PLANE_DATABASE_URL stays supported via TestDatabase's own
+// dotenv load when the caller passes undefined.
+const CONTROL_URL = process.env.CONTROL_PLANE_DATABASE_URL ?? process.env.DATABASE_URL;
 
 beforeAll(async () => {
   controlDb = await TestDatabase.create(CONTROL_URL, { project: 'control-plane' });

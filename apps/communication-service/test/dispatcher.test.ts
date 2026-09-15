@@ -103,10 +103,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     } as never);
 
   beforeAll(async () => {
-    db = await TestDatabase.create(
-      process.env.DATABASE_URL ?? 'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp',
-      { project: 'database' },
-    );
+    db = await TestDatabase.create(process.env.DATABASE_URL, { project: 'database' });
     prisma = db.client();
     seed = await seedTenant(prisma, { code: 'COMM', name: 'Comm School' });
     keypair = testKeypair();
@@ -129,7 +126,11 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
         fcm: fcmStub(),
         email: emailStub(),
         whatsappWebhookSecret: WEBHOOK_SECRET,
-        quietHours: { start: 2, end: 3 }, // 02:00–03:00 local — tests run outside it
+        // Degenerate window = never quiet. The shared app must not depend on
+        // wall-clock time: a 02:00–03:00 window made every drain test defer
+        // (and so fail) whenever the suite happened to run in that hour.
+        // Quiet-hours behaviour has its own pinned-clock dispatcher below.
+        quietHours: { start: 0, end: 0 },
       },
     });
   });
@@ -309,7 +310,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
           ok: true, status: 200, json: async () => { throw new Error('must not be called'); },
         })),
         sms: null,
-        quietHours: { start: 2, end: 3 },
+        quietHours: { start: 0, end: 0 },
       },
     });
     // Re-wire the dispatcher's gate directly by building it through createCommunicationApp is
@@ -323,7 +324,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
       fcm: null,
       email: null,
       creditGate: async () => ({ ok: false, balance }),
-      quietHours: { start: 2, end: 3 },
+      quietHours: { start: 0, end: 0 },
     });
     await prisma.notificationLog.create({
       data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000010', body: 'gated-row', status: 'QUEUED' },
@@ -348,7 +349,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
       fcm: null,
       email: null,
       isRecipientOptedIn: async (recipientId) => !optedOut.has(`GUARDIAN:${recipientId}`),
-      quietHours: { start: 2, end: 3 },
+      quietHours: { start: 0, end: 0 },
     });
 
     // A promo (non-transactional) to the opted-out parent → closed.
@@ -378,7 +379,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
       sms: null,
       fcm: null,
       email: null,
-      quietHours: { start: 2, end: 3 },
+      quietHours: { start: 0, end: 0 },
       perBranchPerMinute: 2,
     });
     const rows = [];
@@ -413,7 +414,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     const { Dispatcher } = await import('../src/dispatcher');
     const d = new Dispatcher(prisma, {
       whatsapp: null, sms: null, fcm: null, email: null,
-      quietHours: { start: 2, end: 3 },
+      quietHours: { start: 0, end: 0 },
     });
     await d.drain();
 
@@ -431,7 +432,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     const bare = createCommunicationApp({
       env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
       prisma,
-      messaging: { whatsapp: null, sms: null, quietHours: { start: 2, end: 3 } },
+      messaging: { whatsapp: null, sms: null, quietHours: { start: 0, end: 0 } },
     });
     await prisma.notificationLog.create({
       data: { branchId: seed.branchId, channel: 'SMS', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000004', body: 'no dlt bare', status: 'QUEUED' },
@@ -748,7 +749,7 @@ describe('Phase 5: dispatcher + delivery receipts', () => {
     const bare = createCommunicationApp({
       env: { INTERNAL_ASSERTION_PUBLIC_KEY: keypair.publicKey },
       prisma,
-      messaging: { whatsapp: null, sms: null, quietHours: { start: 2, end: 3 } },
+      messaging: { whatsapp: null, sms: null, quietHours: { start: 0, end: 0 } },
     });
     await prisma.notificationLog.create({
       data: { branchId: seed.branchId, channel: 'WHATSAPP', recipientType: 'GUARDIAN', recipientId: seed.guardianUserId, recipient: '919000000005', body: 'bare test', status: 'QUEUED' },

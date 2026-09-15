@@ -7,24 +7,26 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
+import { TestDatabase } from '@school-erp/testing';
 import { convertTenantToPaid, seedDefaultPlans } from '../src/billing';
 import { renderSaasInvoicePdf, toTaxInvoicePdfData } from '../src/invoice-pdf';
 
 let cp: ControlPlaneClient;
 let run: string;
 
-const CONTROL_PLANE_URL =
-  process.env.CONTROL_PLANE_DATABASE_URL ??
-  'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp_control';
+/** Isolated control-plane schema on the base DATABASE_URL (see billing.test). */
+let controlDb: TestDatabase;
 
 beforeAll(async () => {
-  cp = new ControlPlaneClient({ datasourceUrl: CONTROL_PLANE_URL });
+  controlDb = await TestDatabase.create(process.env.DATABASE_URL, { project: 'control-plane' });
+  cp = new ControlPlaneClient({ datasourceUrl: controlDb.url });
   await seedDefaultPlans(cp, 'test');
   run = `t${Date.now().toString(36)}`;
 });
 
 afterAll(async () => {
   await cp.$disconnect();
+  await controlDb.teardown();
 });
 
 /** A fresh TRIAL tenant, ready to convert. */

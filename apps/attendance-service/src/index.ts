@@ -615,22 +615,20 @@ r.get('/attendance/defaulters', async (req, res) => {
 }
 
 // ── Entrypoint ──
-const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
-const prisma = new PrismaClient();
-const app = createAttendanceApp({
-  env,
-  prisma,
-  communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
-  // Peer-call signing material (optional per ADR-3): present here so the
-  // live absence-alert fire works; a deployment without it still marks
-  // attendance and relies on the communication-service morning sweep.
-  internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
-});
-
-// Only bind a port when run directly. Imported by tests or the e2e suite,
-// the module must NOT listen — vitest would hit EADDRINUSE across suites.
+// Boot ONLY when run directly — importing this module (tests, e2e) must be
+// side-effect-free; module-scope loadServiceEnv exits CI suites that import
+// the app factory without a real .env.
 if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
+  const env = loadServiceEnv(SERVICE_NAME, 'PORT_ATTENDANCE_SERVICE');
+  const prisma = new PrismaClient();
+  const app = createAttendanceApp({
+    env,
+    prisma,
+    communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+    // Peer-call signing material (optional per ADR-3): present here so the
+    // live absence-alert fire works; a deployment without it still marks
+    // attendance and relies on the communication-service morning sweep.
+    internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+  });
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
 }
-
-export { app, prisma };

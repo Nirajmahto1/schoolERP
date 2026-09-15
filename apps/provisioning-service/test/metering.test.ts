@@ -16,9 +16,9 @@ import { measureTenant, runFleetMeteringPass, type TenantUsageSample } from '../
 let controlDb: TestDatabase;
 let cp: ControlPlaneClient;
 
-const CONTROL_URL =
-  process.env.CONTROL_PLANE_DATABASE_URL ??
-  'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp_control';
+// Base URL is DATABASE_URL (the only variable CI provisions) — TestDatabase
+// creates isolated schemas for both projects on it.
+const CONTROL_URL = process.env.CONTROL_PLANE_DATABASE_URL ?? process.env.DATABASE_URL;
 
 beforeAll(async () => {
   controlDb = await TestDatabase.create(CONTROL_URL, { project: 'control-plane' });

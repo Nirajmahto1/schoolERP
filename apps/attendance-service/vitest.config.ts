@@ -6,5 +6,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     passWithNoTests: true,
+    // The absence-trigger suite migrates a real Postgres schema in
+    // beforeAll; the 10s default hook timeout flakes under parallel load.
+    hookTimeout: 60_000,
+    testTimeout: 30_000,
   },
 });

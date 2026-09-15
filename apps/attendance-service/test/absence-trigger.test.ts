@@ -44,10 +44,7 @@ describe('live absence-alert fire from /mark', () => {
     } as never);
 
   beforeAll(async () => {
-    db = await TestDatabase.create(
-      process.env.DATABASE_URL ?? 'postgresql://school_erp:Niraj1307!@localhost:5432/school_erp',
-      { project: 'database' },
-    );
+    db = await TestDatabase.create(process.env.DATABASE_URL, { project: 'database' });
     prisma = db.client();
     seed = await seedTenant(prisma, { code: 'ATTTRIG', name: 'Trigger School' });
     keypair = testKeypair();
