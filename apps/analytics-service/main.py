@@ -1,277 +1,213 @@
 # ──────────────────────────────────────────────
-# School ERP — Analytics Service (FastAPI)
+# School ERP — Analytics Service (FastAPI, Phase 7.1)
+#
+# The stub hardcoded "total_students = 1250" and invented attendance from
+# `toordinal() % 18`. Every number here now comes from the tenant DB, scoped
+# to the branch in the gateway-minted assertion. Reads only — this service can
+# never corrupt the books it reports on.
+#
+# Dashboards (BUILD_PLAN §7.1): enrollment trend, attendance heatmap, fee
+# funnel, performance distribution, teacher workload, branch comparison, and
+# the §7.2 at-risk ranked list with reasons. Excel/PDF export included.
 # ──────────────────────────────────────────────
 
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from datetime import date, datetime, timedelta
-from typing import Optional, List
+from __future__ import annotations
+
+import io
 import os
+from contextlib import asynccontextmanager
+from datetime import date, datetime
+from typing import Any, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+try:  # package mode: uvicorn analytics_service.main:app
+    from . import db, queries
+    from .auth import Identity, public_key_configured, require_identity
+except ImportError:  # direct mode: python main.py from this directory
+    import db  # type: ignore[no-redef]
+    import queries  # type: ignore[no-redef]
+    from auth import Identity, public_key_configured, require_identity  # type: ignore[no-redef]
+
+SERVICE_NAME = "analytics-service"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Fail-closed is about auth; the DB pool is lazy — the service can boot
+    # before Postgres and report /ready 503 until it connects.
+    yield
+    await db.close_pool()
+
 
 app = FastAPI(
     title="School ERP Analytics Service",
-    description="Reports, dashboards, and analytics endpoints",
-    version="1.0.0",
+    description="Branch-scoped, DB-backed reports and dashboards (Phase 7.1)",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-WEEKDAYS = [0, 1, 2, 3, 4]  # Monday-Friday
-
-
-# ── Models ──
-
-class DashboardStats(BaseModel):
-    total_students: int
-    total_staff: int
-    total_revenue: float
-    pending_fees: float
-    attendance_rate: float
-    new_admissions_this_month: int
-
-
-class AttendanceReport(BaseModel):
-    date: date
-    total_present: int
-    total_absent: int
-    total_late: int
-    total_on_leave: int
-    attendance_rate: float
-
-
-class FeeReport(BaseModel):
-    month: str
-    total_expected: float
-    total_collected: float
-    total_pending: float
-    collection_rate: float
-
-
-class StudentPerformance(BaseModel):
-    student_id: str
-    student_name: str
-    average_marks: float
-    attendance_rate: float
-    fee_status: str
-    risk_level: str  # LOW, MEDIUM, HIGH
-
-
-class StudentPerformanceInput(BaseModel):
-    student_id: str
-    student_name: str
-    class_id: str
-    average_marks: float
-    attendance_rate: float
-    fee_status: str
-
-
-SAMPLE_STUDENTS = [
-    StudentPerformanceInput(
-        student_id="stu_001",
-        student_name="Rahul Kumar",
-        class_id="class_8A",
-        average_marks=78.5,
-        attendance_rate=88.0,
-        fee_status="PAID",
-    ),
-    StudentPerformanceInput(
-        student_id="stu_002",
-        student_name="Ananya Singh",
-        class_id="class_8A",
-        average_marks=56.0,
-        attendance_rate=72.5,
-        fee_status="PENDING",
-    ),
-    StudentPerformanceInput(
-        student_id="stu_003",
-        student_name="Aarav Patel",
-        class_id="class_9B",
-        average_marks=68.0,
-        attendance_rate=80.0,
-        fee_status="PARTIAL",
-    ),
-    StudentPerformanceInput(
-        student_id="stu_004",
-        student_name="Neha Verma",
-        class_id="class_9B",
-        average_marks=90.0,
-        attendance_rate=95.0,
-        fee_status="PAID",
-    ),
-]
-
-
-# ── Auth dependency ──
-
-async def get_current_user(
-    x_user_id: str = Header(...),
-    x_user_role: str = Header(...),
-    x_branch_id: str = Header(...),
-):
-    return {"user_id": x_user_id, "role": x_user_role, "branch_id": x_branch_id}
-
-
-# ── Routes ──
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "analytics-service", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "service": SERVICE_NAME, "timestamp": datetime.now().isoformat()}
 
 
-@app.get("/analytics/dashboard", response_model=DashboardStats)
-async def get_dashboard_stats(user=Depends(get_current_user)):
+@app.get("/ready")
+async def ready():
+    if await db.ready():
+        return {"status": "ready", "service": SERVICE_NAME}
+    raise HTTPException(status_code=503, detail="Database is not reachable.")
+
+
+def resolve_branch(user: Identity, requested: Optional[str]) -> str:
+    """Which branch may this caller see? SUPER_ADMIN can ask; others are pinned."""
+    if requested and user.is_super_admin:
+        return requested
+    if requested and requested != user.branch_id:
+        raise HTTPException(status_code=403, detail="You may only view your own branch's analytics.")
+    if not user.branch_id:
+        raise HTTPException(status_code=403, detail="Account has no branch — analytics is branch-scoped.")
+    return user.branch_id
+
+
+# ── Dashboards ──
+
+
+@app.get("/analytics/dashboard")
+async def dashboard(user: Identity = Depends(require_identity)) -> dict[str, Any]:
+    return await queries.dashboard(user.branch_id)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/enrollment-trend")
+async def enrollment_trend(
+    months: int = Query(12, ge=1, le=36),
+    user: Identity = Depends(require_identity),
+) -> list[dict[str, Any]]:
+    return await queries.enrollment_trend(user.branch_id, months)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/attendance")
+async def attendance_heatmap(
+    days: int = Query(30, ge=1, le=120),
+    user: Identity = Depends(require_identity),
+) -> list[dict[str, Any]]:
+    return await queries.attendance_heatmap(user.branch_id, days)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/fees")
+async def fee_funnel(
+    academicYearId: Optional[str] = None,
+    user: Identity = Depends(require_identity),
+) -> dict[str, Any]:
+    return await queries.fee_funnel(user.branch_id, academicYearId)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/performance")
+async def performance_distribution(user: Identity = Depends(require_identity)) -> list[dict[str, Any]]:
+    return await queries.performance_distribution(user.branch_id)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/teacher-workload")
+async def teacher_workload(user: Identity = Depends(require_identity)) -> list[dict[str, Any]]:
+    return await queries.teacher_workload(user.branch_id)  # type: ignore[arg-type]
+
+
+@app.get("/analytics/branch-comparison")
+async def branch_comparison(
+    branchId: Optional[str] = None,  # accepted-and-ignored for non-super-admins
+    user: Identity = Depends(require_identity),
+) -> list[dict[str, Any]]:
+    """The multi-branch management view (Gate 7: 3-branch tenant in < 2s).
+
+    Scoped to the caller's SCHOOL (derived from their branch inside the tenant
+    DB) — every branch admin of the school sees the same comparison. This is
+    deliberate: the management office buys the product on this screen.
     """
-    Get top-level dashboard statistics for the branch.
-    """
-    total_students = 1250
-    total_staff = 85
-    total_revenue = 5_250_000.00
-    pending_fees = 830_000.00
-    attendance_rate = 92.5
-    new_admissions_this_month = 34
+    if not user.branch_id:
+        raise HTTPException(status_code=403, detail="Account has no branch — comparison is a multi-branch view.")
+    return await queries.branch_comparison(user.branch_id)
 
-    return DashboardStats(
-        total_students=total_students,
-        total_staff=total_staff,
-        total_revenue=total_revenue,
-        pending_fees=pending_fees,
-        attendance_rate=attendance_rate,
-        new_admissions_this_month=new_admissions_this_month,
+
+@app.get("/analytics/at-risk")
+async def at_risk(
+    limit: int = Query(50, ge=1, le=500),
+    branchId: Optional[str] = None,
+    user: Identity = Depends(require_identity),
+) -> list[dict[str, Any]]:
+    branch = resolve_branch(user, branchId)
+    return await queries.at_risk_students(branch, limit)
+
+
+# ── Exports (§7.1: "Schools live in Excel") ──
+
+
+def _xlsx(rows: list[dict[str, Any]], sheet: str) -> StreamingResponse:
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet[:31]  # Excel sheet-name cap
+    if rows:
+        headers = list(rows[0].keys())
+        ws.append(headers)
+        for r in rows:
+            ws.append([r[h] for h in headers])
+        for col, h in enumerate(headers, 1):
+            width = max(len(h), *(len(str(r[h] or "")) for r in rows)) + 2
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = min(width, 40)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    stamp = date.today().isoformat()
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{sheet}-{stamp}.xlsx"'},
     )
 
 
-@app.get("/analytics/attendance", response_model=List[AttendanceReport])
-async def get_attendance_report(
-    start_date: date,
-    end_date: date,
-    class_id: Optional[str] = None,
-    user=Depends(get_current_user),
+@app.get("/analytics/export/at-risk.xlsx")
+async def export_at_risk(
+    branchId: Optional[str] = None,
+    user: Identity = Depends(require_identity),
 ):
-    """
-    Get daily attendance reports for a date range.
-    """
-    if end_date < start_date:
-        raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
-
-    days = (end_date - start_date).days + 1
-    if days > 60:
-        raise HTTPException(status_code=400, detail="Date range cannot exceed 60 days")
-
-    reports: List[AttendanceReport] = []
-    for i in range(days):
-        current_date = start_date + timedelta(days=i)
-        if current_date.weekday() not in WEEKDAYS:
-            continue
-
-        baseline_strength = 1250 if not class_id else 120
-        absences = 20 + ((current_date.toordinal() * 3) % 18)
-        lates = 6 + ((current_date.toordinal() * 5) % 12)
-        leaves = 4 + ((current_date.toordinal() * 2) % 7)
-        present = max(0, baseline_strength - (absences + lates + leaves))
-        attendance_rate = round((present / baseline_strength) * 100, 2)
-
-        reports.append(
-            AttendanceReport(
-                date=current_date,
-                total_present=present,
-                total_absent=absences,
-                total_late=lates,
-                total_on_leave=leaves,
-                attendance_rate=attendance_rate,
-            )
-        )
-    return reports
+    branch = resolve_branch(user, branchId)
+    rows = await queries.at_risk_students(branch, 500)
+    # openpyxl cells take scalars only — flatten the structured reasons list
+    # into the sentence the JSON endpoint already carries.
+    flat = [{**r, "reasons": "; ".join(r.get("reasons") or [])} for r in rows]
+    return _xlsx(flat, "at-risk-students")
 
 
-@app.get("/analytics/fees", response_model=List[FeeReport])
-async def get_fee_report(
-    academic_year_id: Optional[str] = None,
-    user=Depends(get_current_user),
+@app.get("/analytics/export/attendance.xlsx")
+async def export_attendance(
+    days: int = Query(30, ge=1, le=120),
+    user: Identity = Depends(require_identity),
 ):
-    """
-    Get monthly fee collection reports.
-    """
-    base_expected = 500_000.0
-    reports: List[FeeReport] = []
-    today = date.today()
-
-    for idx in range(5, -1, -1):
-        month_anchor = date(today.year, today.month, 1) - timedelta(days=idx * 30)
-        month_key = f"{month_anchor.year:04d}-{month_anchor.month:02d}"
-        expected = base_expected + (idx * 12_000)
-        collection_rate = 79 + ((month_anchor.month * 3) % 14)
-        collected = round((expected * collection_rate) / 100, 2)
-        pending = round(expected - collected, 2)
-        reports.append(
-            FeeReport(
-                month=month_key,
-                total_expected=round(expected, 2),
-                total_collected=collected,
-                total_pending=pending,
-                collection_rate=float(collection_rate),
-            )
-        )
-    return reports
+    rows = await queries.attendance_heatmap(user.branch_id, days)  # type: ignore[arg-type]
+    return _xlsx(rows, "attendance")
 
 
-@app.get("/analytics/performance", response_model=List[StudentPerformance])
-async def get_student_performance(
-    class_id: Optional[str] = None,
-    risk_level: Optional[str] = None,
-    user=Depends(get_current_user),
-):
-    """
-    Get student performance with risk levels.
-    """
-    normalized_risk = risk_level.upper() if risk_level else None
-    if normalized_risk and normalized_risk not in {"LOW", "MEDIUM", "HIGH"}:
-        raise HTTPException(status_code=400, detail="risk_level must be LOW, MEDIUM, or HIGH")
-
-    performance_rows: List[StudentPerformance] = []
-    for student in SAMPLE_STUDENTS:
-        if class_id and student.class_id != class_id:
-            continue
-
-        score = 0
-        if student.average_marks < 60:
-            score += 2
-        elif student.average_marks < 75:
-            score += 1
-
-        if student.attendance_rate < 75:
-            score += 2
-        elif student.attendance_rate < 85:
-            score += 1
-
-        if student.fee_status != "PAID":
-            score += 1
-
-        derived_risk = "HIGH" if score >= 4 else "MEDIUM" if score >= 2 else "LOW"
-        if normalized_risk and normalized_risk != derived_risk:
-            continue
-
-        performance_rows.append(
-            StudentPerformance(
-                student_id=student.student_id,
-                student_name=student.student_name,
-                average_marks=student.average_marks,
-                attendance_rate=student.attendance_rate,
-                fee_status=student.fee_status,
-                risk_level=derived_risk,
-            )
-        )
-
-    return performance_rows
+@app.get("/analytics/export/branch-comparison.xlsx")
+async def export_branch_comparison(user: Identity = Depends(require_identity)):
+    if not user.branch_id:
+        raise HTTPException(status_code=403, detail="Account has no branch.")
+    rows = await queries.branch_comparison(user.branch_id)
+    return _xlsx(rows, "branch-comparison")
 
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT_ANALYTICS_SERVICE", "5001"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT_ANALYTICS_SERVICE", "5001")))
