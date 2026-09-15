@@ -152,7 +152,6 @@ export const gatewayEnvSchema = baseSchema
     PORT_EXAM_SERVICE: port(4007),
     PORT_ANALYTICS_SERVICE: port(5001),
     PORT_AI_SERVICE: port(5002),
-    PORT_GO_SERVICE: port(5003),
     PORT_NOTIFICATION_ENGINE: port(6001),
     PORT_BULK_PROCESSOR: port(6002),
     PORT_TIMETABLE_ENGINE: port(6003),
@@ -220,6 +219,9 @@ export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'identity-servi
 // every peer call must be an enhancement, never a correctness dependency.
 const peerServicesSchema = z.object({
   COMMUNICATION_SERVICE_URL: z.string().url().default('http://localhost:4005'),
+  // Timetable engine (Phase 6.2): the constraint solver academic-service calls
+  // to generate/persist timetables and suggest substitutions.
+  TIMETABLE_ENGINE_URL: z.string().url().default('http://localhost:6003'),
   // Private signing material for direct peer calls (a service minting its
   // own assertion for a peer). Optional — leaf services hold only the
   // public key per ADR-3, and a service without it skips peer enhancements

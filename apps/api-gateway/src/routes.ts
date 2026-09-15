@@ -217,12 +217,5 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       port: env.PORT_FILE_SERVICE,
       rewriteTo: '/files',
     },
-    {
-      path: '/api/v1/go',
-      service: 'go-service',
-      host,
-      port: env.PORT_GO_SERVICE,
-      rewriteTo: '/api/v1',
-    },
   ];
 }

@@ -11,7 +11,7 @@ Multi-tenant school management SaaS for **India** — prototype-in-hardening, no
 | `apps/web` | ~30 Next.js 14 dashboard pages (shadcn). Broadest asset. |
 | `apps/student-service` | **Auth + students + parents** (`/auth/login`, refresh rotation, logout, students CRUD). Most complete service. |
 | `apps/staff-service`, `academic-service`, `fee-service`, `attendance-service`, `communication-service` | Thin CRUD behind the gateway. |
-| `apps/analytics-service`, `ai-service` (FastAPI), `notification-engine`, `timetable-engine`, `go-service` (Go) | Stubs. Rewritten in Phases 6–7. |
+| `apps/notification-engine`, `timetable-engine`, `bulk-processor` (Go) | Real services since Phase 6: WebSocket fan-out, constraint-solver timetabling, streaming bulk import + batch PDFs. |
 | `apps/mobile` (Expo) | Skeleton. |
 | `apps/provisioning-service` | **Phase 1: control plane operations** — provision (DB + role + schema + seed + MinIO storage), migrate fleet, drift-check, lifecycle (suspend/resume/delete/export), backup + restore drill. Also the `pnpm tenant:*` CLI. |
 | `apps/admin-console` (Next.js) | **Phase 1: platform console** — tenant list + health, provisioning wizard, fleet migration, per-tenant management (lifecycle, billing state, migration runs, support grants, audit). |
@@ -142,8 +142,7 @@ schoolERP/
 │   ├── fee-service/             # Node + Prisma — fee structures, invoices, payments
 │   ├── attendance-service/      # Node + Prisma — daily attendance
 │   ├── communication-service/   # Node + Prisma — announcements
-│   ├── analytics-service/ ai-service/   # FastAPI stubs (Phase 7)
-│   ├── notification-engine/ timetable-engine/ go-service/  # Go stubs (Phase 6)
+│   ├── notification-engine/ timetable-engine/ bulk-processor/  # Go services (Phase 6)
 │   └── mobile/                  # Expo skeleton (Phase 9)
 ├── packages/
 │   ├── auth/                    # assertions, token lifecycle, RBAC, password policy

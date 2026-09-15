@@ -236,8 +236,17 @@ export const attendanceApi = {
     return apiRequest<{ data: any[]; summary: any }>(`/attendance/daily?${qs}`);
   },
 
-  mark: (data: { date: string; records: { studentId: string; status: string; remarks?: string }[]; markedBy: string }) =>
-    apiRequest<any>('/go/attendance/burst-mark', {
+  // Attendance-service daily marking (session + upsert records + summary rebuild).
+  // The retired /go/attendance/burst-mark stub wrote to a legacy table with no
+  // branch scope and is incompatible with the session-based schema.
+  mark: (data: {
+    date: string;
+    classId: string;
+    sectionId: string;
+    records: { studentId: string; status: string; remarks?: string }[];
+    markedBy?: string;
+  }) =>
+    apiRequest<{ count: number; sessionId: string; message: string }>('/attendance/mark', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

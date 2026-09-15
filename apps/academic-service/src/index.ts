@@ -7,13 +7,26 @@ import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
+import {
+  generateAndPersist,
+  buildSubstitutionProblem,
+  callEngine,
+  defaultPeriodTimes,
+  type GenerateOptions,
+  type TimetableDeps,
+} from './timetable';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'academic-service';
 
 export interface AcademicAppOptions {
-  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
+  env: {
+    INTERNAL_ASSERTION_PUBLIC_KEY: string;
+    /** Peer-call config for the timetable engine (optional per ADR-3). */
+    TIMETABLE_ENGINE_URL?: string;
+    INTERNAL_ASSERTION_PRIVATE_KEY?: string;
+  };
   prisma: PrismaClient;
 }
 
@@ -23,7 +36,11 @@ export interface AcademicAppOptions {
  */
 export function createAcademicApp(options: AcademicAppOptions) {
   const { prisma } = options;
-  const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+  const env = {
+    INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY,
+    TIMETABLE_ENGINE_URL: options.env.TIMETABLE_ENGINE_URL,
+    INTERNAL_ASSERTION_PRIVATE_KEY: options.env.INTERNAL_ASSERTION_PRIVATE_KEY,
+  };
 
   const { app, mount, finalize } = createServiceApp({
     serviceName: SERVICE_NAME,
@@ -31,6 +48,11 @@ export function createAcademicApp(options: AcademicAppOptions) {
     onLog: (msg: string) => logger.info(msg),
     readinessCheck: async () => { await prisma.$queryRaw`SELECT 1`; },
   });
+
+  const timetableDeps: TimetableDeps = {
+    engineBaseUrl: env.TIMETABLE_ENGINE_URL ?? 'http://localhost:6003',
+    internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+  };
 
   app.set('prisma', prisma);
 
@@ -62,6 +84,8 @@ export function createAcademicApp(options: AcademicAppOptions) {
         delete: { summary: 'Remove an allocation', tags: ['allocation'], responses: { '200': { description: 'Removed' } } },
       },
       '/timetable': { get: { summary: 'Timetable for a section', tags: ['timetable'], responses: { '200': { description: 'OK' } } } },
+      '/timetable/generate': { post: { summary: 'Solve and persist a branch timetable (locked-slot partial regeneration)', tags: ['timetable'], responses: { '200': { description: 'Solved or infeasible result' }, '502': { description: 'Timetable engine unreachable' }, '503': { description: 'Engine not configured' } } } },
+      '/timetable/substitutions': { post: { summary: 'Substitute suggestions for absent staff on a date', tags: ['timetable'], responses: { '200': { description: 'Suggestions or uncovered periods' }, '502': { description: 'Timetable engine unreachable' }, '503': { description: 'Engine not configured' } } } },
       '/timetable/slots': {
         post: { summary: 'Create a slot (409 on teacher clash)', tags: ['timetable'], responses: { '201': { description: 'Created' }, '409': { description: 'Teacher clash' } } },
         delete: { summary: 'Delete a slot', tags: ['timetable'], responses: { '200': { description: 'Deleted' } } },
@@ -447,6 +471,66 @@ r.get('/timetable', async (req, res) => {
     });
     res.json({ data: slots });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Timetable generation & substitutions (BUILD_PLAN 6.2 adapter) ──
+// The Go timetable-engine owns solving and clash validation; these routes
+// build the problem from live DB data, call it over a peer assertion, and
+// persist the result atomically (infeasible → nothing written). Both fail
+// with 503 when the service has no private key (ADR-3: peer calls are an
+// enhancement, never a correctness dependency).
+r.post('/timetable/generate', async (req, res) => {
+  try {
+    const actor = ctx(req);
+    const branchId = req.body?.branchId ?? actor.branchId;
+    if (!branchId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'branchId is required (body or account branch).' });
+      return;
+    }
+    const periods = req.body?.periods ?? 8;
+    const opts: GenerateOptions = {
+      days: req.body?.days,
+      periods,
+      periodTimes: req.body?.periodTimes?.length ? req.body.periodTimes : defaultPeriodTimes(periods),
+      subjectPeriods: req.body?.subjectPeriods,
+      keepSectionIds: req.body?.keepSectionIds, // frozen sections (partial regeneration)
+      teacherOverrides: req.body?.teacherOverrides,
+      seed: req.body?.seed,
+    };
+    const { engine, persisted, skipped } = await generateAndPersist(prisma, branchId, opts, timetableDeps, actor);
+    res.json({ status: engine.status, persisted, skipped, stats: engine.stats, violations: engine.violations ?? null });
+  } catch (e) {
+    const err = e as Error & { status?: number };
+    res.status(err.status ?? 500).json({ detail: err.message });
+  }
+});
+
+r.post('/timetable/substitutions', async (req, res) => {
+  try {
+    const actor = ctx(req);
+    const branchId = req.body?.branchId ?? actor.branchId;
+    if (!branchId) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'branchId is required (body or account branch).' });
+      return;
+    }
+    const date: string | undefined = req.body?.date;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'date (YYYY-MM-DD) is required.' });
+      return;
+    }
+    const absent: string[] = Array.isArray(req.body?.absent) ? req.body.absent : [];
+    const problem = await buildSubstitutionProblem(prisma, branchId, date, absent, defaultPeriodTimes(8));
+    const result = await callEngine<{ status: string; suggestions?: unknown[]; uncovered?: unknown[] }>(
+      timetableDeps,
+      actor,
+      '/timetable/substitutions',
+      problem,
+    );
+    res.json(result);
+  } catch (e) {
+    const err = e as Error & { status?: number };
+    res.status(err.status ?? 500).json({ detail: err.message });
+  }
 });
 
 r.delete('/timetable/slots/:id', async (req, res) => {

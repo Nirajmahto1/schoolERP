@@ -29,7 +29,7 @@ Effort estimates assume **~25 focused hours/week, solo, with heavy AI assistance
 | `apps/staff-service` | 628 lines — staff, teacher, payroll, transport routes. |
 | `apps/academic-service`, `fee-service`, `attendance-service`, `communication-service` | 74–328 lines each. Thin CRUD. |
 | `apps/analytics-service`, `ai-service` (Python) | 277 / 84 lines. Stubs. |
-| `apps/notification-engine`, `timetable-engine`, `go-service` (Go) | 195–428 lines. Stubs. |
+| `apps/notification-engine`, `timetable-engine` (Go) | 195–428 lines. Stubs. *(go-service retired in Phase 6.4.)* |
 | `apps/mobile` | Expo 54 / RN 0.81 / nativewind. 2,285 lines. Skeleton. |
 | `packages/database` | 663-line Prisma schema, **no migrations directory**. |
 | Tests | **None.** |
