@@ -169,9 +169,10 @@ export default function Sidebar() {
 
         {/* User profile */}
         <div className={styles.userProfile}>
-          <div className="avatar">{user.name.split(' ').map(n => n[0]).join('')}</div>
+          {/* name can be missing from a corrupt/legacy erp_user; never white-screen the whole dashboard for it */}
+          <div className="avatar">{(user.name || user.email || '?').split(' ').map(n => n[0]).join('')}</div>
           <div className={styles.userInfo}>
-            <div className={styles.userName}>{user.name}</div>
+            <div className={styles.userName}>{user.name || user.email}</div>
             <div className={styles.userRole}>{roleLabels[user.role]}</div>
           </div>
           <button className={styles.logoutBtn} onClick={() => { logout(); window.location.href = '/'; }}>

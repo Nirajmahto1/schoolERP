@@ -1,12 +1,25 @@
 'use client';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Topbar from '@/components/Topbar';
-import { useState, useEffect, useCallback, useMemo } from 'react';
 import { timetableApi, studentApi, teacherApi, academicApi, staffApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useLoading } from '@/context/LoadingContext';
 
-const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'] as const;
-const subjectColors: Record<string, string> = { Mathematics: '#5048E5', Science: '#10B981', English: 'school3B82F6', Hindi: '#F59E0B', SST: '#EC4899', 'Physical Ed.': '#8B5CF6', Art: '#F97316', Computer: '#0EA5E9', Library: '#6366F1', 'Science Lab': '#059669' };
+// The timetable engine generates Monday–Saturday (DEFAULT_DAYS in
+// academic-service), so Saturday must render or a sixth of the schedule
+// disappears. Days shown derive from the live slots, not this list.
+const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'] as const;
+// Preferred colors for well-known subjects; anything else gets a stable
+// palette color derived from the name hash (two subjects never collide
+// within one grid).
+const subjectColors: Record<string, string> = { Mathematics: '#5048E5', Science: '#10B981', English: '#3B82F6', Hindi: '#F59E0B', SST: '#EC4899', 'Physical Ed.': '#8B5CF6', Art: '#F97316', Computer: '#0EA5E9', Library: '#6366F1', 'Science Lab': '#059669' };
+const palette = ['#5048E5', '#10B981', '#3B82F6', '#F59E0B', '#EC4899', '#8B5CF6', '#F97316', '#0EA5E9', '#6366F1', '#059669', '#D946EF', '#14B8A6'];
+const colorFor = (name: string) => {
+  if (subjectColors[name]) return subjectColors[name];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
+};
 
 type Slot = {
   id: string;
@@ -124,7 +137,7 @@ export default function TimetablePage() {
     const name = typeof s === 'string' ? s : s.subject?.name || '-';
     const teacher = typeof s === 'object' && s.staff ? `${s.staff.firstName} ${s.staff.lastName}` : '';
     const room = typeof s === 'object' && s.room ? ` · ${s.room}` : '';
-    const color = subjectColors[name] || '#5048E5';
+    const color = colorFor(name);
     return (
       <div style={{ padding: '6px 10px', borderRadius: 8, background: color + '10', borderLeft: `3px solid ${color}` }}>
         <span style={{ fontSize: '0.8125rem', fontWeight: 600, color }}>{name}</span>
@@ -133,17 +146,53 @@ export default function TimetablePage() {
     );
   };
 
+  // Rows and columns both derive from the live slots: the row axis is the
+  // distinct (startTime, endTime) pairs ordered by start, the column axis is
+  // every day that actually has a slot (the engine generates Mon–Sat, and a
+  // 6-day week must not be silently truncated to 5 columns).
   const gridRows = useMemo(() => {
+    if (slots.length === 0) return [];
+    const daysSet = new Set(slots.map(s => s.day));
+    const days = DAYS.filter(d => daysSet.has(d));
+    // startTime → its endTime (first occurrence wins); drives both the row
+    // order and the printed "08:00 – 08:45" label.
+    const startOrder = new Map<string, string>();
+    slots.forEach(s => {
+      if (!startOrder.has(s.startTime)) startOrder.set(s.startTime, s.endTime);
+    });
+    // Map, not object: Object.keys on a Map is always [].
+    const timeKeys = [...startOrder.keys()].sort();
     const byTime: Record<string, any> = {};
     slots.forEach(s => {
-      const key = `${s.startTime} - ${s.endTime}`;
-      if (!byTime[key]) byTime[key] = { time: key, MONDAY: null, TUESDAY: null, WEDNESDAY: null, THURSDAY: null, FRIDAY: null };
+      const key = s.startTime;
+      if (!byTime[key]) {
+        byTime[key] = { time: `${key} – ${startOrder.get(key) || ''}`, days };
+        days.forEach(d => { byTime[key][d] = null; });
+      }
       byTime[key][s.day] = s;
     });
-    return Object.values(byTime);
+    return timeKeys.map(t => byTime[t]);
   }, [slots]);
 
-  if (loading) return <div className="p-12 text-center text-primary animate-pulse">Loading schedule...</div>;
+  // The column set for the header: days present in the current grid.
+  const activeDays: readonly string[] = gridRows[0]?.days ?? [];
+
+  // Break/lunch rows: the engine's default grid has a 30-min lunch gap after
+  // period 4 (08:00–11:30 then 11:30 end → 12:15 start). Render the gap as a
+  // visual break row instead of an unexplained hole.
+  const breakRows = useMemo(() => {
+    const rows = gridRows;
+    const out: Array<{ afterTime: string; label: string }> = [];
+    for (let i = 1; i < rows.length; i++) {
+      const prevEnd = rows[i - 1].time.split(' – ')[1];
+      const curStart = rows[i].time.split(' – ')[0];
+      if (prevEnd && curStart && prevEnd < curStart) {
+        const mins = (Number(curStart.slice(0, 2)) * 60 + Number(curStart.slice(3))) - (Number(prevEnd.slice(0, 2)) * 60 + Number(prevEnd.slice(3)));
+        if (mins >= 15) out.push({ afterTime: rows[i].time, label: mins >= 30 ? 'Lunch Break' : 'Short Break' });
+      }
+    }
+    return out;
+  }, [gridRows]);
   if (error) return <><Topbar title="Timetable" subtitle="Weekly class schedule" /><div style={{ padding: 24 }}><div className="card" style={{ padding: 24, background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12, color: '#B91C1C' }}>{error}</div></div></>;
 
   return (
@@ -208,26 +257,35 @@ export default function TimetablePage() {
         <div className="card">
           <div className="table-wrapper">
             <table className="table">
-              <thead><tr><th>Time</th>{DAYS.map(d => <th key={d}>{d.charAt(0) + d.slice(1).toLowerCase()}</th>)}</tr></thead>
+              <thead><tr><th>Time</th>{activeDays.map(d => <th key={d}>{d.charAt(0) + d.slice(1).toLowerCase()}</th>)}</tr></thead>
               <tbody>
                 {(isAdmin ? gridRows : grid).length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-6 text-gray">No schedule found{isAdmin ? ' — add slots to get started' : ''}</td></tr>
+                  <tr><td colSpan={activeDays.length + 1} className="text-center py-6 text-gray">No schedule found{isAdmin ? ' — add slots to get started' : ''}</td></tr>
                 ) : (isAdmin ? gridRows : grid).map((row: any, i: number) => (
-                  <tr key={i}>
-                    <td><span className="badge badge-gray" style={{ minWidth: 110, justifyContent: 'center' }}>{row.time}</span></td>
-                    {DAYS.map(d => {
-                      const cell = row[d];
-                      const del = isAdmin && cell?.id;
-                      return (
-                        <td key={d}>
-                          <div style={{ position: 'relative' }}>
-                            {cellRender(cell)}
-                            {del && <button title="Delete slot" onClick={() => removeSlot(cell.id)} style={{ position: 'absolute', top: 2, right: 2, background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', fontSize: 12 }}><span className="icon icon-sm">delete</span></button>}
-                          </div>
+                  <React.Fragment key={i}>
+                    {breakRows.some(b => b.afterTime === row.time) && (
+                      <tr>
+                        <td colSpan={activeDays.length + 1} style={{ textAlign: 'center', background: 'var(--gray-50, #F9FAFB)', fontStyle: 'italic', color: 'var(--gray-500)', fontSize: '0.75rem', padding: '4px' }}>
+                          — {breakRows.find(b => b.afterTime === row.time)?.label} —
                         </td>
-                      );
-                    })}
-                  </tr>
+                      </tr>
+                    )}
+                    <tr>
+                      <td><span className="badge badge-gray" style={{ minWidth: 110, justifyContent: 'center' }}>{row.time}</span></td>
+                      {activeDays.map(d => {
+                        const cell = row[d];
+                        const del = isAdmin && cell?.id;
+                        return (
+                          <td key={d}>
+                            <div style={{ position: 'relative' }}>
+                              {cellRender(cell)}
+                              {del && <button title="Delete slot" onClick={() => removeSlot(cell.id)} style={{ position: 'absolute', top: 2, right: 2, background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', fontSize: 12 }}><span className="icon icon-sm">delete</span></button>}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>
