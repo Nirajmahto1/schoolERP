@@ -32,6 +32,10 @@ export function makeIdentityTestEnv(
     QUIET_HOURS_END: 8,
     // Peer-call base URL (absence-alert fire); never exercised by these suites.
     COMMUNICATION_SERVICE_URL: 'http://localhost:4005',
+    // Timetable engine peer (Phase 6.4 adapter pattern); never exercised here.
+    // The schema default would fill this at parse-time, but this object is
+    // typed as the parsed OUTPUT env, so the field must be explicit.
+    TIMETABLE_ENGINE_URL: 'http://localhost:6003',
   };
 }
 
