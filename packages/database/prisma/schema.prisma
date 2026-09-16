@@ -1959,3 +1959,108 @@ enum NotificationStatus {
   FAILED
   DEAD_LETTERED
 }
+
+// ── Report builder & scheduled delivery (BUILD_PLAN 7.1) ──
+// "A report builder with saved reports and scheduled email/WhatsApp delivery."
+//
+// The spec is stored, never the query: a saved report names a dashboard + its
+// filters, so it keeps working when the underlying SQL changes. The artifact
+// (the actual XLSX/PDF bytes) is snapshotted per delivery, because the number a
+// principal was emailed must still be the number they can open a week later.
+//
+// Tokens are hashed at rest exactly like identity's invite/reset tokens: the
+// link is the credential, and a leaked database row must not become a leaked
+// report. Read-only by construction — nothing here can mutate school data.
+
+model SavedReport {
+  id        String   @id @default(cuid())
+  branchId  String
+  name      String
+  kind      String // AT_RISK | ATTENDANCE | FEE_FUNNEL | ENROLLMENT_TREND | PERFORMANCE | TEACHER_WORKLOAD | BRANCH_COMPARISON
+  format    ReportFormat @default(XLSX)
+  /// Dashboard filters (days, months, academicYearId) as declared per kind.
+  filters   Json     @default("{}")
+  createdBy String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schedules ReportSchedule[]
+
+  @@index([branchId, isActive])
+  @@map("saved_reports")
+}
+
+model ReportSchedule {
+  id            String      @id @default(cuid())
+  savedReportId String
+  branchId      String
+  cadence       ReportCadence
+  /// Local hour (0–23) the sweep may send in — schools read reports at breakfast.
+  hourLocal     Int         @default(7)
+  dayOfWeek     Int? // 1–7, WEEKLY only
+  dayOfMonth    Int? // 1–28, MONTHLY only
+  channel       NotificationChannel @default(EMAIL)
+  /// Who receives it: role-held staff of the branch (guardian roles are allowed too).
+  targetRoles   String[]
+  /// Extra raw addresses/numbers for people without an account (auditor, CA).
+  recipients    String[]
+  isActive      Boolean     @default(true)
+  nextRunAt     DateTime
+  lastRunAt     DateTime?
+  lastStatus    String? // SENT | PARTIAL | FAILED
+  lastError     String?
+  createdBy     String?
+  createdAt     DateTime    @default(now())
+
+  savedReport SavedReport      @relation(fields: [savedReportId], references: [id], onDelete: Cascade)
+  deliveries  ReportDelivery[]
+
+  @@index([isActive, nextRunAt])
+  @@index([branchId])
+  @@map("report_schedules")
+}
+
+model ReportDelivery {
+  id         String   @id @default(cuid())
+  scheduleId String
+  branchId   String
+  /// sha256 of the download token — the plaintext exists only in the sent message.
+  tokenHash  String   @unique
+  format     ReportFormat
+  fileName   String
+  /// The snapshot: bytes as rendered at delivery time.
+  artifact   Bytes
+  rowCount   Int      @default(0)
+  sizeBytes  Int      @default(0)
+  status     ReportDeliveryStatus @default(STORED)
+  /// How many recipients the dispatcher accepted, and why if it failed.
+  recipients Int      @default(0)
+  error      String?
+  downloads  Int      @default(0)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  schedule ReportSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([branchId, createdAt])
+  @@index([expiresAt])
+  @@map("report_deliveries")
+}
+
+enum ReportFormat {
+  XLSX
+  PDF
+}
+
+enum ReportCadence {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum ReportDeliveryStatus {
+  STORED
+  DELIVERED
+  FAILED
+}

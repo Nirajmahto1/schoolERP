@@ -172,6 +172,19 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     },
 
     // ── Python services ──
+    // Tokenized scheduled-report downloads. Public BY DESIGN: the 32-byte
+    // token in the path IS the credential (hashed at rest, bound to one stored
+    // artifact, expiring) and the link arrives by email/WhatsApp, where the
+    // reader has no session. Registered before the general `/analytics` prefix
+    // so this narrower path is the one that matches.
+    {
+      path: '/api/v1/analytics/reports/download',
+      service: 'analytics-service',
+      host,
+      port: env.PORT_ANALYTICS_SERVICE,
+      rewriteTo: '/analytics/reports/download',
+      public: true,
+    },
     {
       path: '/api/v1/analytics',
       service: 'analytics-service',

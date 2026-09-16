@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────
 
 import express, { Router } from 'express';
-import { PrismaClient } from '@school-erp/database';
+import { Prisma, PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
@@ -151,6 +151,9 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
             targetRoles: { type: 'array', items: { type: 'string' } },
             classIds: { type: 'array', items: { type: 'string' } }, sectionIds: { type: 'array', items: { type: 'string' } },
             channel: { type: 'string', enum: ['SMS', 'EMAIL', 'WHATSAPP', 'PUSH'] }, variables: { type: 'object' },
+            // Staff-only dispatches (scheduled reports, internal notices) must
+            // not fall through to the branch's guardian audience.
+            staffOnly: { type: 'boolean' },
           } },
           responses: { '201': { description: 'Queued' } },
         },
@@ -313,9 +316,17 @@ r.post('/dispatch', async (req, res) => {
   try {
     const { branchId, userId } = ctx(req);
     if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
-    const { title, content, type, targetRoles, classIds, sectionIds, templateKey, channel, variables } = req.body ?? {};
+    const { title, content, type, targetRoles, classIds, sectionIds, templateKey, channel, variables, staffOnly } = req.body ?? {};
     if (!content && !templateKey) {
       res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'content or templateKey is required.' });
+      return;
+    }
+    // `staffOnly` exists because the default audience is guardians: without it,
+    // a report meant for the principal and the accountant silently reaches every
+    // parent in the branch. Staff-only dispatches must name their roles, or
+    // there is nobody to send to at all.
+    if (staffOnly && !targetRoles?.length) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'staffOnly requires targetRoles — otherwise the dispatch has no audience.' });
       return;
     }
 
@@ -330,16 +341,18 @@ r.post('/dispatch', async (req, res) => {
     // classes/sections — or ALL enrolled students of the branch when no
     // filter is given (school-wide circulars are the most common dispatch).
     // Plus staff holding any of the targeted roles.
-    const enrollments = await prisma.studentEnrollment.findMany({
-      where: {
-        branchId,
-        status: 'ENROLLED',
-        toDate: null,
-        ...(sectionIds && { sectionId: { in: sectionIds } }),
-        ...(classIds && { classId: { in: classIds } }),
-      },
-      select: { studentId: true },
-    });
+    const enrollments = staffOnly
+      ? []
+      : await prisma.studentEnrollment.findMany({
+          where: {
+            branchId,
+            status: 'ENROLLED',
+            toDate: null,
+            ...(sectionIds && { sectionId: { in: sectionIds } }),
+            ...(classIds && { classId: { in: classIds } }),
+          },
+          select: { studentId: true },
+        });
     const audienceStudentIds: string[] = enrollments.map((e) => e.studentId);
 
     const guardians = audienceStudentIds.length
@@ -350,8 +363,43 @@ r.post('/dispatch', async (req, res) => {
         })
       : [];
 
-    const staff = targetRoles?.length
-      ? await prisma.staff.findMany({ where: { branchId, isActive: true }, select: { id: true, userId: true, firstName: true, lastName: true, phone: true } })
+    // Staff are resolved BY ROLE, not merely because some roles were named: a
+    // report scheduled to BRANCH_ADMIN must not land on all 31 teachers' phones.
+    // A role assignment with a null branchId is school-wide, so it reaches every
+    // branch's holder. Resolved in two steps (role holders, then their HR rows)
+    // rather than a nested relation filter — the point of the check is which
+    // ROLE a person holds, and the HR table is only needed for a phone number.
+    const roleFilter: Prisma.UserRoleAssignmentWhereInput = {
+      isActive: true,
+      role: { code: { in: targetRoles ?? [] }, isActive: true },
+      OR: [{ branchId: null }, { branchId }],
+    };
+
+    const roleHolders = targetRoles?.length
+      ? await prisma.user.findMany({
+          where: { isActive: true, roleAssignments: { some: roleFilter } },
+          select: { id: true, email: true },
+        })
+      : [];
+    const roleHolderIds = roleHolders.map((u) => u.id);
+
+    const staffRows = roleHolderIds.length
+      ? await prisma.staff.findMany({
+          where: { userId: { in: roleHolderIds }, isActive: true, deletedAt: null },
+          select: { id: true, userId: true, branchId: true, firstName: true, lastName: true, phone: true },
+        })
+      : [];
+    const staff = staffOnly ? [] : staffRows.filter((s) => s.branchId === branchId);
+
+    // A staff-only audience keys off the user, not the HR row: a branch admin is
+    // a user holding a role and often has no staff record at all, so resolving a
+    // report audience from `staff` alone would silently reach nobody.
+    const staffOnlyRecipients = staffOnly
+      ? roleHolders.map((u) => ({
+          userId: u.id,
+          email: u.email,
+          staff: staffRows.find((s) => s.userId === u.id) ?? null,
+        }))
       : [];
 
     const render = (text: string, vars: Record<string, string>) =>
@@ -359,6 +407,19 @@ r.post('/dispatch', async (req, res) => {
 
     const logs: Array<{ channel: 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH'; recipientType: string; recipientId: string; recipient?: string; body: string; status: 'QUEUED' }> = [];
     const ch = (channel ?? 'SMS') as 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH';
+    // The drain sends to `recipient` verbatim on every non-PUSH channel, so the
+    // address must match the channel: EMAIL to an email address, SMS/WhatsApp to
+    // a phone number. Preferring a phone number for EMAIL queued rows that could
+    // only ever fail.
+    const addressFor = (
+      channel: 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH',
+      contact: { phone?: string | null; email?: string | null },
+    ): string | undefined => {
+      if (channel === 'EMAIL') return contact.email ?? undefined;
+      if (channel === 'PUSH') return undefined;
+      return contact.phone ?? undefined;
+    };
+
     for (const g of guardians) {
       logs.push({
         channel: ch,
@@ -367,18 +428,32 @@ r.post('/dispatch', async (req, res) => {
         // userId (§5.4); every other channel addresses the guardian record.
         // The where-clause guarantees userId is non-null for guardians.
         recipientId: ch === 'PUSH' ? (g.guardian.userId as string) : g.guardianId,
-        recipient: ch === 'PUSH' ? undefined : g.guardian.phone ?? g.guardian.email ?? undefined,
+        recipient: addressFor(ch, { phone: g.guardian.phone, email: g.guardian.email }),
         body: render(body!, { guardianName: g.guardian.fullName, ...(variables ?? {}) }),
         status: 'QUEUED',
       });
     }
+    const emailByUserId = new Map(roleHolders.map((u) => [u.id, u.email] as const));
     for (const s of staff) {
       logs.push({
         channel: ch,
         recipientType: 'STAFF',
         recipientId: ch === 'PUSH' ? s.userId : s.id,
-        recipient: ch === 'PUSH' ? undefined : s.phone,
+        recipient: addressFor(ch, { phone: s.phone, email: emailByUserId.get(s.userId) }),
         body: render(body!, { staffName: `${s.firstName} ${s.lastName}`, ...(variables ?? {}) }),
+        status: 'QUEUED',
+      });
+    }
+    for (const u of staffOnlyRecipients) {
+      const name = u.staff ? `${u.staff.firstName} ${u.staff.lastName}` : u.email;
+      logs.push({
+        channel: ch,
+        recipientType: u.staff ? 'STAFF' : 'USER',
+        // PUSH addresses the user; other channels the staff record when there is
+        // one, so a notification log still points at a person, not an address.
+        recipientId: ch === 'PUSH' ? u.userId : (u.staff?.id ?? u.userId),
+        recipient: addressFor(ch, { phone: u.staff?.phone, email: u.email }),
+        body: render(body!, { staffName: name, userName: name, ...(variables ?? {}) }),
         status: 'QUEUED',
       });
     }
@@ -403,7 +478,16 @@ r.post('/dispatch', async (req, res) => {
       },
     });
 
-    res.status(201).json({ announcementId: announcement.id, queued: logs.length, audience: { guardians: guardians.length, staff: staff.length } });
+    res.status(201).json({
+      announcementId: announcement.id,
+      queued: logs.length,
+      staffOnly: staffOnly === true,
+      audience: {
+        guardians: guardians.length,
+        staff: staff.length,
+        users: staffOnlyRecipients.length,
+      },
+    });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

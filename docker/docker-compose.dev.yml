@@ -11,6 +11,6 @@ services:
     ports:
       - "6379:6379"
 
-  mongodb:
-    ports:
-      - "27017:27017"
+# MongoDB has no override here: the service itself was removed in Phase 7
+# (docs/ops/phase7-decisions.md). If you have an old `mongodb_data` volume,
+# `docker volume rm` it — nothing in this repo references it.

@@ -11,9 +11,10 @@
 from typing import Any, Optional
 
 try:  # package mode
-    from . import db
+    from . import db, scoring
 except ImportError:  # direct mode: python main.py from this directory
     import db  # type: ignore[no-redef]
+    import scoring  # type: ignore[no-redef]
 
 # Day-of-week ordering that survives internationalization: Postgres
 # `to_char(date, 'Dy')` is locale-dependent, so order by date, not by name.
@@ -258,6 +259,7 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
                s."admissionNo",
                cls.name || ' ' || sec.name AS class_section,
                att.attendance_rate,
+               att.absences,
                marks.avg_pct AS average_marks_pct,
                fees.outstanding,
                fees.unpaid_invoices
@@ -288,32 +290,25 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
     )
     out: list[dict[str, Any]] = []
     for r in rows:
-        reasons: list[str] = []
-        rate = r["attendance_rate"]
-        avg = r["average_marks_pct"]
-        outstanding = r["outstanding"] or 0
-        rate = float(rate) if rate is not None else None
-        avg = float(avg) if avg is not None else None
-        outstanding = float(outstanding or 0)
-        if rate is not None and rate < 60:
-            reasons.append(f"attendance {rate}% (below 60%, {r['absences']} absences in 30 days)")
-        elif rate is not None and rate < 75:
-            reasons.append(f"attendance {rate}% (below 75% threshold)")
-        if avg is not None and avg < 40:
-            reasons.append(f"exam average {avg}% (below 40%)")
-        elif avg is not None and avg < 50:
-            reasons.append(f"exam average {avg}% (below 50%)")
-        if outstanding > 0:
-            reasons.append(f"fee arrears ₹{outstanding:,.0f} across {r['unpaid_invoices']} invoice(s)")
+        # Thresholds and wording live in scoring.py — the same function the
+        # held-out validation uses, so the ranked list a principal sees and the
+        # model that was back-tested are provably the same rule set.
+        level, reasons, _critical = scoring.score_student(
+            attendance_rate=r["attendance_rate"],
+            average_marks_pct=r["average_marks_pct"],
+            fee_outstanding=r["outstanding"],
+            unpaid_invoices=int(r["unpaid_invoices"] or 0),
+            absences=int(r["absences"] or 0),
+        )
         out.append({
             "studentId": r["student_id"],
             "studentName": r["student_name"],
             "admissionNo": r["admissionNo"],
             "class": r["class_section"],
-            "attendanceRate": rate,
-            "averageMarksPct": avg,
-            "feeOutstanding": outstanding,
-            "riskLevel": "HIGH" if len(reasons) >= 2 else "MEDIUM",
+            "attendanceRate": float(r["attendance_rate"]) if r["attendance_rate"] is not None else None,
+            "averageMarksPct": float(r["average_marks_pct"]) if r["average_marks_pct"] is not None else None,
+            "feeOutstanding": float(r["outstanding"] or 0),
+            "riskLevel": level,
             "reasons": reasons,
         })
     return out

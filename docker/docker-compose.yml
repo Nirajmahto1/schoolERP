@@ -22,17 +22,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── MongoDB ──
-  mongodb:
-    image: mongo:7
-    container_name: school-erp-mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_DATABASE: school_erp_logs
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
+  # ── MongoDB: REMOVED (BUILD_PLAN §7.3 decision point) ──
+  # Nothing ever read or wrote it, and the two jobs it was reserved for
+  # (audit trail, notification logs) are served by Postgres tables
+  # `audit_logs` and `notification_logs` alongside the data they describe —
+  # which also means one backup, one restore drill, and one consistency model.
+  # See docs/ops/phase7-decisions.md.
 
   # ── Redis ──
   redis:
@@ -72,6 +67,5 @@ services:
 
 volumes:
   postgres_data:
-  mongodb_data:
   redis_data:
   minio_data:
