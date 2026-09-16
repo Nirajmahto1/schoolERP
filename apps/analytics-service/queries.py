@@ -214,15 +214,32 @@ async def branch_comparison(branch_id: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, Any]]:
+async def at_risk_students(
+    branch_id: str, limit: int = 50, threshold_mode: str = "absolute"
+) -> list[dict[str, Any]]:
     """Ranked at-risk list WITH reasons — never a black-box score (§7.2).
 
     Three transparent signals, each contributing reasons:
       • attendance rate over the last 30 days (school-window, not lifetime)
       • average percentage on PUBLISHED exams
       • outstanding fees (any non-paid invoice)
-    Rank = most severe signal first; ties broken by name for stability.
+
+    Default thresholds are ABSOLUTE — the regulatory lines (75% CBSE attendance
+    eligibility, 50% failing-trend marks, floored criticals at 60%/33%). When
+    the branch is healthy these correctly flag almost nobody; an empty list is
+    the right answer, not a failure. thresholdMode="branch-relative" switches
+    to the Gate-7 recalibration lens (median = at-risk, p10 = critical, same
+    floors) — recall-oriented, for peer-comparison watch lists. The Gate-7 A/B
+    measured the trade-off: recall 0.025 → 0.65, precision at/below the base
+    rate on synthetic data (docs/ops/gate-7-evidence.md).
+
+    Membership and ordering come from scoring.py (score_student / rank_key),
+    not SQL — the live list and the held-out validation must not merely use
+    the same numbers, they must run the same code path. The query returns the
+    whole scored cohort plus the branch's distribution; Python filters, ranks
+    and cuts to `limit`.
     """
+    relative = threshold_mode != "absolute"
     rows = await db.fetch(
         """
         WITH att AS (
@@ -253,6 +270,18 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
            WHERE i."branchId" = $1 AND i."deletedAt" IS NULL
              AND i.status IN ('PARTIALLY_PAID', 'ISSUED', 'OVERDUE')
            GROUP BY i."studentId"
+        ),
+        -- The branch's own distribution, from the same window the rows see:
+        -- median becomes the at-risk line, 10th percentile the critical line.
+        -- percentile_cont interpolates; with hundreds of students it is stable.
+        dist AS (
+          SELECT
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY a.attendance_rate) AS att_p50,
+            percentile_cont(0.10) WITHIN GROUP (ORDER BY a.attendance_rate) AS att_p10,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY m.avg_pct)         AS marks_p50,
+            percentile_cont(0.10) WITHIN GROUP (ORDER BY m.avg_pct)         AS marks_p10
+          FROM (SELECT attendance_rate FROM att WHERE attendance_rate IS NOT NULL) a
+          CROSS JOIN (SELECT avg_pct FROM marks WHERE avg_pct IS NOT NULL) m
         )
         SELECT s.id AS student_id,
                s."firstName" || ' ' || s."lastName" AS student_name,
@@ -262,8 +291,10 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
                att.absences,
                marks.avg_pct AS average_marks_pct,
                fees.outstanding,
-               fees.unpaid_invoices
-          FROM students s
+               fees.unpaid_invoices,
+               dist.att_p50, dist.att_p10, dist.marks_p50, dist.marks_p10
+          FROM dist
+          CROSS JOIN students s
           JOIN student_enrollments se ON se."studentId" = s.id
                AND se."branchId" = $1 AND se.status = 'ENROLLED' AND se."toDate" IS NULL
                AND se."academicYearId" IN (
@@ -274,20 +305,24 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
           LEFT JOIN att ON att."studentId" = s.id
           LEFT JOIN marks ON marks."studentId" = s.id
           LEFT JOIN fees ON fees."studentId" = s.id
-         WHERE (att.attendance_rate IS NOT NULL AND att.attendance_rate < 75)
-            OR (marks.avg_pct IS NOT NULL AND marks.avg_pct < 50)
-            OR fees.outstanding > 0
-         ORDER BY
-           (COALESCE(att.attendance_rate, 100) < 60)::int
-         + (COALESCE(marks.avg_pct, 100) < 40)::int
-         + (COALESCE(fees.outstanding, 0) > 0)::int DESC,
-           COALESCE(att.attendance_rate, 100) ASC,
-           student_name
-         LIMIT $2
         """,
         branch_id,
-        limit,
     )
+    if rows:
+        first = rows[0]
+        thresholds = (
+            scoring.Thresholds.branch_relative(
+                attendance_p50=first["att_p50"],
+                attendance_p10=first["att_p10"],
+                marks_p50=first["marks_p50"],
+                marks_p10=first["marks_p10"],
+            )
+            if relative
+            else scoring.Thresholds.absolute()
+        )
+    else:
+        thresholds = scoring.Thresholds.absolute()
+
     out: list[dict[str, Any]] = []
     for r in rows:
         # Thresholds and wording live in scoring.py — the same function the
@@ -299,7 +334,10 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
             fee_outstanding=r["outstanding"],
             unpaid_invoices=int(r["unpaid_invoices"] or 0),
             absences=int(r["absences"] or 0),
+            thresholds=thresholds,
         )
+        if not reasons:
+            continue  # not at risk under these thresholds — off the list
         out.append({
             "studentId": r["student_id"],
             "studentName": r["student_name"],
@@ -311,4 +349,83 @@ async def at_risk_students(branch_id: str, limit: int = 50) -> list[dict[str, An
             "riskLevel": level,
             "reasons": reasons,
         })
-    return out
+    out.sort(key=lambda s: scoring.rank_key(
+        attendance_rate=s["attendanceRate"],
+        average_marks_pct=s["averageMarksPct"],
+        fee_outstanding=s["feeOutstanding"],
+        student_name=str(s["studentName"]),
+        thresholds=thresholds,
+    ))
+    return out[:limit]
+
+
+async def at_risk_thresholds(branch_id: str) -> dict[str, Any]:
+    """The thresholds the at-risk list is scored with, for API exposure.
+
+    Transparency is the product promise (§7.2): a principal can ask what the
+    lines are and where they came from without reading code.
+    """
+    row = await db.fetchrow(
+        """
+        WITH att AS (
+          SELECT ar."studentId",
+                 round(100.0 * count(*) FILTER (WHERE ar.status = 'PRESENT')
+                       / nullif(count(*), 0), 1) AS attendance_rate
+            FROM attendance_records ar
+            JOIN attendance_sessions asn ON asn.id = ar."sessionId"
+           WHERE asn."branchId" = $1 AND asn.date >= current_date - interval '30 days'
+           GROUP BY ar."studentId"
+        ),
+        marks AS (
+          SELECT er."studentId",
+                 round(100.0 * avg(er."marksObtained"::numeric / es."maxMarks"), 1) AS avg_pct
+            FROM exam_results er
+            JOIN exam_subjects es ON es.id = er."examSubjectId"
+            JOIN examinations ex ON ex.id = es."examinationId"
+           WHERE ex."branchId" = $1 AND ex."publishedAt" IS NOT NULL
+             AND NOT er."isAbsent" AND NOT er."isExempt"
+           GROUP BY er."studentId"
+        )
+        SELECT
+          (SELECT count(*) FROM att WHERE attendance_rate IS NOT NULL) AS att_n,
+          (SELECT count(*) FROM marks WHERE avg_pct IS NOT NULL)       AS marks_n,
+          percentile_cont(0.50) WITHIN GROUP (ORDER BY a.attendance_rate) AS att_p50,
+          percentile_cont(0.10) WITHIN GROUP (ORDER BY a.attendance_rate) AS att_p10,
+          percentile_cont(0.50) WITHIN GROUP (ORDER BY m.avg_pct)         AS marks_p50,
+          percentile_cont(0.10) WITHIN GROUP (ORDER BY m.avg_pct)         AS marks_p10
+        FROM (SELECT attendance_rate FROM att WHERE attendance_rate IS NOT NULL) a
+        CROSS JOIN (SELECT avg_pct FROM marks WHERE avg_pct IS NOT NULL) m
+        """,
+        branch_id,
+    )
+    if row is None or (int(row["att_n"] or 0) == 0 and int(row["marks_n"] or 0) == 0):
+        thresholds = scoring.Thresholds.absolute()
+        return {**thresholds.describe(), "basis": {"note": "No branch data yet — absolute defaults."}}
+    thresholds = scoring.Thresholds.branch_relative(
+        attendance_p50=row["att_p50"],
+        attendance_p10=row["att_p10"],
+        marks_p50=row["marks_p50"],
+        marks_p10=row["marks_p10"],
+    )
+    return {
+        **thresholds.describe(),
+        "basis": {
+            "attendanceStudents": int(row["att_n"] or 0),
+            "marksStudents": int(row["marks_n"] or 0),
+            "attendanceMedian": _r1(row["att_p50"]),
+            "attendanceP10": _r1(row["att_p10"]),
+            "marksMedian": _r1(row["marks_p50"]),
+            "marksP10": _r1(row["marks_p10"]),
+            "rule": "at-risk = median, critical = 10th percentile, floored at 60% attendance / 33% marks",
+        },
+    }
+
+
+def _r1(v: Any) -> Optional[float]:
+    return round(float(v), 1) if v is not None else None
+
+
+
+
+
+

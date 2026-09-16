@@ -116,10 +116,63 @@ this appears on a principal's screen:
    marks) fire on almost nobody in a healthy cohort, which is why recall is
    2.5%. Branch-relative thresholds (bottom decile of *this* branch) would
    discriminate; the harness is already the place to measure that change.
+   → **Measured. See §3.**
 2. **Re-run on a tenant with real history** — a year of attendance, published
    exams, and invoices raised before the split (so the fee signal is in scope).
 
 Both are measured with the same endpoint; no code change is needed to re-run.
+
+---
+
+## 3. Recalibration — branch-relative thresholds, measured
+
+The §2 recommendation was implemented and then measured with the same harness.
+`scoring.py` now carries a `Thresholds` object with two modes, both exposed on
+the API (`thresholdMode=absolute | branch-relative` on `/analytics/at-risk` and
+`/analytics/at-risk/validation`):
+
+- **absolute** — the shipped regulatory lines (75% attendance eligibility /
+  50% marks; critical floors 60% / 33%).
+- **branch-relative** — the branch's **median** becomes the at-risk line and
+  its **10th percentile** the critical line, floored at the regulatory
+  minimums so a failing branch can never look healthy by comparison.
+  Derivation: `at-risk = median, critical = p10, floored at 60% / 33%`.
+
+On the live branch (Main Campus, 400 students) the derived lines are
+**92% / 84% attendance and 69.5% / 62.6% marks** — against cohort means of
+~92% and ~69%. `GET /analytics/at-risk/thresholds` returns both lenses with
+their basis (sample sizes, the raw quantiles, the rule), because a threshold a
+principal cannot read is a black box with extra steps.
+
+### A/B through the same harness (all numbers live through the gateway)
+
+| Lens | ANY_SIGNAL flagged | Recall (bottom-decile label) | TOP_10% precision | TOP_10% lift |
+|---|---|---|---|---|
+| absolute (baseline) | 1 of 400 | **0.025** | 0.15 | 1.5 |
+| branch-relative | 287 of 400 | **0.65** | 0.175 | 1.75 |
+
+Recall improves 26× and ranked lift rises — and the same run shows the cost.
+Quantile **membership** ("below the branch median today") flags 287 of 400
+students at precision 0.091, *below* the 0.10 base rate (lift 0.91). A
+membership-level probe across operating points confirms it: p10 → lift 0.54,
+p25 → 0.34, p50 → 0.45. On this tenant, today's branch-relative position
+carries no information about the label window — expected for synthetic marks
+drawn independently per exam, and the harness is what makes that visible
+instead of guessable.
+
+### Shipping decision
+
+- **Screen default stays absolute.** In a healthy branch the absolute lines
+  correctly flag almost nobody: an empty list is the right answer, and when
+  they do fire (fee arrears, a real attendance collapse) precision is high.
+- **Branch-relative ships as the measured recall-oriented lens**
+  (`thresholdMode=branch-relative`) for peer-comparison watch lists, with its
+  precision cost documented rather than hidden.
+- **The recalibration is real, but its payoff is data-dependent.** Where a
+  cohort has a persistent weak-student factor (real schools do), position
+  within the branch predicts the next exam and the lens earns its keep. The
+  §2 method note stands: re-run this harness on a tenant with a year of real
+  history before trusting either lens's numbers.
 
 ---
 
@@ -137,6 +190,12 @@ time curl -s localhost:4000/api/v1/analytics/branch-comparison -H "Authorization
 
 # Criterion 2 — the whole validation report (all labels, all cut-offs, caveats)
 curl -s localhost:4000/api/v1/analytics/at-risk/validation -H "Authorization: Bearer $TOKEN" | jq
+
+# Same harness, recalibrated lens (branch median / p10 lines)
+curl -s "localhost:4000/api/v1/analytics/at-risk/validation?thresholdMode=branch-relative" -H "Authorization: Bearer $TOKEN" | jq
+
+# What the lines are and where they came from (both lenses)
+curl -s localhost:4000/api/v1/analytics/at-risk/thresholds -H "Authorization: Bearer $TOKEN" | jq
 ```
 
 The validation endpoint is quiet about nothing: it takes `labelFrom`,

@@ -27,12 +27,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 try:  # package mode: uvicorn analytics_service.main:app
-    from . import db, queries, reports, validation
+    from . import db, queries, reports, scoring, validation
     from .auth import Identity, public_key_configured, require_identity
 except ImportError:  # direct mode: python main.py from this directory
     import db  # type: ignore[no-redef]
     import queries  # type: ignore[no-redef]
     import reports  # type: ignore[no-redef]
+    import scoring  # type: ignore[no-redef]
     import validation  # type: ignore[no-redef]
     from auth import Identity, public_key_configured, require_identity  # type: ignore[no-redef]
 
@@ -184,10 +185,35 @@ async def branch_comparison(
 async def at_risk(
     limit: int = Query(50, ge=1, le=500),
     branchId: Optional[str] = None,
+    thresholdMode: str = Query("absolute", pattern="^(branch-relative|absolute)$"),
     user: Identity = Depends(require_identity),
 ) -> list[dict[str, Any]]:
+    """The ranked list. Default is the ABSOLUTE regulatory lines: in a healthy
+    branch they correctly flag almost nobody — an empty list is the right
+    answer. thresholdMode=branch-relative switches to the Gate-7 recalibration
+    lens (branch median / p10, same floors), which trades precision for recall;
+    measured in docs/ops/gate-7-evidence.md."""
     branch = resolve_branch(user, branchId)
-    return await queries.at_risk_students(branch, limit)
+    return await queries.at_risk_students(branch, limit, threshold_mode=thresholdMode)
+
+
+@app.get("/analytics/at-risk/thresholds")
+async def at_risk_thresholds(
+    branchId: Optional[str] = None,
+    user: Identity = Depends(require_identity),
+) -> dict[str, Any]:
+    """What the lines are and where they came from — the transparency the
+    product promise rests on. A principal can argue with a threshold they can
+    read; that is the point of the whole design. Shows both lenses: the
+    absolute regulatory default and the branch-relative watch-list lines."""
+    branch = resolve_branch(user, branchId)
+    absolute = scoring.Thresholds.absolute().describe()
+    relative = await queries.at_risk_thresholds(branch)
+    relative.pop("mode", None)  # describe() of the relative lens; keep basis
+    return {
+        "default": {**absolute, "note": "regulatory lines — screen default (high precision)"},
+        "branchRelative": relative,
+    }
 
 
 @app.get("/analytics/at-risk/validation")
@@ -198,15 +224,21 @@ async def at_risk_validation(
     attendanceBelow: float = Query(75.0, gt=0, le=100),
     bottomFraction: float = Query(0.10, gt=0, le=0.5),
     featureDays: int = Query(365, ge=90, le=1095),
+    thresholdMode: str = Query("absolute", pattern="^(branch-relative|absolute)$"),
     user: Identity = Depends(require_identity),
 ) -> dict[str, Any]:
-    """GATE 7 evidence: back-test the SHIPPED at-risk rules on held-out history.
+    """GATE 7 evidence: back-test the at-risk rules on held-out history.
 
     A temporal hold-out — features from before the split, outcomes after it —
     scored by the same functions the live ranked list uses (scoring.py), so the
     reported precision/recall describe the model a principal actually sees. The
     response carries every label definition and cut-off, plus feature coverage
     and caveats, so nobody has to take a single number on trust.
+
+    thresholdMode=absolute (default) validates the SHIPPED fixed lines.
+    thresholdMode=branch-relative runs the Gate-7 recalibration lens (median /
+    10th percentile of this branch's feature window, floored at the regulatory
+    minimums) so the recalibration stays measurable against its baseline.
     """
     branch = resolve_branch(user, branchId)
     try:
@@ -217,6 +249,7 @@ async def at_risk_validation(
             attendance_below=attendanceBelow,
             bottom_fraction=bottomFraction,
             feature_days=featureDays,
+            threshold_mode=thresholdMode,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

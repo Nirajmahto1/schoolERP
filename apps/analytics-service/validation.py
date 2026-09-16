@@ -31,6 +31,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -46,6 +47,43 @@ except ImportError:  # direct mode: python main.py from this directory
 MIN_POSITIVES = 10
 
 TOP_K_CUTOFFS = (0.10, 0.20, 0.30)
+
+
+def _pct(values: list[float], q: float) -> Optional[float]:
+    """Linear-interpolated quantile, matching Postgres `percentile_cont` —
+    the live list derives its lines in SQL, so the harness must not use a
+    different interpolation and quietly compare two definitions.
+    """
+    if not values:
+        return None
+    s = sorted(values)
+    idx = q * (len(s) - 1)
+    lo, hi = math.floor(idx), math.ceil(idx)
+    if lo == hi:
+        return float(s[lo])
+    return float(s[lo] + (s[hi] - s[lo]) * (idx - lo))
+
+
+def _feature_thresholds(rows: list[dict[str, Any]], threshold_mode: str) -> scoring.Thresholds:
+    """Thresholds as of the SPLIT, derived only from the feature window.
+
+    The live list derives its lines from the branch's current 30-day window.
+    A back-test must derive them from the data that existed before the split —
+    deriving from the label window would be the same leakage as using the
+    label exam as a feature, just wearing a statistics costume.
+    """
+    if threshold_mode == "absolute":
+        return scoring.Thresholds.absolute()
+    att = [float(r["attendance_rate"]) for r in rows if r["attendance_rate"] is not None]
+    marks = [float(r["marks_pct"]) for r in rows if r["marks_pct"] is not None]
+    if not att and not marks:
+        return scoring.Thresholds.absolute()
+    return scoring.Thresholds.branch_relative(
+        attendance_p50=_pct(att, scoring.BRANCH_AT_RISK_QUANTILE),
+        attendance_p10=_pct(att, scoring.BRANCH_CRITICAL_QUANTILE),
+        marks_p50=_pct(marks, scoring.BRANCH_AT_RISK_QUANTILE),
+        marks_p10=_pct(marks, scoring.BRANCH_CRITICAL_QUANTILE),
+    )
 
 
 async def _split_point(branch_id: str, label_from: Optional[datetime]) -> tuple[datetime, list[dict[str, Any]]]:
@@ -266,14 +304,24 @@ async def validate_at_risk(
     attendance_below: float = 75.0,
     bottom_fraction: float = 0.10,
     feature_days: int = 365,
+    threshold_mode: str = "absolute",
 ) -> dict[str, Any]:
-    """Back-test the shipped scoring rules. Reads only; writes nothing."""
+    """Back-test the shipped scoring rules. Reads only; writes nothing.
+
+    `threshold_mode` selects which lines the model is scored with:
+      • "absolute" (default) — the SHIPPED fixed lines (75%/50% marks). The
+        harness validates the model a principal actually sees.
+      • "branch-relative" — the Gate-7 recalibration lens: median/p10 of THIS
+        branch's feature window, floored at the regulatory minimums. Recall-
+        oriented; measured in docs/ops/gate-7-evidence.md.
+    """
     now = now or datetime.now()
     split, exams = await _split_point(branch_id, label_from)
     feature_from = split - timedelta(days=feature_days)
 
     rows = await _cohort(branch_id, feature_from, split, now)
     total = len(rows)
+    thresholds = _feature_thresholds(rows, threshold_mode)
 
     scored: list[dict[str, Any]] = []
     for r in rows:
@@ -284,6 +332,7 @@ async def validate_at_risk(
             unpaid_invoices=int(r["unpaid_invoices"] or 0),
             absences=int(r["absences"] or 0),
             absence_window=f"{feature_days} days before the split",
+            thresholds=thresholds,
         )
         scored.append({
             "studentId": str(r["student_id"]),
@@ -307,6 +356,7 @@ async def validate_at_risk(
         average_marks_pct=s["averageMarksPct"],
         fee_outstanding=s["feeOutstanding"],
         student_name=str(s["studentName"]),
+        thresholds=thresholds,
     ))
 
     with_label_marks = [s for s in scored if s["labelMarksPct"] is not None]
@@ -391,6 +441,15 @@ async def validate_at_risk(
             ),
             "scoring": "shared with the live ranked list (scoring.py) — same thresholds, same reasons",
             "minPositives": MIN_POSITIVES,
+        },
+        "thresholds": {
+            **thresholds.describe(),
+            "derivation": (
+                f"{threshold_mode}: at-risk = median of this branch's feature window, "
+                "critical = 10th percentile, floored at 60% attendance / 33% marks"
+                if threshold_mode != "absolute"
+                else "fixed regulatory lines"
+            ),
         },
         "split": {
             "labelFrom": split.isoformat(),
