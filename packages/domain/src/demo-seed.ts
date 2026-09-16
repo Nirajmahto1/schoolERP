@@ -143,18 +143,32 @@ function isWeekend(d: Date): boolean {
   return day === 0 || day === 6;
 }
 
-/** The first N weekdays of the academic year starting April 1.
- *  `endBefore` (exclusive) stops generation there — the live year cannot
- *  have school days in the future. */
+/**
+ * The first N weekdays of the academic year — or, when the anchor is given,
+ * the LAST N weekdays ending at the anchor. The live year anchors on
+ * yesterday: a seed run in, say, February must put its 30 session days in
+ * the recent window (dashboards and the at-risk feature window read the last
+ * 30 days), not in April where they go stale the moment school starts.
+ */
 export function schoolDays(yearStart: number, count: number, endBefore?: Date): Date[] {
-  const days: Date[] = [];
-  const d = monthDay(yearStart, 4, 1);
-  while (days.length < count) {
-    if (endBefore && d.getTime() >= endBefore.getTime()) break;
-    if (!isWeekend(d)) days.push(new Date(d));
-    d.setUTCDate(d.getUTCDate() + 1);
+  if (!endBefore) {
+    const days: Date[] = [];
+    const d = monthDay(yearStart, 4, 1);
+    while (days.length < count) {
+      if (!isWeekend(d)) days.push(new Date(d));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return days;
   }
-  return days;
+  // Walk backwards from the anchor collecting weekdays, then restore order.
+  const days: Date[] = [];
+  const d = new Date(endBefore);
+  d.setUTCDate(d.getUTCDate() - 1); // anchor is exclusive, as before
+  while (days.length < count) {
+    if (!isWeekend(d)) days.push(new Date(d));
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  return days.reverse();
 }
 
 // Deterministic pseudo-random (no Math.random — seeds must be reproducible).
@@ -164,6 +178,91 @@ function prand(seed: number): () => number {
     s = (s * 1664525 + 1013904223) >>> 0;
     return s / 4294967296;
   };
+}
+
+// ── Correlated student profiles (Gate-7 recalibration follow-up) ──
+//
+// Real branches have a persistent weak-student factor: the same child who
+// misses school also fails exams and falls behind on fees. The seed used to
+// draw every mark, attendance status and payment independently, which made
+// the at-risk analytics measure noise — a student's position within the
+// branch said nothing about their next exam (docs/ops/gate-7-evidence.md §3:
+// quantile membership lift 0.91 on independent draws). Each student now
+// carries one latent profile from a three-stratum mixture, and all three
+// signal generators read from it — so the demo tenant exercises the at-risk
+// model the way a real school would.
+interface StudentProfile {
+  /** Latent academic ability — the mean each exam's marks are drawn around. */
+  ability: number;
+  /** Probability of PRESENT on a school day. */
+  attendanceReliability: number;
+  payApril: number;
+  payMay: number;
+  payAnnual: number;
+  /** Share of the annual fee cleared when the family does engage. */
+  annualPct: number;
+}
+
+const STRATA = [
+  // share, ability mean, marks spread, attendance base, payment probabilities
+  // Weak families prioritise monthly tuition over the annual lump sum —
+  // modelled: payMay stays high while payAnnual collapses. Arrears then
+  // cluster on the weak stratum (~40% of the branch owes something) instead
+  // of being universal.
+  { share: 0.12, ability: 45, attendance: 0.88, payApril: 0.92, payMay: 0.75, payAnnual: 0.2, annualPct: 0.5 }, // struggling
+  { share: 0.6, ability: 64, attendance: 0.93, payApril: 0.99, payMay: 0.9, payAnnual: 0.6, annualPct: 1.0 }, // average
+  { share: 0.28, ability: 82, attendance: 0.97, payApril: 1.0, payMay: 0.98, payAnnual: 0.9, annualPct: 1.0 }, // strong
+] as const;
+
+/**
+ * One student's latent profile, from the shared RNG stream.
+ *
+ * `pinAverage` holds the first student of each branch in the middle stratum:
+ * gate2.test asserts plausibility floors (> 40 marks, > 80% attendance) on an
+ * arbitrary student, and with deterministic streams that student is always
+ * the first one seeded — pinning keeps the gate meaningful instead of flaky
+ * by construction.
+ */
+function sampleProfile(rand: () => number, pinAverage: boolean): StudentProfile {
+  const stratum = pinAverage ? STRATA[1] : (() => {
+    const r = rand();
+    let acc = 0;
+    for (const st of STRATA) {
+      acc += st.share;
+      if (r < acc) return st;
+    }
+    return STRATA[STRATA.length - 1];
+  })();
+
+  // Box–Muller: ability is normal around the stratum mean, so a branch gets
+  // a realistic continuum rather than three discrete bands.
+  const u1 = Math.max(rand(), 1e-9);
+  const u2 = rand();
+  const gauss = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  const ability = Math.min(98, Math.max(20, Math.round(stratum.ability + gauss * 8)));
+
+  // Chronic absenteeism (~2%): mostly independent of ability, as in real
+  // schools — illness and distance, not marks, keep these children home.
+  const chronic = !pinAverage && rand() < 0.02;
+  const attendanceReliability = chronic
+    ? 0.68 + rand() * 0.06
+    : Math.min(0.99, Math.max(0.75, stratum.attendance + (rand() - 0.5) * 0.04));
+
+  return {
+    ability,
+    attendanceReliability,
+    payApril: stratum.payApril,
+    payMay: stratum.payMay,
+    payAnnual: stratum.payAnnual,
+    annualPct: stratum.annualPct,
+  };
+}
+
+/** Marks for one student-subject-exam: ability + subject + day noise. */
+function sampleMarks(rand: () => number, profile: StudentProfile): number {
+  const subjectNoise = (rand() - 0.5) * 10; // ±5: stronger/weaker subjects
+  const examNoise = (rand() - 0.5) * 8; // ±4: how the day went
+  return Math.min(100, Math.max(5, Math.round(profile.ability + subjectNoise + examNoise)));
 }
 
 export async function seedDemoTenant(
@@ -361,6 +460,9 @@ export async function seedDemoTenant(
   }
 
   // Student + parent users and rows.
+  // Per-student latent profile — marks, attendance and payments all read
+  // from this (see the correlated-profiles note above prand).
+  const profiles = new Map<string, StudentProfile>();
   const studentRows: Array<{
     id: string; userId: string; admissionNo: string; firstName: string; lastName: string;
     dateOfBirth: Date; gender: 'MALE' | 'FEMALE'; bloodGroup: string; address: string;
@@ -406,6 +508,7 @@ export async function seedDemoTenant(
           const uid = `usr_${sc}_${bcode}_stu${i}`;
           users.push({ id: uid, email: `${first.toLowerCase()}.${last.toLowerCase()}${i}@student.${sc}-${bcode}.demo.edu.in`, passwordHash, isActive: true, defaultBranchId: branch.id });
           userBranches.push({ userId: uid, branchId: branch.id });
+          profiles.set(sId, sampleProfile(rand, i === 0));
 
           studentRows.push({
             id: sId,
@@ -607,8 +710,13 @@ export async function seedDemoTenant(
             const m = date.getUTCMonth() + 1;
             const y = date.getUTCFullYear();
             for (const studentId of students) {
+              // Correlated attendance: the student's own reliability drives
+              // the day's status — chronic absentees and weak-stratum
+              // students now visibly rack up absences.
+              const prof = profiles.get(studentId);
               const r = rand();
-              const status = r < 0.92 ? 'PRESENT' : r < 0.97 ? 'ABSENT' : 'LATE';
+              const presentP = prof ? prof.attendanceReliability : 0.92;
+              const status = r < presentP ? 'PRESENT' : r < Math.min(0.97, presentP + 0.05) ? 'ABSENT' : 'LATE';
               recordRows.push({
                 id: `atr_${sessionId}_${studentId}`,
                 sessionId,
@@ -685,16 +793,47 @@ export async function seedDemoTenant(
     for (const [yearName, yearId] of Object.entries(yearRows[branch.id])) {
       const examName = yearName === pastYear ? 'Annual Examination' : 'Term I Examination';
       const examId = `exm_${branch.id}_${yearName}`;
+      const sy = Number(yearName.split('-')[0]);
+      // Past year keeps its traditional December slot. The LIVE year's exam
+      // must be fully in the past with results published — that is the whole
+      // point of the demo (dashboards read the newest published exam; the
+      // at-risk harness splits on it). Prefer the December slot when it has
+      // already passed this school year; otherwise sit two weeks behind
+      // today, never before mid-April of the school year itself.
+      let examStart: Date;
+      let examEnd: Date;
+      let publishedAt: Date;
+      if (yearName === currentYear) {
+        const december = monthDay(sy, 12, 1);
+        const recent = daysBefore(14, now);
+        const earliest = monthDay(sy, 4, 15);
+        examStart = december.getTime() < recent.getTime()
+          ? december
+          : recent.getTime() > earliest.getTime()
+            ? recent
+            : earliest;
+        if (examStart.getTime() >= now.getTime()) {
+          // Seeded in the first days of the school year — any in-year slot
+          // would be in the future, so put the exam in the just-passed days.
+          examStart = daysBefore(6, now);
+        }
+        examEnd = new Date(examStart.getTime() + 13 * 86400000);
+        publishedAt = new Date(Math.min(examStart.getTime() + 17 * 86400000, daysBefore(1, now).getTime()));
+      } else {
+        examStart = monthDay(sy, 12, 1);
+        examEnd = monthDay(sy, 12, 14);
+        publishedAt = monthDay(sy, 12, 18);
+      }
       examRows.push({
         id: examId,
         name: examName,
         academicYearId: yearId,
         branchId: branch.id,
         assessmentTypeId: null,
-        startDate: monthDay(Number(yearName.split('-')[0]), 12, 1),
-        endDate: monthDay(Number(yearName.split('-')[0]), 12, 14),
+        startDate: examStart,
+        endDate: examEnd,
         status: 'PUBLISHED',
-        publishedAt: monthDay(Number(yearName.split('-')[0]), 12, 18),
+        publishedAt,
         publishedBy: `usr_${sc}_${bcode}_principal`,
       });
 
@@ -719,7 +858,7 @@ export async function seedDemoTenant(
             id: esId,
             examinationId: examId,
             subjectId,
-            examDate: monthDay(Number(yearName.split('-')[0]), 12, 1 + s),
+            examDate: new Date(examStart.getTime() + s * 86400000),
             startTime: '09:00',
             endTime: '12:00',
             maxMarks: 100,
@@ -727,7 +866,11 @@ export async function seedDemoTenant(
           });
 
           for (const e of classEnrollments) {
-            const marks = Math.round(40 + rand() * 59);
+            // Correlated marks: the student's latent ability, plus subject
+            // and day noise (see sampleMarks) — the same student is
+            // recognisably the same across exams, which is what makes the
+            // at-risk model learnable.
+            const marks = sampleMarks(rand, profiles.get(e.studentId) ?? { ability: 70, attendanceReliability: 0.92, payApril: 1, payMay: 0.6, payAnnual: 0.15, annualPct: 0.6 });
             resultRows.push({
               id: `er_${esId}_${e.studentId}`,
               examSubjectId: esId,
@@ -752,7 +895,7 @@ export async function seedDemoTenant(
   const invoiceRows: Array<{
     id: string; invoiceNo: string; studentId: string; branchId: string; academicYearId: string;
     periodStart: Date | null; periodEnd: Date | null; dueDate: Date; totalAmount: number; discountAmount: number;
-    paidAmount: number; status: InvoiceStatus;
+    paidAmount: number; status: InvoiceStatus; createdAt: Date;
   }> = [];
   const lineRows: Array<{ id: string; invoiceId: string; feeHeadId: string; description: string; amount: number; discount: number }> = [];
   const paymentRows: Array<{
@@ -859,16 +1002,19 @@ export async function seedDemoTenant(
         {
           id: inv1Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
           academicYearId: currentYearId, periodStart: monthDay(curStart, 4, 1), periodEnd: monthDay(curStart, 4, 30),
+          createdAt: monthDay(curStart, 4, 8),
           dueDate: monthDay(curStart, 4, 10), totalAmount: tuition - disc1, discountAmount: disc1, paidAmount: 0, status: 'ISSUED',
         },
         {
           id: inv2Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
           academicYearId: currentYearId, periodStart: monthDay(curStart, 5, 1), periodEnd: monthDay(curStart, 5, 31),
+          createdAt: monthDay(curStart, 5, 8),
           dueDate: monthDay(curStart, 5, 10), totalAmount: tuition, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
         },
         {
           id: inv3Id, invoiceNo: `INV-${branchCodes[b]}-${++invNo}`, studentId: s.id, branchId: branch.id,
           academicYearId: currentYearId, periodStart: null as unknown as Date, periodEnd: null as unknown as Date,
+          createdAt: monthDay(curStart, 6, 10),
           dueDate: monthDay(curStart, 6, 15), totalAmount: annual, discountAmount: 0, paidAmount: 0, status: 'ISSUED',
         },
       );
@@ -883,21 +1029,24 @@ export async function seedDemoTenant(
         { id: `lg_${inv3Id}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'DEMAND', amount: annual, feeHeadId: annualHead, invoiceId: inv3Id, paymentId: null, description: 'Annual Fee', reference: `INV-${branchCodes[b]}` },
       );
 
-      // Payments: everyone pays April; 60% pay May; 20% pay part of Annual.
+      // Payments follow the student's latent profile too — arrears cluster
+      // on the struggling stratum instead of being id-hash noise.
+      const prof = profiles.get(s.id);
       const roll = Number(s.id.slice(-2));
-      if (roll % 10 < 7 || roll % 10 === 0) {
+      const payP = (p: number, fallback: boolean) => (prof ? rand() < p : fallback);
+      if (payP(prof?.payApril ?? 0.8, roll % 10 < 7 || roll % 10 === 0)) {
         const pid = `pay_${branch.id}_${s.id}_apr`;
         paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv1Id, amount: tuition - disc1, method: 'UPI', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 4, 11) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -(tuition - disc1), feeHeadId: null, invoiceId: inv1Id, paymentId: pid, description: 'Payment via UPI', reference: `REC-${branchCodes[b]}` });
       }
-      if (roll % 5 < 3) {
+      if (payP(prof?.payMay ?? 0.6, roll % 5 < 3)) {
         const pid = `pay_${branch.id}_${s.id}_may`;
         paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv2Id, amount: tuition, method: 'CASH', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 5, 11) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -tuition, feeHeadId: null, invoiceId: inv2Id, paymentId: pid, description: 'Payment via CASH', reference: `REC-${branchCodes[b]}` });
       }
-      if (roll % 10 < 2) {
+      if (payP(prof?.payAnnual ?? 0.2, roll % 10 < 2)) {
         const pid = `pay_${branch.id}_${s.id}_annual`;
-        const partial = Math.round(annual * 0.6);
+        const partial = Math.round(annual * (prof?.annualPct ?? 0.6));
         paymentRows.push({ id: pid, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, invoiceId: inv3Id, amount: partial, method: 'ONLINE', status: 'SUCCESS', idempotencyKey: `idem_${pid}`, receiptNo: `REC-${branchCodes[b]}-${++recNo}`, paidAt: monthDay(curStart, 6, 16) });
         ledgerRows.push({ id: `lgp_${pid}`, studentId: s.id, branchId: branch.id, academicYearId: currentYearId, type: 'PAYMENT', amount: -partial, feeHeadId: null, invoiceId: inv3Id, paymentId: pid, description: 'Payment via ONLINE', reference: `REC-${branchCodes[b]}` });
       }

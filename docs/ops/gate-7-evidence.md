@@ -121,6 +121,7 @@ this appears on a principal's screen:
    exams, and invoices raised before the split (so the fee signal is in scope).
 
 Both are measured with the same endpoint; no code change is needed to re-run.
+→ **Re-run done on a correlated synthetic tenant. See §4.**
 
 ---
 
@@ -173,6 +174,61 @@ instead of guessable.
   within the branch predicts the next exam and the lens earns its keep. The
   §2 method note stands: re-run this harness on a tenant with a year of real
   history before trusting either lens's numbers.
+
+---
+
+## 4. Re-run on a correlated tenant — the re-test §2 called for
+
+The §2/§3 numbers came from a tenant whose marks were drawn **independently per
+exam** — by construction, nothing about a student could predict their next
+result. The seed (`packages/domain/src/demo-seed.ts`) now models what the
+validation actually needs:
+
+- **Latent ability mixture** — each student is sampled from one of three
+  strata (struggling 12% / average 60% / strong 28%); one persistent `ability`
+  drives marks on every exam (plus subject and day noise), attendance
+  reliability, and payment behaviour.
+- **Invoices dated at raise time** (April / May / June of the academic year,
+  not seed day) with due dates in the past — so pre-split arrears are visible
+  to the feature window (`feeArrearsAtSplit` coverage **0 → 0.432**).
+- **Annual-fee engagement share per stratum** — weak families partial-pay the
+  lump sum, strong families clear it; arrears cluster on the struggling
+  stratum instead of being universal.
+- Exam and session dates placed by wall clock (label exam published 14 days
+  ago), so the temporal split has a live label window.
+
+GATE 2 (6/6) still passes on the reshaped seed.
+
+### Same endpoint, same split rule, live numbers
+
+| Label (`EXAM_BOTTOM_DECILE`, positives 40) | ANY_SIGNAL | TOP_10% | TOP_20% |
+|---|---|---|---|
+| **absolute lens** | P 0.21 · R 0.975 | **P 0.525 · R 0.525 · lift 5.25** | P 0.338 · R 0.675 |
+| **branch-relative lens** | P 0.142 · R 1.0 | **P 0.75 · R 0.75 · lift 7.5** | P 0.438 · R 0.875 |
+
+| Other labels (TOP_10%, absolute) | Positives | Estimable | Precision | Recall | Lift |
+|---|---|---|---|---|---|
+| `EXAM_FAIL` (< 33%) | 3 | **no** (< 10 cases) | — | — | — |
+| `ATTENDANCE_BELOW` (< 75%) | 12 | yes | 0.10 | 0.333 | 3.33 |
+| `COMPOSITE` (any) | 48 | yes | 0.575 | 0.479 | 4.79 |
+
+Branch-relative at TOP_10%: `COMPOSITE` lift **6.46**, `ATTENDANCE_BELOW`
+lift 4.17 — the ranked lens earns its keep exactly as §3 hypothesised, now on
+data where branch position genuinely predicts the label.
+
+**What changed in the conclusion.** §2's weak numbers were a property of the
+seed, not the model. With a persistent weak-student factor present — the thing
+real schools have — the *same* scoring code, *same* thresholds and *same*
+harness produce top-10% lift of 5.25–7.5 and recall 0.53–0.75. The fee signal
+now fires only on genuine debtors (173 of 400 students owe money, all overdue
+since June; the live screen lists 185 = those plus the weak marks/attendance
+stratum) instead of flagging everyone.
+
+**Caveats that remain, stated plainly:** still synthetic (three clean strata,
+not a real ability distribution); `EXAM_FAIL` remains unestimable (3 positives,
+below the harness's 10-case floor — the seed's 12% weak stratum sits mostly
+above the 33% line); one branch measured. §2's standing instruction still
+applies to *production* claims: re-run on real history.
 
 ---
 
