@@ -60,3 +60,9 @@ bin/
 # Logs
 *.log
 logs/
+
+# provision-service logo uploads (local disk storage)
+data/
+
+# local dev stack scratch: boot scripts, probes, runtime logs
+.setuprun/

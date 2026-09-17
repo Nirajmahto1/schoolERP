@@ -22,6 +22,7 @@ import { z } from 'zod';
 import * as XLSX from 'xlsx';
 import type { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
+import { mintStudentEmail } from '../student-email';
 
 const router = Router();
 
@@ -270,11 +271,17 @@ router.post('/students/import', async (req: Request, res: Response) => {
           }
           committed.push({ row: report.row, admissionNo: row.admissionNo, studentId: existingStudent.id, action: 'updated' });
         } else {
+          // Login email from the school's own domain (name-based, -2/-3…
+          // on collision). The portal account is invite-activated: password
+          // stays unusable until the parent sets one.
+          const loginEmail = await mintStudentEmail(prisma, {
+            branchId,
+            firstName: row.firstName,
+            lastName: row.lastName,
+          });
           const user = await prisma.user.create({
             data: {
-              // Branch-scoped placeholder email; the invite flow sets a
-              // real one when the portal account is activated.
-              email: `${branchId}-${row.admissionNo.toLowerCase()}@student.school-erp.local`,
+              email: loginEmail,
               passwordHash: '$2b$12$not-a-real-bcrypt-hash',
               defaultBranchId: branchId,
               roleAssignments: { create: { roleId: 'sys_student', branchId } },

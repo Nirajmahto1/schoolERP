@@ -19,7 +19,7 @@ import type { PrismaClient } from '@school-erp/database';
  * PrismaClient these helpers need. Lets engines already inside a $transaction
  * reuse the sequence logic without nesting a second transaction.
  */
-export type TxClient = Pick<PrismaClient, '$queryRaw' | 'sequence' | 'academicYear'>;
+export type TxClient = Pick<PrismaClient, '$queryRaw' | 'sequence' | 'academicYear' | 'branch'>;
 
 export type SequenceCode =
   | 'ADMISSION'
@@ -39,6 +39,8 @@ export interface NextSequenceInput {
   padding?: number;
   /** Test seam: the instant the value is issued. Defaults to now. */
   at?: Date;
+  /** Pre-resolved school code for the {SCHOOL_CODE} token (skips the tx lookup). */
+  schoolCode?: string | null;
 }
 
 export interface SequenceRow {
@@ -63,6 +65,7 @@ export function formatSequence(
   padding: number,
   now = new Date(),
   ayLabel?: string | null,
+  schoolCode?: string | null,
 ): string {
   const fmt = format ?? `{CODE}-{SEQ}`;
   const year = now.getFullYear();
@@ -70,11 +73,14 @@ export function formatSequence(
   const ayStart = now.getMonth() >= 3 ? year : year - 1;
   const ay = ayLabel ?? `${ayStart}-${String(ayStart + 1).slice(2)}`;
   return fmt
+    // {SEQ:4} — inline padding override; plain {SEQ} uses the row's padding.
+    .replaceAll(/\{SEQ:(\d+)\}/g, (_, p) => String(value).padStart(Number(p), '0'))
     .replaceAll('{SEQ}', String(value).padStart(padding, '0'))
     .replaceAll('{YYYY}', String(year))
     .replaceAll('{YY}', String(year).slice(2))
     .replaceAll('{AY}', ay)
-    .replaceAll('{CODE}', code);
+    .replaceAll('{CODE}', code)
+    .replaceAll('{SCHOOL_CODE}', schoolCode ?? '{SCHOOL_CODE}');
 }
 
 async function currentAcademicYearLabel(tx: TxClient, branchId: string): Promise<string | null> {
@@ -109,6 +115,19 @@ export async function nextSequenceValueIn(
   const { branchId, code } = input;
   const now = input.at ?? new Date();
 
+  // {SCHOOL_CODE} needs the owning school's code — one cheap read inside the
+  // same tx, only when the format actually uses the token.
+  let schoolCode: string | null | undefined;
+  if (input.schoolCode !== undefined) {
+    schoolCode = input.schoolCode;
+  } else if ((input.format ?? '').includes('{SCHOOL_CODE}')) {
+    const sc = await tx.branch.findFirst({
+      where: { id: branchId },
+      select: { school: { select: { code: true } } },
+    });
+    schoolCode = sc?.school.code ?? null;
+  }
+
   const rows = await tx.$queryRaw<SequenceRow[]>`
     SELECT id, format, "currentValue", padding
     FROM "sequences"
@@ -133,7 +152,7 @@ export async function nextSequenceValueIn(
   });
 
   const ayLabel = await currentAcademicYearLabel(tx, branchId);
-  return formatSequence(format, code, next, padding, now, ayLabel);
+  return formatSequence(format, code, next, padding, now, ayLabel, schoolCode);
 }
 
 /**

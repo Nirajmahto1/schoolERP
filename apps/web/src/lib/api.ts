@@ -22,11 +22,50 @@ class ApiError extends Error {
   }
 }
 
+// ── Token auto-refresh ──
+// The access token lives 15 minutes; the refresh token 30 days. When a call
+// comes back 401, try ONE refresh + retry before surfacing the error. The
+// single-flight promise keeps a burst of parallel 401s to a single refresh
+// round-trip (refresh is ROTATING — a second concurrent refresh with the same
+// token would fail as "reused" and log the user out).
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('erp_refresh_token') : null;
+  if (!refreshToken) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        // Raw fetch on purpose — apiRequest would attach the expired access
+        // token and recurse into this handler.
+        const res = await fetch(`${API_BASE}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+        if (!res.ok) return false;
+        const pair = await res.json();
+        localStorage.setItem('erp_token', pair.accessToken);
+        localStorage.setItem('erp_refresh_token', pair.refreshToken);
+        window.dispatchEvent(new CustomEvent('erp:token-refreshed', { detail: { accessToken: pair.accessToken } }));
+        return true;
+      } catch {
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
 async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
   const { token, ...fetchOptions } = options;
 
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    // FormData sets its own multipart boundary header — a JSON content-type
+    // here would corrupt the upload.
+    ...(fetchOptions.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
     ...(fetchOptions.headers as Record<string, string> || {}),
   };
 
@@ -42,12 +81,33 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
 
   const url = endpoint.startsWith('http') ? endpoint : `${API_BASE}${endpoint}`;
 
-  const res = await fetch(url, {
+  let res = await fetch(url, {
     ...fetchOptions,
     headers,
   });
 
+  // Expired access token: refresh once, then retry the original request with
+  // the new token. Never retry non-GETs blindly? No — the gateway rejected
+  // this request before it reached any service logic (401 = auth failure), so
+  // a retry cannot double-apply anything.
+  if (res.status === 401 && !token && typeof window !== 'undefined'
+      && !url.includes('/auth/refresh') && !url.includes('/auth/login')) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      res = await fetch(url, {
+        ...fetchOptions,
+        headers: { ...headers, Authorization: `Bearer ${localStorage.getItem('erp_token')}` },
+      });
+    }
+  }
+
   if (!res.ok) {
+    // Refresh also dead (or retry failed): the session is truly over. Clear
+    // stale credentials so the next navigation lands on the login page.
+    if (res.status === 401 && typeof window !== 'undefined') {
+      localStorage.removeItem('erp_token');
+      localStorage.removeItem('erp_refresh_token');
+    }
     const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, errorBody.detail || errorBody.title || 'Request failed', errorBody.errors);
   }
@@ -204,6 +264,23 @@ export const hrApi = {
     return apiRequest<{ data: any[] }>(`/hr?${qs}`);
   },
 
+  /** Full HR profile: staff row + branch assignments + leave + payroll. */
+  get: (id: string) => apiRequest<{ data: any }>(`/hr/${id}`),
+
+  /** List identity documents (Aadhaar etc.) on file for a staff member. */
+  documents: (id: string) => apiRequest<{ data: any[] }>(`/hr/${id}/documents`),
+
+  /**
+   * Upload an identity document (multipart). `file` is a File from the
+   * staff form's <input type="file">; type is the DocumentType enum value.
+   */
+  uploadDocument: (id: string, file: File, type: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('type', type);
+    return apiRequest<any>(`/hr/${id}/documents`, { method: 'POST', body: form });
+  },
+
   create: (data: {
     employeeId: string;
     firstName: string;
@@ -212,6 +289,7 @@ export const hrApi = {
     gender: string;
     designation: string;
     department: string;
+    password?: string;
     qualification?: string;
     experience?: number;
     joinDate: string;
@@ -463,6 +541,9 @@ export const academicApi = {
   createClass: (data: any) =>
     apiRequest<any>('/academics/classes', { method: 'POST', body: JSON.stringify(data) }),
 
+  updateClass: (id: string, data: { name?: string; numericOrder?: number }) =>
+    apiRequest<any>(`/academics/classes/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
   deleteClass: (id: string) =>
     apiRequest<void>(`/academics/classes/${id}`, { method: 'DELETE' }),
 
@@ -471,6 +552,9 @@ export const academicApi = {
 
   createSection: (data: any) =>
     apiRequest<any>('/academics/sections', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateSection: (id: string, data: { name?: string; capacity?: number }) =>
+    apiRequest<any>(`/academics/sections/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   deleteSection: (id: string) =>
     apiRequest<void>(`/academics/sections/${id}`, { method: 'DELETE' }),
@@ -581,6 +665,53 @@ export const analyticsApi = {
 
 export const adminApi = {
   getDashboard: () => apiRequest<any>('/admin/dashboard'),
+};
+
+// ── First-run setup + branch management (provision-service) ──
+export const setupApi = {
+  /** Has the first-run wizard been completed? Drives the page redirect. */
+  status: () => apiRequest<{ provisioned: boolean }>('/setup/status'),
+  /** School profile for the dashboard chrome (sidebar/topbar branding). */
+  profile: () => apiRequest<{ name: string; code: string; logoUrl: string | null }>('/setup/school'),
+  /**
+   * One-shot bootstrap: school + first branch + owner account. `logo` is a
+   * File from the wizard's <input type="file"> — sent as multipart/form-data
+   * so the binary reaches provision-service untouched (no base64 bloat).
+   */
+  complete: (body: {
+    schoolName: string;
+    schoolCode: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    phone?: string;
+    email?: string;
+    branchName?: string;
+    branchCode?: string;
+    adminEmail: string;
+    adminPassword: string;
+    logo?: File | null;
+  }) => {
+    const { logo, ...fields } = body;
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined && value !== null && value !== '') form.append(key, String(value));
+    }
+    if (logo) form.append('logo', logo);
+    return apiRequest<{ ok: boolean; schoolId: string; branchId: string; adminUserId: string; logoUrl: string | null }>('/setup', {
+      method: 'POST',
+      body: form,
+    });
+  },
+};
+
+export const branchApi = {
+  list: () => apiRequest<any[]>('/branches'),
+  add: (body: { name: string; code: string; address?: string; phone?: string; email?: string }) =>
+    apiRequest<{ ok: boolean; branchId: string }>('/branches', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: { name?: string; address?: string; phone?: string; email?: string; isActive?: boolean }) =>
+    apiRequest<{ ok: boolean }>(`/branches/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 };
 
 // Export the base request function for custom endpoints

@@ -16,6 +16,8 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
+import { nextSequenceValueIn } from '@school-erp/domain';
+import { mintStudentEmail } from '../student-email';
 
 const router = Router();
 
@@ -47,7 +49,11 @@ async function enrollmentFor(
 
 // ── Validation ──
 const createStudentSchema = z.object({
-  admissionNo: z.string().min(1),
+  // Optional: when omitted the server mints one from the school's own code
+  // ({SCHOOL_CODE}/ADM/{AY}/{SEQ:4}) — no more hardcoded "DPS-" prefixes.
+  admissionNo: z.string().min(1).optional(),
+  // Optional: when omitted the server assigns the next roll in class+year.
+  rollNo: z.string().max(10).optional(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   dateOfBirth: z.string().transform(s => new Date(s)),
@@ -103,6 +109,9 @@ router.get('/', async (req: Request, res: Response) => {
       take: take + 1,
       ...(cursor ? { cursor: { id: cursor as string }, skip: 1 } : {}),
       include: {
+        // The REAL login email (minted server-side from the school's domain)
+        // so the directory never fabricates one client-side.
+        user: { select: { email: true } },
         enrollments: {
           where: enrollmentWhere,
           include: {
@@ -751,6 +760,29 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const student = await prisma.$transaction(async (tx) => {
+      // ── Identity minting ──
+      // Admission number: from the school's OWN code via the branch sequence
+      // system — race-safe, gap-tolerant, formatted {SCHOOL_CODE}/ADM/{AY}/{SEQ:4}.
+      // The client no longer invents "DPS-" prefixed numbers.
+      const admissionNo = studentData.admissionNo ?? await nextSequenceValueIn(tx as never, {
+        branchId,
+        code: 'ADMISSION',
+        format: '{SCHOOL_CODE}/ADM/{AY}/{SEQ:4}',
+      });
+
+      // Roll number: max existing roll in this class+year + 1, when not given.
+      // aggr.max returns null on an empty class, so the first student is roll 1.
+      let rollNo: string | undefined;
+      if (studentData.rollNo !== undefined) {
+        rollNo = studentData.rollNo;
+      } else {
+        const maxRoll = await tx.studentEnrollment.aggregate({
+          where: { classId, academicYearId: year.id, rollNo: { not: null } },
+          _max: { rollNo: true },
+        });
+        const next = (parseInt(maxRoll._max.rollNo ?? '0', 10) || 0) + 1;
+        rollNo = String(next);
+      }
       // Link (or create) the guardian. Guardians are people, shared across
       // siblings via StudentGuardian — never embedded per student.
       let finalGuardianId = guardianId;
@@ -787,10 +819,18 @@ router.post('/', async (req: Request, res: Response) => {
       }
 
       // User account for the student (identity: User + role assignment).
+      // Login email = first.last@student.<school's own domain>, minted from
+      // the School row (website → email host → code fallback); duplicates get
+      // -2, -3… suffixes. Never a hardcoded domain.
       const passwordHash = await bcrypt.hash(studentPassword || 'student123', 12);
+      const loginEmail = await mintStudentEmail(tx, {
+        branchId,
+        firstName: studentData.firstName,
+        lastName: studentData.lastName,
+      });
       const user = await tx.user.create({
         data: {
-          email: `${studentData.admissionNo}@student.school-erp.local`,
+          email: loginEmail,
           passwordHash,
           defaultBranchId: branchId,
           roleAssignments: { create: { roleId: 'sys_student', branchId } },
@@ -800,6 +840,7 @@ router.post('/', async (req: Request, res: Response) => {
       const created = await tx.student.create({
         data: {
           ...studentData,
+          admissionNo,
           userId: user.id,
           branchId,
           guardians: {
@@ -811,6 +852,7 @@ router.post('/', async (req: Request, res: Response) => {
               branchId,
               classId,
               sectionId,
+              rollNo,
               status: 'ENROLLED',
               fromDate: studentData.admissionDate,
               createdBy: ctx(req).userId,

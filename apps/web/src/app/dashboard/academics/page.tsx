@@ -20,6 +20,13 @@ export default function AcademicsPage() {
   const [showAddClass, setShowAddClass] = useState(false);
   const [newClass, setNewClass] = useState({ name: '', numericOrder: 1, academicYearId: '', sections: [{ name: 'A', capacity: 40 }] });
 
+  // Edit Class Modal — edits the class name plus its sections (add / rename /
+  // capacity / delete). Sections carry their current enrollment count so the
+  // UI can warn before the server rejects a below-enrollment capacity.
+  const [editingClass, setEditingClass] = useState<any | null>(null);
+  const [editClassForm, setEditClassForm] = useState<{ name: string; numericOrder: number; sections: Array<{ id?: string; name: string; capacity: number; enrolled: number }> }>({ name: '', numericOrder: 1, sections: [] });
+  const [newSections, setNewSections] = useState<Array<{ name: string; capacity: number }>>([]);
+
   // Add Subject Modal
   const [showAddSubject, setShowAddSubject] = useState(false);
   const [newSubject, setNewSubject] = useState({ name: '', code: '', classId: '', type: 'THEORY', hodStaffId: '' });
@@ -89,6 +96,63 @@ export default function AcademicsPage() {
     catch (err: any) { alert(err.detail || 'Failed to delete class'); }
     stopLoading();
   };
+
+  // ── EDIT CLASS ──
+  const openEditClass = (c: any) => {
+    setEditingClass(c);
+    setEditClassForm({
+      name: c.name,
+      numericOrder: c.numericOrder,
+      sections: (c.sections || []).map((s: any) => ({ id: s.id, name: s.name, capacity: s.capacity, enrolled: s._count?.enrollments ?? 0 })),
+    });
+    setNewSections([]);
+  };
+
+  const saveEditClass = async () => {
+    if (!editClassForm.name.trim()) { alert('Class name cannot be empty.'); return; }
+    startLoading('Saving class...');
+    try {
+      // 1. Class fields
+      await academicApi.updateClass(editingClass.id, {
+        name: editClassForm.name.trim(),
+        numericOrder: editClassForm.numericOrder,
+      });
+      // 2. Sections: renames/capacities on existing, create the new ones,
+      //    delete the ones removed from the list.
+      for (const s of editClassForm.sections) {
+        if (!s.id) continue;
+        const orig = (editingClass.sections || []).find((x: any) => x.id === s.id);
+        if (orig && (orig.name !== s.name || orig.capacity !== s.capacity)) {
+          await academicApi.updateSection(s.id, { name: s.name, capacity: s.capacity });
+        }
+      }
+      for (const s of newSections) {
+        if (!s.name.trim()) continue;
+        await academicApi.createSection({ classId: editingClass.id, name: s.name.trim(), capacity: s.capacity || 40 });
+      }
+      const keptIds = new Set(editClassForm.sections.map(s => s.id).filter(Boolean));
+      for (const orig of editingClass.sections || []) {
+        if (!keptIds.has(orig.id)) await academicApi.deleteSection(orig.id);
+      }
+      setEditingClass(null);
+      await fetchAcademics();
+    } catch (err: any) { alert(err.detail || 'Failed to save class changes'); }
+    stopLoading();
+  };
+
+  const updateEditSection = (i: number, field: 'name' | 'capacity', val: string) =>
+    setEditClassForm(prev => ({
+      ...prev,
+      sections: prev.sections.map((s, idx) => idx === i ? { ...s, [field]: field === 'capacity' ? (parseInt(val) || 0) : val } : s),
+    }));
+
+  const removeEditSection = (i: number) =>
+    setEditClassForm(prev => ({ ...prev, sections: prev.sections.filter((_, idx) => idx !== i) }));
+
+  const addNewSectionField = () => setNewSections(prev => [...prev, { name: '', capacity: 40 }]);
+  const updateNewSection = (i: number, field: 'name' | 'capacity', val: string) =>
+    setNewSections(prev => prev.map((s, idx) => idx === i ? { ...s, [field]: field === 'capacity' ? (parseInt(val) || 0) : val } : s));
+  const removeNewSection = (i: number) => setNewSections(prev => prev.filter((_, idx) => idx !== i));
 
   // ── SUBJECT CRUD ──
   const addSubject = async () => {
@@ -396,11 +460,12 @@ export default function AcademicsPage() {
                       <div className="flex items-center justify-between">
                         <h3>{c.name}</h3>
                         <div className="flex items-center gap-2">
-                          <span className="badge badge-primary">{c._count?.students || 0} students</span>
+                          <span className="badge badge-primary">{c._count?.enrollments ?? 0} student{c._count?.enrollments === 1 ? '' : 's'}</span>
+                          <button className="btn btn-sm btn-ghost" title="Edit class & sections" onClick={() => openEditClass(c)}><span className="icon icon-sm text-primary">edit</span></button>
                           <button className="btn btn-sm btn-ghost" title="Delete" onClick={() => deleteClass(c.id)}><span className="icon icon-sm text-danger">delete</span></button>
                         </div>
                       </div>
-                      <div className="flex gap-2 mt-2">{c.sections?.map((s: any) => <span key={s.id} className="badge badge-gray">Sec {s.name}</span>)}</div>
+                      <div className="flex gap-2 mt-2">{c.sections?.map((s: any) => <span key={s.id} className="badge badge-gray" title={`${s._count?.enrollments ?? 0} enrolled / ${s.capacity} capacity`}>Sec {s.name} · {s._count?.enrollments ?? 0}/{s.capacity}</span>)}</div>
                       <div className="mt-4" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                         {c.subjects?.map((sub: any) => <span key={sub.id} style={{ fontSize: '0.75rem', padding: '2px 8px', background: 'var(--gray-50)', borderRadius: 4, color: 'var(--gray-600)' }}>{sub.name}</span>)}
                         {(!c.subjects || c.subjects.length === 0) && <span className="text-xs text-gray">No subjects assigned yet</span>}
@@ -409,6 +474,69 @@ export default function AcademicsPage() {
                   </div>
                 ))}
                 {classes.length === 0 && <div className="card" style={{ gridColumn: 'span 3', padding: 24, textAlign: 'center', color: '#9CA3AF' }}>No classes found. Click "Add Class" to create one.</div>}
+              </div>
+            )}
+
+            {/* ── EDIT CLASS MODAL ── */}
+            {editingClass && activeTab === 'Classes' && (
+              <div
+                style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+                onClick={() => setEditingClass(null)}
+              >
+                <div className="card" style={{ width: '100%', maxWidth: 560, maxHeight: '86vh', overflowY: 'auto', margin: 0 }} onClick={(e) => e.stopPropagation()}>
+                  <div className="card-body">
+                    <h3 className="mb-4 flex items-center gap-2 pb-4 border-b"><span className="icon text-primary">edit</span> Edit Class — {editingClass.name}</h3>
+
+                    <div className="grid grid-2 gap-4 mb-4">
+                      <div className="input-group"><label className="input-label">Class Name</label><input className="input" value={editClassForm.name} onChange={e => setEditClassForm({ ...editClassForm, name: e.target.value })} /></div>
+                      <div className="input-group"><label className="input-label">Numeric Order</label><input type="number" className="input" value={editClassForm.numericOrder} onChange={e => setEditClassForm({ ...editClassForm, numericOrder: parseInt(e.target.value) || 1 })} /></div>
+                    </div>
+
+                    <h4 className="text-sm font-bold text-gray mb-3 uppercase tracking-wide">Sections</h4>
+                    {editClassForm.sections.map((s, i) => (
+                      <div key={s.id} className="flex gap-3 mb-2 items-end">
+                        <div className="input-group" style={{ flex: 1 }}>
+                          <label className="input-label">Section Name</label>
+                          <input className="input" value={s.name} onChange={e => updateEditSection(i, 'name', e.target.value)} />
+                        </div>
+                        <div className="input-group" style={{ flex: 1 }}>
+                          <label className="input-label">Capacity {s.enrolled > 0 && <span className="text-gray" style={{ fontWeight: 400 }}>({s.enrolled} enrolled)</span>}</label>
+                          <input
+                            type="number" className="input" value={s.capacity}
+                            min={s.enrolled || 1}
+                            style={s.capacity < s.enrolled ? { borderColor: '#EF4444' } : undefined}
+                            onChange={e => updateEditSection(i, 'capacity', e.target.value)}
+                          />
+                        </div>
+                        <button className="btn btn-sm btn-ghost" title={s.enrolled > 0 ? `Cannot delete — ${s.enrolled} students enrolled` : 'Delete section'}
+                          onClick={() => s.enrolled > 0 ? alert(`This section has ${s.enrolled} enrolled students. Move them to another section first.`) : removeEditSection(i)}>
+                          <span className="icon icon-sm" style={{ color: s.enrolled > 0 ? '#D1D5DB' : '#EF4444' }}>remove_circle</span>
+                        </button>
+                      </div>
+                    ))}
+
+                    {newSections.map((s, i) => (
+                      <div key={`new-${i}`} className="flex gap-3 mb-2 items-end">
+                        <div className="input-group" style={{ flex: 1 }}>
+                          <label className="input-label">New Section Name</label>
+                          <input className="input" placeholder="B" value={s.name} onChange={e => updateNewSection(i, 'name', e.target.value)} />
+                        </div>
+                        <div className="input-group" style={{ flex: 1 }}>
+                          <label className="input-label">Capacity</label>
+                          <input type="number" className="input" value={s.capacity} onChange={e => updateNewSection(i, 'capacity', e.target.value)} />
+                        </div>
+                        <button className="btn btn-sm btn-ghost" onClick={() => removeNewSection(i)}><span className="icon icon-sm text-danger">remove_circle</span></button>
+                      </div>
+                    ))}
+
+                    <button className="btn btn-sm btn-secondary mb-4" onClick={addNewSectionField}><span className="icon icon-sm">add</span> Add Section</button>
+
+                    <div className="flex justify-end gap-3 pt-4 border-t">
+                      <button className="btn btn-secondary" onClick={() => setEditingClass(null)}>Cancel</button>
+                      <button className="btn btn-primary" onClick={saveEditClass}><span className="icon icon-sm">save</span>Save Changes</button>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 

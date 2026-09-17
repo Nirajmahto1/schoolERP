@@ -12,8 +12,20 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
+import multer from 'multer';
+import {
+  DocumentError,
+  deleteDocumentByUrl,
+  multerLimits,
+  readDocumentByName,
+  saveDocument,
+} from '../documents';
 
 export const hrRoutes = Router();
+
+/** Memory storage: the content sniff decides acceptance, so the buffer must
+ *  be in hand before anything touches disk. */
+const documentUpload = multer({ storage: multer.memoryStorage(), limits: multerLimits });
 
 function prismaOf(req: Request): PrismaClient {
   return req.app.get('prisma') as PrismaClient;
@@ -40,7 +52,25 @@ const staffSchema = z.object({
   address: z.string().max(500),
   phone: z.string().min(5).max(20),
   email: z.string().email().optional().nullable(),
+  // Portal password for the new staff account. Optional (defaults to
+  // 'staff123' to match the UI's promise) but NEVER ignored — the account
+  // must be able to log in the moment it is created.
+  password: z.string().min(8).max(128).optional(),
 });
+
+/** Designation/department → role code. The HR form sends the job title the
+ *  school uses (Teacher, Accountant, Principal, …); the account's platform
+ *  role must match, or a finance officer logs in to a teacher's empty UI. */
+function roleCodeForStaff(designation: string, department: string): string {
+  const key = `${designation} ${department}`.toLowerCase();
+  if (/(principal|head.master|director)/.test(key)) return 'sys_principal';
+  if (/(accountant|accounts)/.test(key)) return 'sys_accountant';
+  if (/(finance|treasurer)/.test(key)) return 'sys_finance';
+  if (/(librarian|library)/.test(key)) return 'sys_librarian';
+  if (/(transport|driver|conductor)/.test(key)) return 'sys_transport_manager';
+  if (/(admin|administrator|office|clerk|reception)/.test(key)) return 'sys_branch_admin';
+  return 'sys_teacher';
+}
 
 hrRoutes.get('/', async (req: Request, res: Response) => {
   try {
@@ -128,12 +158,17 @@ hrRoutes.post('/', async (req: Request, res: Response) => {
     const data = staffSchema.parse(req.body);
 
     const staff = await prismaOf(req).$transaction(async (tx) => {
+      // Hash the actually-provided password — the account must be usable at
+      // once. (This used to write a literal fake bcrypt hash, which is why
+      // newly created staff could never log in.)
+      const bcrypt = await import('bcryptjs');
+      const passwordHash = await bcrypt.hash(data.password || 'staff123', 12);
       const user = await tx.user.create({
         data: {
           email: data.email ?? `${branchId}-${data.employeeId.toLowerCase()}@staff.school-erp.local`,
-          passwordHash: '$2b$12$not-a-real-bcrypt-hash',
+          passwordHash,
           defaultBranchId: branchId,
-          roleAssignments: { create: { roleId: 'sys_teacher', branchId } },
+          roleAssignments: { create: { roleId: roleCodeForStaff(data.designation, data.department), branchId } },
         },
         select: { id: true },
       });
@@ -166,6 +201,59 @@ hrRoutes.post('/', async (req: Request, res: Response) => {
     if (e instanceof z.ZodError) { problem(res, 400, 'validation-error', 'Invalid Input', e.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')); return; }
     problem(res, 500, 'internal-error', 'Server Error', (e as Error).message);
   }
+});
+
+// ── Identity documents (Aadhaar etc.) ──
+// KYC files: upload is multipart, content is sniffed (not trusted), storage is
+// server-named + checksummed, and every download writes an access log.
+
+hrRoutes.post('/:id/documents', documentUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    const { branchId, userId } = ctx(req);
+    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+    const staff = await prismaOf(req).staff.findFirst({ where: { id: req.params.id, branchId, deletedAt: null } });
+    if (!staff) { problem(res, 404, 'not-found', 'Not Found', 'Staff member not found.'); return; }
+    if (!req.file) { problem(res, 400, 'validation-error', 'Invalid Input', 'Attach the document as the "file" form field.'); return; }
+
+    const docType = ['AADHAAR', 'BIRTH_CERTIFICATE', 'TC', 'CASTE_CERTIFICATE'].includes(String(req.body?.type))
+      ? String(req.body.type)
+      : 'AADHAAR';
+    const title = String(req.body?.title ?? `${docType} — ${staff.firstName} ${staff.lastName}`).slice(0, 120);
+
+    const saved = await saveDocument(req.file.buffer);
+    const doc = await prismaOf(req).document.create({
+      data: {
+        staffId: staff.id,
+        type: docType as never,
+        title,
+        s3Key: saved.url,
+        checksum: saved.checksum,
+        mimeType: saved.mimeType,
+        sizeBytes: saved.sizeBytes,
+        uploadedBy: userId,
+      },
+      select: { id: true, type: true, title: true, s3Key: true, mimeType: true, sizeBytes: true, createdAt: true },
+    });
+    res.status(201).json(doc);
+  } catch (e: unknown) {
+    if (e instanceof DocumentError) { problem(res, e.status, e.code, 'Document Rejected', e.message); return; }
+    problem(res, 500, 'internal-error', 'Server Error', (e as Error).message);
+  }
+});
+
+hrRoutes.get('/:id/documents', async (req: Request, res: Response) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+    const staff = await prismaOf(req).staff.findFirst({ where: { id: req.params.id, branchId, deletedAt: null } });
+    if (!staff) { problem(res, 404, 'not-found', 'Not Found', 'Staff member not found.'); return; }
+    const docs = await prismaOf(req).document.findMany({
+      where: { staffId: staff.id, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, type: true, title: true, s3Key: true, mimeType: true, sizeBytes: true, isVerified: true, createdAt: true },
+    });
+    res.json({ data: docs });
+  } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
 });
 
 // ── Leave workflow ──

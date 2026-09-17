@@ -143,6 +143,7 @@ export const gatewayEnvSchema = baseSchema
     CORS_ALLOWED_ORIGINS: csvList,
 
     PORT_IDENTITY_SERVICE: port(4010),
+    PORT_PROVISION_SERVICE: port(4009),
     PORT_STUDENT_SERVICE: port(4001),
     PORT_STAFF_SERVICE: port(4002),
     PORT_ACADEMIC_SERVICE: port(4003),
@@ -208,6 +209,37 @@ export const identityEnvSchema = baseSchema
 
 export type IdentityEnv = z.infer<typeof identityEnvSchema>;
 export const loadIdentityEnv = () => parseEnv(identityEnvSchema, 'identity-service');
+
+// ── provision-service (first-run bootstrap + branch management) ──
+//
+// Self-hosted deployments get a first-run page instead of a CLI: the operator
+// names the school, creates the owner account, and lands in the dashboard.
+// One database per VPS deployment is the supported shape.
+
+export const provisionEnvSchema = baseSchema
+  .merge(databaseSchema)
+  .merge(controlPlaneSchema)
+  .merge(assertionVerifierSchema)
+  .extend({
+    PORT_PROVISION_SERVICE: port(4009),
+
+    /** Single-database deployments run without a control plane. */
+    CONTROL_PLANE_DATABASE_URL: z
+      .union([connectionString(['postgresql', 'postgres']), z.literal('')])
+      .optional()
+      .transform((v) => (v ? v : undefined)),
+
+    /**
+     * Optional shared secret for POST /setup on shared infrastructure: when
+     * set, the wizard page must send it as `x-setup-token`. Unset (the
+     * default) means the empty-database guard is the only gate — correct for
+     * a single-school VPS where the wizard is reachable only until first run.
+     */
+    SETUP_TOKEN: z.string().min(16).optional(),
+  });
+
+export type ProvisionEnv = z.infer<typeof provisionEnvSchema>;
+export const loadProvisionEnv = () => parseEnv(provisionEnvSchema, 'provision-service');
 
 // ── Generic downstream service (staff, academic, fee, attendance, comms) ──
 // Where a service calls a PEER service directly (not through the gateway),

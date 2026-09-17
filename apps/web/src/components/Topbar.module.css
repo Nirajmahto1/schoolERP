@@ -5,6 +5,11 @@
   position: sticky; top: 0; z-index: 40;
 }
 .left { display: flex; align-items: center; gap: 16px; }
+.schoolLogo {
+  width: 36px; height: 36px; border-radius: 8px;
+  object-fit: contain; flex-shrink: 0;
+}
+@media (max-width: 768px) { .schoolLogo { display: none; } }
 .title { font-size: 1.375rem; font-weight: 800; color: var(--gray-900); line-height: 1.2; }
 .subtitle { font-size: 0.8125rem; color: var(--gray-500); margin-top: 2px; }
 .right { display: flex; align-items: center; gap: 8px; }

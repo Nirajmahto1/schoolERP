@@ -16,6 +16,7 @@ interface NavItem {
 const allNavItems: NavItem[] = [
   { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
   { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { label: 'Branches', icon: 'account_tree', href: '/dashboard/branches', permission: 'manage:branches' },
   { label: 'Students', icon: 'group', href: '/dashboard/students', permission: 'view:students' },
   { label: 'Staff & HR', icon: 'badge', href: '/dashboard/staff', permission: 'view:staff' },
   { label: 'Academics', icon: 'menu_book', href: '/dashboard/academics', permission: 'view:academics' },
@@ -110,9 +111,10 @@ const roleLabels: Record<UserRole, string> = {
 };
 
 export default function Sidebar() {
-  const { user, logout } = useAuth();
+  const { user, school, logout } = useAuth();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [logoBroken, setLogoBroken] = useState(false);
 
   if (!user) return null;
 
@@ -130,14 +132,24 @@ export default function Sidebar() {
       {mobileOpen && <div className={styles.overlay} onClick={() => setMobileOpen(false)} />}
 
       <aside className={`${styles.sidebar} ${mobileOpen ? styles.open : ''}`}>
-        {/* Logo */}
+        {/* Logo — the school's own branding, falling back to the generic
+            mark when no logo was uploaded or the file went missing. */}
         <div className={styles.logo}>
-          <div className={styles.logoIcon}>
-            <span className="icon" style={{ color: 'white', fontSize: 22 }}>school</span>
-          </div>
+          {school?.logoUrl && !logoBroken ? (
+            <img
+              src={school.logoUrl}
+              alt={`${school.name} logo`}
+              className={styles.logoImage}
+              onError={() => setLogoBroken(true)}
+            />
+          ) : (
+            <div className={styles.logoIcon}>
+              <span className="icon" style={{ color: 'white', fontSize: 22 }}>school</span>
+            </div>
+          )}
           <div>
-            <div className={styles.logoTitle}>EduCore</div>
-            <div className={styles.logoSub}>ERP System</div>
+            <div className={styles.logoTitle}>{school?.name || 'EduCore'}</div>
+            <div className={styles.logoSub}>{school?.name ? 'ERP Portal' : 'ERP System'}</div>
           </div>
           <button className={styles.closeMobile} onClick={() => setMobileOpen(false)}>
             <span className="icon">close</span>

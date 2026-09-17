@@ -1,0 +1,227 @@
+/* First-run setup wizard */
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  background: linear-gradient(160deg, #eef2ff 0%, #f8fafc 60%);
+  overflow-y: auto;
+}
+
+.card {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.08);
+  padding: 40px;
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card h1 {
+  margin: 0;
+  font-size: 24px;
+  color: #0f172a;
+}
+
+.hint {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+.card fieldset {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  /* UA default is min-content: a fieldset inside a flex column refuses to
+     shrink and overflows the card. Zero-floor it so width comes from the
+     card, never from the inputs' intrinsic size. */
+  min-inline-size: 0;
+}
+
+.card form {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card legend {
+  font-weight: 600;
+  color: #334155;
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+.card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #475569;
+  flex: 1;
+}
+
+.card label em {
+  color: #dc2626;
+  font-style: normal;
+  font-size: 12px;
+}
+
+.card input {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 14px;
+  color: #0f172a;
+  outline: none;
+  width: 100%;
+}
+
+.card input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  /* Rows wrap field-by-field on narrow screens instead of overflowing. */
+  flex-wrap: wrap;
+}
+
+.row label {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.logoRow {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.logoPreviewBox {
+  width: 88px;
+  height: 88px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #f8fafc;
+}
+
+.logoPreviewImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.logoControls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.fileLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.fileInput {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+  color: #475569;
+  background: white;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.fileInput::file-selector-button {
+  border: none;
+  background: #eff6ff;
+  color: #2563eb;
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-right: 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.removeBtn {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.primaryBtn {
+  align-self: flex-start;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .page {
+    padding: 24px 12px;
+  }
+  .card {
+    padding: 20px;
+    border-radius: 12px;
+  }
+  .card fieldset {
+    padding: 12px;
+  }
+  .logoRow {
+    gap: 12px;
+  }
+  .logoPreviewBox {
+    width: 72px;
+    height: 72px;
+  }
+  .primaryBtn {
+    align-self: stretch;
+    width: 100%;
+  }
+}

@@ -126,7 +126,9 @@ export default function StudentsPage() {
     startLoading('Registering new student...');
     try {
       const payload: any = {
-        admissionNo: `DPS-${Date.now()}`,
+        // admissionNo is intentionally omitted — the server mints it from the
+        // school's own code ({SCHOOL_CODE}/ADM/{AY}/{SEQ}), race-safe. The
+        // old client-side `DPS-${Date.now()}` hardcoded every school to DPS.
         firstName: newStudent.firstName,
         lastName: newStudent.lastName,
         dateOfBirth: new Date(newStudent.dateOfBirth).toISOString(),
@@ -135,7 +137,6 @@ export default function StudentsPage() {
         sectionId: newStudent.sectionId,
         address: newStudent.address,
         phone: newStudent.phone,
-        email: newStudent.email || `${newStudent.firstName.toLowerCase()}@student.dps.edu.in`,
         admissionDate: new Date().toISOString(),
       };
 
@@ -350,7 +351,10 @@ export default function StudentsPage() {
                 const cls = s.enrollments?.[0]?.class ? `${s.enrollments[0].class.name.replace('Class ', '')}${s.enrollments[0].section ? `-${s.enrollments[0].section.name}` : ''}` : (s.class ? `${s.class.name.replace('Class ', '')}-${s.section?.name || 'A'}` : 'N/A');
                 // Phase 2.1: guardian directory is a join (StudentGuardian → Guardian).
                 const primaryGuardian = s.guardians?.[0]?.guardian || s.guardians?.[0];
-                const email = `${s.firstName?.toLowerCase()}.${s.lastName?.toLowerCase()}@student.dps.edu.in`;
+                // The REAL login email — minted server-side from the school's
+                // own domain (name-based, -2/-3… on collision). Never fabricated
+                // client-side.
+                const email = s.user?.email ?? '—';
                 return (
                   <tr key={s.id}><td>{i + 1}</td>
                     <td><div className="flex items-center gap-3"><div className="avatar avatar-sm">{s.firstName?.[0]}{s.lastName?.[0]}</div><div><span className="font-semibold">{name}</span><div className="text-xs text-gray">{email}</div></div></div></td>

@@ -1,6 +1,24 @@
 'use client';
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import { authApi } from '@/lib/api';
+import { authApi, setupApi, API_BASE, ApiError } from '@/lib/api';
+
+/** Tenant branding for the dashboard chrome (sidebar/topbar). */
+export interface SchoolProfile {
+  name: string;
+  code: string;
+  logoUrl: string | null;
+}
+
+/**
+ * Logo URLs are gateway-relative (`/setup/logo/…`). Resolve against the API
+ * origin — a root-relative path would hit the Next.js server (port 3000)
+ * and 404, silently degrading every user to the fallback icon.
+ */
+export function resolveLogoUrl(logoUrl: string | null | undefined): string | null {
+  if (!logoUrl) return null;
+  if (/^https?:\/\//.test(logoUrl)) return logoUrl;
+  return `${API_BASE}${logoUrl}`;
+}
 
 export type UserRole = 'SUPER_ADMIN' | 'BRANCH_ADMIN' | 'PRINCIPAL' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'ACCOUNTANT' | 'LIBRARIAN' | 'TRANSPORT_MANAGER' | 'FINANCE';
 
@@ -26,6 +44,8 @@ export interface User {
 
 interface AuthContextType {
   user: User | null;
+  /** Branding for sidebar/topbar — null until fetched (or fetch fails). */
+  school: SchoolProfile | null;
   loading: boolean;
   login: (email: string, password: string, totp?: string) => Promise<{ mfaRequired: boolean; mfaToken?: string } | void>;
   logout: () => void;
@@ -60,8 +80,20 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [school, setSchool] = useState<SchoolProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /** Fetch school branding whenever a token appears — chrome degrades to the
+   *  generic icon if this fails (empty DB, route missing, offline gateway). */
+  const hydrateSchool = useCallback(async () => {
+    try {
+      const profile = await setupApi.profile();
+      setSchool({ name: profile.name, code: profile.code, logoUrl: resolveLogoUrl(profile.logoUrl) });
+    } catch {
+      setSchool(null);
+    }
+  }, []);
 
   /** Hydrate permissions from identity-service `/auth/me` when a token exists. */
   const hydrateMe = useCallback(async () => {
@@ -103,8 +135,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch { /* ignore corrupt data */ }
     }
     void hydrateMe();
+    void hydrateSchool();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the in-memory user across silent token refreshes, and end the
+  // session cleanly when the API layer reports the refresh chain is dead —
+  // previously a dead session left the UI on screen with every action failing.
+  useEffect(() => {
+    const onRefreshed = () => { void hydrateMe(); };
+    const onSessionDead = (e: PromiseRejectionEvent) => {
+      if (e.reason instanceof ApiError && e.reason.status === 401) {
+        localStorage.removeItem('erp_user');
+        setUser(null);
+        window.location.href = '/';
+      }
+    };
+    window.addEventListener('erp:token-refreshed', onRefreshed);
+    window.addEventListener('unhandledrejection', onSessionDead);
+    return () => {
+      window.removeEventListener('erp:token-refreshed', onRefreshed);
+      window.removeEventListener('unhandledrejection', onSessionDead);
+    };
+  }, [hydrateMe]);
 
   const login = async (email: string, password: string, totp?: string): Promise<{ mfaRequired: boolean; mfaToken?: string } | void> => {
     setLoading(true);
@@ -136,6 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setUser(apiUser);
       void hydrateMe();
+      void hydrateSchool();
     } catch (err: any) {
       const message = err?.detail || err?.message || 'Login failed. Please check your credentials and ensure the server is running.';
       setError(message);
@@ -150,6 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('erp_refresh_token');
     localStorage.removeItem('erp_user');
     setUser(null);
+    setSchool(null);
     setError(null);
   };
 
@@ -158,7 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return user?.permissions?.includes(permission) ?? false;
   }, [user]);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout, error, hasPerm }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, school, loading, login, logout, error, hasPerm }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

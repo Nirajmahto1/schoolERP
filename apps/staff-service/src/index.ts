@@ -308,6 +308,34 @@ r.get('/transport/vehicles', async (req, res) => {
 
 mount('/', r);
 mount('/hr', hrRoutes);
+
+// ── Document download ──
+// Authenticated + access-logged: every KYC view writes a DocumentAccessLog
+// row (who, when). The filename is allowlisted inside readDocumentByName.
+r.get('/documents/file/:name', async (req, res) => {
+  try {
+    const { userId } = ctx(req);
+    const { readDocumentByName, DocumentError } = await import('./documents');
+    const buf = await readDocumentByName(req.params.name);
+    const doc = await prisma.document.findFirst({ where: { s3Key: `/documents/file/${req.params.name}`, deletedAt: null } });
+    if (doc) {
+      await prisma.documentAccessLog.create({ data: { documentId: doc.id, accessedBy: userId, purpose: 'download' } });
+      res.setHeader('Content-Type', doc.mimeType);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Disposition', `inline; filename="${req.params.name}"`);
+      res.send(buf);
+      return;
+    }
+    res.status(404).json({ detail: 'No such document.' });
+  } catch (e: unknown) {
+    if (e instanceof (await import('./documents')).DocumentError) {
+      res.status(e.status).json({ detail: e.message });
+      return;
+    }
+    res.status(500).json({ detail: (e as Error).message });
+  }
+});
+
 finalize();
 
 // Only bind a port when run directly. Imported by the e2e suite, the module

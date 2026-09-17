@@ -1,5 +1,5 @@
 {
-  "name": "@school-erp/staff-service",
+  "name": "@school-erp/provision-service",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -11,11 +11,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@school-erp/database": "*",
+    "@school-erp/control-plane": "*",
+    "@school-erp/tenant": "*",
     "@school-erp/auth": "*",
     "@school-erp/config": "*",
-    "@school-erp/database": "*",
-    "@school-erp/http": "*",
-    "@school-erp/shared-types": "*",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.0",
     "multer": "^1.4.5-lts.2",
@@ -23,18 +23,15 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@school-erp/testing": "*",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^4.17.21",
-    "@types/multer": "^1.4.13",
+    "@types/multer": "^1.4.12",
     "@types/supertest": "^6.0.0",
-    "rimraf": "^5.0.0",
     "supertest": "^7.0.0",
+    "vitest": "^2.1.0",
+    "rimraf": "^5.0.0",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^2.1.0"
-  },
-  "main": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
+    "typescript": "^5.4.0"
   }
 }

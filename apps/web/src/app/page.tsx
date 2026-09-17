@@ -138,6 +138,7 @@ export default function LoginPage() {
             </button>
           </form>
           <p className={styles.contactText}>New to the school? <a href="#" className={styles.contactLink}>Contact Admission</a></p>
+          <p className={styles.contactText}>Setting up this server for the first time? <a href="/setup" className={styles.contactLink}>Run first-time setup</a></p>
           </>
           )}
         </div>

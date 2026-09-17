@@ -165,7 +165,7 @@ export default function StudentProfilePage() {
               ) : (
                 <div className="grid grid-2 gap-y-6 pb-8 border-b mb-8">
                   <div><div className="text-xs text-gray uppercase font-semibold mb-1">Admission No</div><div className="font-semibold text-primary">{student.admissionNo}</div></div>
-                  <div><div className="text-xs text-gray uppercase font-semibold mb-1">Roll Number</div><div className="font-semibold">{student.rollNo || '—'}</div></div>
+                  <div><div className="text-xs text-gray uppercase font-semibold mb-1">Roll Number</div><div className="font-semibold">{student.enrollments?.[0]?.rollNo || student.rollNo || '—'}</div></div>
                   <div><div className="text-xs text-gray uppercase font-semibold mb-1">Date of Birth</div><div className="text-sm">{new Date(student.dateOfBirth).toLocaleDateString('en-IN')}</div></div>
                   <div><div className="text-xs text-gray uppercase font-semibold mb-1">Gender</div><div className="text-sm">{student.gender}</div></div>
                   <div><div className="text-xs text-gray uppercase font-semibold mb-1">Blood Group</div><div className="text-sm">{student.bloodGroup || '—'}</div></div>

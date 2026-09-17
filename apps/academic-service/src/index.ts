@@ -136,9 +136,19 @@ r.get('/classes', async (req, res) => {
       res.status(403).json({ detail: 'Account has no branch — cannot list classes.' });
       return;
     }
+    // Occupancy counts must be ACTIVE enrollments only (ENROLLED, no end
+    // date): historical rows (past years, TC-issued students) would inflate
+    // the numbers the capacity guard and the UI badges display. Sections get
+    // their own filtered count — the class badge is the sum of its sections,
+    // never a separate number that can disagree with them.
+    const activeCount = { enrollments: { where: { status: 'ENROLLED' as const, toDate: null } } };
     const classes = await prisma.class.findMany({
       where: { branchId },
-      include: { sections: true, subjects: true, _count: { select: { enrollments: true } } },
+      include: {
+        sections: { include: { _count: { select: activeCount } } },
+        subjects: true,
+        _count: { select: activeCount },
+      },
       orderBy: { numericOrder: 'asc' },
     });
     res.json({ data: classes });
@@ -158,6 +168,24 @@ r.post('/classes', async (req, res) => {
       include: { sections: true },
     });
     res.status(201).json(cls);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// Edit an existing class: rename and/or reorder. Branch-scoped so a forged
+// id from another tenant updates nothing (and reads as 404).
+r.patch('/classes/:id', async (req, res) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const { name, numericOrder } = req.body ?? {};
+    const data: Record<string, unknown> = {};
+    if (typeof name === 'string' && name.trim()) data.name = name.trim();
+    if (typeof numericOrder === 'number') data.numericOrder = numericOrder;
+    if (Object.keys(data).length === 0) { res.status(400).json({ detail: 'Nothing to update.' }); return; }
+    const existing = await prisma.class.findFirst({ where: { id: req.params.id, branchId } });
+    if (!existing) { res.status(404).json({ detail: 'Class not found.' }); return; }
+    const cls = await prisma.class.update({ where: { id: existing.id }, data, include: { sections: true } });
+    res.json(cls);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
@@ -184,6 +212,34 @@ r.post('/sections', async (req, res) => {
   try {
     const section = await prisma.section.create({ data: req.body });
     res.status(201).json(section);
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// Edit a section: rename and/or change capacity. Capacity may not drop
+// below the number of students currently enrolled in it — that would strand
+// over-capacity admissions on a value the UI itself enforces.
+r.patch('/sections/:id', async (req, res) => {
+  try {
+    const { name, capacity } = req.body ?? {};
+    const data: Record<string, unknown> = {};
+    if (typeof name === 'string' && name.trim()) data.name = name.trim();
+    if (capacity !== undefined) {
+      const cap = Number(capacity);
+      if (!Number.isInteger(cap) || cap < 1) { res.status(400).json({ detail: 'Capacity must be a positive integer.' }); return; }
+      data.capacity = cap;
+    }
+    if (Object.keys(data).length === 0) { res.status(400).json({ detail: 'Nothing to update.' }); return; }
+    const existing = await prisma.section.findFirst({
+      where: { id: req.params.id, class: { deletedAt: null } },
+      include: { _count: { select: { enrollments: { where: { status: 'ENROLLED', toDate: null } } } } },
+    });
+    if (!existing) { res.status(404).json({ detail: 'Section not found.' }); return; }
+    if (typeof data.capacity === 'number' && data.capacity < existing._count.enrollments) {
+      res.status(409).json({ detail: `Capacity cannot be below the ${existing._count.enrollments} students currently enrolled.` });
+      return;
+    }
+    const section = await prisma.section.update({ where: { id: existing.id }, data });
+    res.json(section);
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

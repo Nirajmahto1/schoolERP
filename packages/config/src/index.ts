@@ -16,10 +16,12 @@ export {
 export {
   gatewayEnvSchema,
   identityEnvSchema,
+  provisionEnvSchema,
   serviceEnvSchema,
   loadGatewayEnv,
   loadIdentityEnv,
+  loadProvisionEnv,
   loadServiceEnv,
 } from './schemas';
 
-export type { GatewayEnv, IdentityEnv, ServiceEnv } from './schemas';
+export type { GatewayEnv, IdentityEnv, ProvisionEnv, ServiceEnv } from './schemas';

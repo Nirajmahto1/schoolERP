@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
 import { nextSequenceValueIn } from '@school-erp/domain';
+import { mintStudentEmail } from '../student-email';
 
 const router = Router();
 
@@ -253,9 +254,17 @@ router.post('/applications/:id/admit', async (req: Request, res: Response) => {
 
     const admissionDate = new Date();
     const student = await prismaOf(req).$transaction(async (tx) => {
+      // Login email from the school's own domain (name-based, -2/-3… on
+      // collision). The portal account is invite-activated: password stays
+      // unusable until the parent sets one.
+      const loginEmail = await mintStudentEmail(tx, {
+        branchId,
+        firstName: app.firstName,
+        lastName: app.lastName,
+      });
       const user = await tx.user.create({
         data: {
-          email: `${data.admissionNo.toLowerCase()}@student.school-erp.local`,
+          email: loginEmail,
           passwordHash: '$2b$12$not-a-real-bcrypt-hash',
           defaultBranchId: branchId,
           roleAssignments: { create: { roleId: 'sys_student', branchId } },

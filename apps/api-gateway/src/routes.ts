@@ -27,6 +27,26 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     },
 
     // ── Node services ──
+    // First-run setup wizard (guarded public): POST /setup is locked by the
+    // empty-database guard inside provision-service — it answers only until
+    // the first school exists. GET /setup/status powers the page redirect.
+    {
+      path: '/api/v1/setup',
+      service: 'provision-service',
+      host,
+      port: env.PORT_PROVISION_SERVICE,
+      rewriteTo: '/setup',
+      public: true,
+    },
+    // Branch management (gated): add/rename branches after setup, from the
+    // dashboard. The assertion mints with the provision-service audience.
+    {
+      path: '/api/v1/branches',
+      service: 'provision-service',
+      host,
+      port: env.PORT_PROVISION_SERVICE,
+      rewriteTo: '/branches',
+    },
     {
       path: '/api/v1/students',
       service: 'student-service',
