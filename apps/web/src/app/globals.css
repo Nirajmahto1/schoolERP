@@ -162,7 +162,7 @@ h4 { font-size: 0.9375rem; font-weight: 600; color: var(--gray-700); }
 .input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-100); }
 .input::placeholder { color: var(--gray-400); }
 .input-icon-wrapper { position: relative; }
-.input-icon-wrapper .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--gray-400); }
+.input-icon-wrapper .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--gray-500); }
 .input-icon-wrapper .input { padding-left: 40px; }
 
 /* ── Select ── */

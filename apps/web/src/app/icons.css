@@ -1,0 +1,37 @@
+/* ──────────────────────────────────────────────
+// Self-hosted Material Icons Outlined (Lighthouse fix)
+//
+// The Google Fonts stylesheet was the page's only cross-origin render-
+// blocking request (~2.4s of LCP on a cold run: connect + fetch CSS +
+// fetch font, three round-trips before first paint of any icon). Hosting
+// the single woff2 locally collapses it to one same-origin request with
+// font-display: swap — icons render immediately after text, never block
+// first paint, and the app works on schools' networks where
+// fonts.googleapis.com may be slow or blocked.
+// ────────────────────────────────────────────── */
+@font-face {
+  font-family: 'Material Icons Outlined';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  /* Subsetted at build time to the ~119 glyphs the app actually uses —
+     151KB full → 8KB subset, the single largest asset on first load. */
+  src: url('/fonts/material-icons-outlined.subset.woff2') format('woff2');
+}
+
+.material-icons-outlined {
+  font-family: 'Material Icons Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}

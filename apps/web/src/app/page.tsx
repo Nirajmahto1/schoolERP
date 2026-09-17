@@ -53,7 +53,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className={styles.container}>
+    <main className={styles.container}>
       {/* Left Panel */}
       <div className={styles.leftPanel}>
         <div className={styles.brandContent}>
@@ -143,6 +143,6 @@ export default function LoginPage() {
           )}
         </div>
       </div>
-    </div>
+    </main>
   );
 }
