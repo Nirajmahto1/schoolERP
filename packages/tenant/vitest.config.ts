@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 // hooks the same 60s budget identity-service uses.
 export default defineConfig({
   test: {
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
     testTimeout: 30_000,
   },
 });

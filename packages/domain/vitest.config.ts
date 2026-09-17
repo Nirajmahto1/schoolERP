@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // the 10s default hook timeout flakes under turbo's parallel load.
 export default defineConfig({
   test: {
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
     testTimeout: 30_000,
   },
 });

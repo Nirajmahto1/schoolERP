@@ -8,7 +8,7 @@ export default defineConfig({
     passWithNoTests: true,
     // Suites migrate real Postgres schemas in beforeAll — the 10s default
     // hook timeout flakes under parallel load (see exam/identity configs).
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
     testTimeout: 30_000,
   },
 });

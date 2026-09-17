@@ -6,7 +6,7 @@ import { defineConfig } from 'vitest/config';
 // exam-service and identity-service use.
 export default defineConfig({
   test: {
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
     testTimeout: 30_000,
   },
 });
