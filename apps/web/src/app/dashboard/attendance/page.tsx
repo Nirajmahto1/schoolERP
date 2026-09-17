@@ -4,6 +4,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { attendanceApi, academicApi, studentApi, analyticsApi } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useLoading } from '@/context/LoadingContext';
+import {
+  queueAttendance,
+  syncAttendance,
+  pendingAttendance,
+  type QueuedAttendance,
+} from '@/lib/offline-attendance';
 
 type AttStatus = 'PRESENT' | 'ABSENT' | 'LATE' | '';
 
@@ -33,6 +39,52 @@ export default function AttendancePage() {
   const [saved, setSaved] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
   const [trend, setTrend] = useState<any[]>([]);
+  const [online, setOnline] = useState(true);
+  const [pending, setPending] = useState<QueuedAttendance[]>([]);
+  const [syncing, setSyncing] = useState(false);
+
+  // Offline outbox (Gate 8.2): keep the pending badge honest and flush the
+  // queue whenever connectivity or tab visibility returns. The poster goes
+  // through attendanceApi so the API layer's token refresh still applies.
+  const refreshPending = useCallback(() => {
+    pendingAttendance().then(setPending).catch(() => {});
+  }, []);
+  const flushOutbox = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      await syncAttendance((batch) =>
+        attendanceApi.mark({
+          date: batch.date,
+          classId: batch.classId,
+          sectionId: batch.sectionId,
+          records: batch.records,
+          markedBy: batch.markedBy,
+        }),
+      );
+    } catch { /* syncAttendance swallows per-batch; retries remain queued */ }
+    setSyncing(false);
+    refreshPending();
+  }, [syncing, refreshPending]);
+
+  useEffect(() => {
+    refreshPending();
+    setOnline(navigator.onLine);
+    const goOnline = () => { setOnline(true); flushOutbox(); };
+    const goOffline = () => setOnline(false);
+    const onVisible = () => { if (document.visibilityState === 'visible') flushOutbox(); };
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = window.setInterval(flushOutbox, 30000);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Branch-level trend from analytics-service — enrichment for the marking
   // screen; a failed analytics call must never block taking attendance.
@@ -159,9 +211,28 @@ export default function AttendancePage() {
     }
     setProcessing(false);
     stopLoading();
-    if (absentees > 0) {
-      setTimeout(() => setShowNotif(false), 5000);
-    }
+  };
+
+  // Offline path (Gate 8.2): write to IndexedDB first — durable before the
+  // button even resolves — and let the sync loop deliver it. The queued
+  // batch replays the server's own upsert semantics (one session per
+  // date+class+section), so a retry after a dropped response cannot double-
+  // write. The absence alert fires on sync, not on queue.
+  const saveOffline = async () => {
+    const records = Object.entries(attendance)
+      .filter(([, status]) => status !== '')
+      .map(([studentId, status]) => ({ studentId, status }));
+    if (records.length === 0) return;
+    await queueAttendance({
+      date,
+      classId: selectedClassId,
+      sectionId: selectedSectionId,
+      records,
+      markedBy: user?.id,
+    });
+    setSaved(true);
+    refreshPending();
+    if (online) flushOutbox();
   };
 
   const present = Object.values(attendance).filter(v => v === 'PRESENT').length;
@@ -311,6 +382,18 @@ export default function AttendancePage() {
                   <span className="icon icon-sm">{processing ? 'hourglass_empty' : 'save'}</span>
                   {processing ? 'Saving...' : `Save Attendance${unmarked > 0 ? ` (${unmarked} unmarked)` : ''}`}
                 </button>
+                {!online && (
+                  <button className="btn btn-warning" onClick={saveOffline} disabled={studentRows.length === 0 || unmarked > 0}>
+                    <span className="icon icon-sm">cloud_off</span>
+                    Save Offline
+                  </button>
+                )}
+                {online && pending.length > 0 && (
+                  <button className="btn btn-sm btn-secondary" onClick={flushOutbox} disabled={syncing}>
+                    <span className="icon icon-sm">{syncing ? 'progress_activity' : 'cloud_sync'}</span>
+                    {syncing ? 'Syncing…' : `Sync ${pending.length} queued`}
+                  </button>
+                )}
               </div>
             </div>
           </div>

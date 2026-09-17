@@ -100,6 +100,7 @@ h4 { font-size: 0.9375rem; font-weight: 600; color: var(--gray-700); }
 .btn-secondary { background: var(--white); color: var(--gray-700); border: 1px solid var(--gray-200); }
 .btn-secondary:hover { background: var(--gray-50); border-color: var(--gray-300); }
 .btn-success { background: var(--success); color: white; }
+.btn-warning { background: #F59E0B; color: white; }
 .btn-danger { background: var(--danger); color: white; }
 .btn-ghost { background: transparent; color: var(--gray-600); padding: 8px 12px; }
 .btn-ghost:hover { background: var(--gray-100); }

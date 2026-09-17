@@ -1,0 +1,20 @@
+{
+  "name": "School ERP — EduCore",
+  "short_name": "EduCore",
+  "description": "Multi-branch school ERP — attendance, fees, academics, communication",
+  "id": "/dashboard",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0B1120",
+  "theme_color": "#2563EB",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
