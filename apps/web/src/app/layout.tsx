@@ -1,5 +1,6 @@
 import { AuthProvider } from '@/context/AuthContext';
 import { LoadingProvider } from '@/context/LoadingContext';
+import { I18nProvider } from '@/lib/i18n';
 import { Inter } from 'next/font/google';
 import "./globals.css";
 import "./icons.css";
@@ -33,11 +34,13 @@ export default function RootLayout({
         />
       </head>
       <body className={inter.className}>
-        <LoadingProvider>
-          <AuthProvider>
-            {children}
-          </AuthProvider>
-        </LoadingProvider>
+        <I18nProvider>
+          <LoadingProvider>
+            <AuthProvider>
+              {children}
+            </AuthProvider>
+          </LoadingProvider>
+        </I18nProvider>
       </body>
     </html>
   );

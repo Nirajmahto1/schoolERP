@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useSidebarCollapsed } from '@/components/Sidebar';
 import { branchApi, type BranchAdmin } from '@/lib/api';
+import { useI18n, LOCALES } from '@/lib/i18n';
 import styles from './Topbar.module.css';
 
 interface BranchOption {
@@ -90,6 +91,23 @@ function BranchSwitcher() {
   );
 }
 
+/** Language switcher (Phase 8.9): EN ↔ HI, persisted per browser. */
+function LanguageSwitcher() {
+  const { locale, setLocale } = useI18n();
+  return (
+    <select
+      className={styles.branchSwitcher}
+      value={locale}
+      aria-label="Language / भाषा"
+      onChange={(e) => setLocale(e.target.value as 'en' | 'hi')}
+    >
+      {LOCALES.map((l) => (
+        <option key={l.code} value={l.code}>{l.label}</option>
+      ))}
+    </select>
+  );
+}
+
 export default function Topbar({ title, subtitle }: { title: string; subtitle?: string }) {
   const { school } = useAuth();
   const [collapsed, setCollapsed] = useSidebarCollapsed();
@@ -121,6 +139,7 @@ export default function Topbar({ title, subtitle }: { title: string; subtitle?: 
         </div>
       </div>
       <div className={styles.right}>
+        <LanguageSwitcher />
         <BranchSwitcher />
         <div className={styles.searchBar}>
           <span className="icon icon-sm">search</span>

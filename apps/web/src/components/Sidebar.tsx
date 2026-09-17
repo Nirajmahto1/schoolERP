@@ -3,6 +3,7 @@ import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth, UserRole, hasPermission } from '@/context/AuthContext';
+import { useI18n } from '@/lib/i18n';
 import styles from './Sidebar.module.css';
 
 // ── Global collapse store ──
@@ -56,83 +57,85 @@ export function useSidebarCollapsed(): [boolean, (v: boolean) => void] {
 }
 
 interface NavItem {
-  label: string;
+  labelKey: string;
   icon: string;
   href: string;
   permission?: string;
   allowedRoles?: UserRole[];
 }
 
+// Labels are i18n KEYS (Phase 8.9) — resolved through t() at render time so
+// the whole rail switches language with the topbar selector.
 const allNavItems: NavItem[] = [
-  { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
-  { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
-  { label: 'Branches', icon: 'account_tree', href: '/dashboard/branches', permission: 'manage:branches' },
-  { label: 'Students', icon: 'group', href: '/dashboard/students', permission: 'view:students' },
-  { label: 'Staff & HR', icon: 'badge', href: '/dashboard/staff', permission: 'view:staff' },
-  { label: 'Academics', icon: 'menu_book', href: '/dashboard/academics', permission: 'view:academics' },
-  { label: 'Timetable Builder', icon: 'grid_view', href: '/dashboard/timetable-builder', permission: 'manage:academics' },
-  { label: 'Attendance', icon: 'event_available', href: '/dashboard/attendance', permission: 'view:attendance' },
-  { label: 'Fees', icon: 'payments', href: '/dashboard/fees', permission: 'view:fees' },
-  { label: 'Communication', icon: 'campaign', href: '/dashboard/communication', permission: 'view:announcements' },
-  { label: 'Library', icon: 'local_library', href: '/dashboard/library', permission: 'view:library' },
-  { label: 'Transport', icon: 'directions_bus', href: '/dashboard/transport', permission: 'view:transport' },
-  { label: 'Exams', icon: 'analytics', href: '/dashboard/exams', permission: 'view:results' },
-  { label: 'Settings', icon: 'settings', href: '/dashboard/settings', permission: 'manage:settings' },
+  { labelKey: 'nav.dashboard', icon: 'dashboard', href: '/dashboard' },
+  { labelKey: 'nav.profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { labelKey: 'nav.branches', icon: 'account_tree', href: '/dashboard/branches', permission: 'manage:branches' },
+  { labelKey: 'nav.students', icon: 'group', href: '/dashboard/students', permission: 'view:students' },
+  { labelKey: 'nav.staff', icon: 'badge', href: '/dashboard/staff', permission: 'view:staff' },
+  { labelKey: 'nav.academics', icon: 'menu_book', href: '/dashboard/academics', permission: 'view:academics' },
+  { labelKey: 'nav.timetableBuilder', icon: 'grid_view', href: '/dashboard/timetable-builder', permission: 'manage:academics' },
+  { labelKey: 'nav.attendance', icon: 'event_available', href: '/dashboard/attendance', permission: 'view:attendance' },
+  { labelKey: 'nav.fees', icon: 'payments', href: '/dashboard/fees', permission: 'view:fees' },
+  { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication', permission: 'view:announcements' },
+  { labelKey: 'nav.library', icon: 'local_library', href: '/dashboard/library', permission: 'view:library' },
+  { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport', permission: 'view:transport' },
+  { labelKey: 'nav.exams', icon: 'analytics', href: '/dashboard/exams', permission: 'view:results' },
+  { labelKey: 'nav.settings', icon: 'settings', href: '/dashboard/settings', permission: 'manage:settings' },
 ];
 
 // Student-specific nav items
 const studentNavItems: NavItem[] = [
-  { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
-  { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
-  { label: 'My Classes', icon: 'class', href: '/dashboard/my-classes' },
-  { label: 'My Attendance', icon: 'event_available', href: '/dashboard/my-attendance' },
-  { label: 'My Results', icon: 'analytics', href: '/dashboard/my-results' },
-  { label: 'My Fees', icon: 'payments', href: '/dashboard/my-fees' },
-  { label: 'Timetable', icon: 'calendar_month', href: '/dashboard/timetable' },
-  { label: 'Library', icon: 'local_library', href: '/dashboard/library' },
-  { label: 'Announcements', icon: 'campaign', href: '/dashboard/communication' },
-  { label: 'Transport', icon: 'directions_bus', href: '/dashboard/transport' },
+  { labelKey: 'nav.dashboard', icon: 'dashboard', href: '/dashboard' },
+  { labelKey: 'nav.profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { labelKey: 'nav.myClasses', icon: 'class', href: '/dashboard/my-classes' },
+  { labelKey: 'nav.myAttendance', icon: 'event_available', href: '/dashboard/my-attendance' },
+  { labelKey: 'nav.myResults', icon: 'analytics', href: '/dashboard/my-results' },
+  { labelKey: 'nav.myFees', icon: 'payments', href: '/dashboard/my-fees' },
+  { labelKey: 'nav.timetable', icon: 'calendar_month', href: '/dashboard/timetable' },
+  { labelKey: 'nav.library', icon: 'local_library', href: '/dashboard/library' },
+  { labelKey: 'nav.announcements', icon: 'campaign', href: '/dashboard/communication' },
+  { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport' },
 ];
 
 // Parent-specific nav items
 const parentNavItems: NavItem[] = [
-  { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
-  { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
-  { label: 'Child Overview', icon: 'child_care', href: '/dashboard/child-overview' },
-  { label: 'Attendance', icon: 'event_available', href: '/dashboard/child-attendance' },
-  { label: 'Results', icon: 'analytics', href: '/dashboard/child-results' },
-  { label: 'Fee Payments', icon: 'payments', href: '/dashboard/fee-payments' },
-  { label: 'Communication', icon: 'campaign', href: '/dashboard/communication' },
-  { label: 'Transport', icon: 'directions_bus', href: '/dashboard/transport' },
-  { label: 'PTM Schedule', icon: 'event', href: '/dashboard/ptm' },
+  { labelKey: 'nav.dashboard', icon: 'dashboard', href: '/dashboard' },
+  { labelKey: 'nav.profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { labelKey: 'nav.childOverview', icon: 'child_care', href: '/dashboard/child-overview' },
+  { labelKey: 'nav.childAttendance', icon: 'event_available', href: '/dashboard/child-attendance' },
+  { labelKey: 'nav.childResults', icon: 'analytics', href: '/dashboard/child-results' },
+  { labelKey: 'nav.myFees', icon: 'payments', href: '/dashboard/fee-payments' },
+  { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication' },
+  { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport' },
+  { labelKey: 'nav.ptm', icon: 'event', href: '/dashboard/ptm' },
 ];
 
 // Teacher-specific nav items
 const teacherNavItems: NavItem[] = [
-  { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
-  { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
-  { label: 'My Classes', icon: 'class', href: '/dashboard/my-classes' },
-  { label: 'Students', icon: 'group', href: '/dashboard/students' },
-  { label: 'Take Attendance', icon: 'fact_check', href: '/dashboard/attendance' },
-  { label: 'Enter Marks', icon: 'grading', href: '/dashboard/enter-marks' },
-  { label: 'Timetable', icon: 'calendar_month', href: '/dashboard/timetable' },
-  { label: 'Communication', icon: 'campaign', href: '/dashboard/communication' },
-  { label: 'Library', icon: 'local_library', href: '/dashboard/library' },
-  { label: 'Leave Request', icon: 'event_busy', href: '/dashboard/leave-request' },
+  { labelKey: 'nav.dashboard', icon: 'dashboard', href: '/dashboard' },
+  { labelKey: 'nav.profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { labelKey: 'nav.myClasses', icon: 'class', href: '/dashboard/my-classes' },
+  { labelKey: 'nav.students', icon: 'group', href: '/dashboard/students' },
+  { labelKey: 'nav.takeAttendance', icon: 'fact_check', href: '/dashboard/attendance' },
+  { labelKey: 'nav.enterMarks', icon: 'grading', href: '/dashboard/enter-marks' },
+  { labelKey: 'nav.timetable', icon: 'calendar_month', href: '/dashboard/timetable' },
+  { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication' },
+  { labelKey: 'nav.library', icon: 'local_library', href: '/dashboard/library' },
+  { labelKey: 'nav.leaveRequest', icon: 'event_busy', href: '/dashboard/leave-request' },
 ];
 
 // Finance-specific nav items
 const financeNavItems: NavItem[] = [
-  { label: 'Dashboard', icon: 'dashboard', href: '/dashboard' },
-  { label: 'My Profile', icon: 'account_circle', href: '/dashboard/profile' },
-  { label: 'Fee Collection', icon: 'payments', href: '/dashboard/fees' },
-  { label: 'Expense Tracker', icon: 'receipt_long', href: '/dashboard/expenses' },
-  { label: 'Payroll', icon: 'account_balance_wallet', href: '/dashboard/payroll' },
-  { label: 'Financial Reports', icon: 'assessment', href: '/dashboard/financial-reports' },
-  { label: 'Invoicing', icon: 'description', href: '/dashboard/invoicing' },
-  { label: 'Students', icon: 'group', href: '/dashboard/students' },
-  { label: 'Budgets', icon: 'savings', href: '/dashboard/budgets' },
-  { label: 'Communication', icon: 'campaign', href: '/dashboard/communication' },
+  { labelKey: 'nav.dashboard', icon: 'dashboard', href: '/dashboard' },
+  { labelKey: 'nav.profile', icon: 'account_circle', href: '/dashboard/profile' },
+  { labelKey: 'nav.feeCollection', icon: 'payments', href: '/dashboard/fees' },
+  { labelKey: 'nav.expenseTracker', icon: 'receipt_long', href: '/dashboard/expenses' },
+  { labelKey: 'nav.payroll', icon: 'account_balance_wallet', href: '/dashboard/payroll' },
+  { labelKey: 'nav.financialReports', icon: 'assessment', href: '/dashboard/financial-reports' },
+  { labelKey: 'nav.invoicing', icon: 'description', href: '/dashboard/invoicing' },
+  { labelKey: 'nav.students', icon: 'group', href: '/dashboard/students' },
+  { labelKey: 'nav.budgets', icon: 'savings', href: '/dashboard/budgets' },
+  { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication' },
 ];
 
 function getNavItems(role: UserRole, roles: UserRole[] = []): NavItem[] {
@@ -185,6 +188,7 @@ const roleLabels: Record<UserRole, string> = {
 
 export default function Sidebar() {
   const { user, school, logout } = useAuth();
+  const { t } = useI18n();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
@@ -252,10 +256,10 @@ export default function Sidebar() {
             return (
               <Link key={item.href} href={item.href}
                 className={`${styles.navItem} ${isActive ? styles.active : ''}`}
-                title={item.label}
+                title={t(item.labelKey)}
                 onClick={() => setMobileOpen(false)}>
                 <span className="icon">{item.icon}</span>
-                <span className={styles.navLabel}>{item.label}</span>
+                <span className={styles.navLabel}>{t(item.labelKey)}</span>
               </Link>
             );
           })}
@@ -282,7 +286,7 @@ export default function Sidebar() {
           return (
             <Link key={item.href} href={item.href} className={`${styles.bottomItem} ${isActive ? styles.bottomActive : ''}`}>
               <span className="icon">{item.icon}</span>
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </Link>
           );
         })}
