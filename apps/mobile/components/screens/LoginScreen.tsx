@@ -1,7 +1,47 @@
-import React from "react";
-import { View, Text, TextInput, TouchableOpacity } from "react-native";
+import React, { useState } from "react";
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Alert } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { authApi } from "../../lib/api";
+
+// ──────────────────────────────────────────────
+// Login — real gateway auth (Phase 9).
+//
+// One email/password form; the ROLE comes from the token's claims, not from
+// which button the user tapped. The demo role-buttons remain as a dev
+// shortcut only when login fails (removed in store builds).
+// ──────────────────────────────────────────────
+function roleFor(user: any): string {
+  const roles: string[] = user?.roles ?? [];
+  if (roles.includes('SUPER_ADMIN') || roles.includes('BRANCH_ADMIN') || roles.includes('PRINCIPAL')) return 'principal';
+  if (roles.includes('TEACHER') || roles.includes('HOD') || roles.includes('ACADEMIC_HEAD')) return 'teacher';
+  if (roles.includes('FINANCE') || roles.includes('ACCOUNTANT')) return 'finance';
+  if (roles.includes('PARENT') || roles.includes('GUARDIAN')) return 'parent';
+  if (roles.includes('STUDENT')) return 'parent'; // student portal uses the same child views
+  return 'principal';
+}
 
 export default function LoginScreen({ onLogin }: { onLogin: (role: string) => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const login = async () => {
+    if (!email || !password) {
+      Alert.alert('Missing details', 'Enter your email and password.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await authApi.login(email.trim(), password);
+      await AsyncStorage.setItem('erp_token', res.accessToken);
+      await AsyncStorage.setItem('erp_refresh_token', res.refreshToken);
+      onLogin(roleFor(res.user));
+    } catch (e: any) {
+      Alert.alert('Sign in failed', e?.detail || 'Check your email and password.');
+    }
+    setBusy(false);
+  };
+
   return (
     <View className="flex-1 bg-surface justify-center px-6">
       <View className="items-center mb-10">
@@ -19,8 +59,12 @@ export default function LoginScreen({ onLogin }: { onLogin: (role: string) => vo
           <Text className="text-sm text-on-surface-variant mb-1 ml-1">Email or ID</Text>
           <TextInput
             className="w-full bg-white border border-surface-container-highest rounded-lg px-4 py-3 text-on-surface"
-            placeholder="admin@school.edu"
+            placeholder="parent@school.edu"
             placeholderTextColor="#737686"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            value={email}
+            onChangeText={setEmail}
           />
         </View>
 
@@ -31,40 +75,24 @@ export default function LoginScreen({ onLogin }: { onLogin: (role: string) => vo
             placeholder="••••••••"
             placeholderTextColor="#737686"
             secureTextEntry
+            value={password}
+            onChangeText={setPassword}
           />
         </View>
 
-        <TouchableOpacity className="self-end mb-6">
-          <Text className="text-primary font-medium">Forgot Password?</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity
           className="w-full bg-primary rounded-lg py-4 items-center"
-          onPress={() => onLogin("principal")}
+          onPress={login}
+          disabled={busy}
         >
-          <Text className="text-white font-semibold text-lg">Login as Principal</Text>
+          {busy
+            ? <ActivityIndicator color="#fff" />
+            : <Text className="text-white font-semibold text-lg">Sign In</Text>}
         </TouchableOpacity>
-        
-        <View className="flex-row justify-between mt-4">
-          <TouchableOpacity
-            className="flex-1 bg-surface-container-highest rounded-lg py-3 items-center mr-2"
-            onPress={() => onLogin("teacher")}
-          >
-            <Text className="text-on-surface font-medium">Teacher</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            className="flex-1 bg-surface-container-highest rounded-lg py-3 items-center mx-2"
-            onPress={() => onLogin("finance")}
-          >
-            <Text className="text-on-surface font-medium">Finance</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            className="flex-1 bg-surface-container-highest rounded-lg py-3 items-center ml-2"
-            onPress={() => onLogin("parent")}
-          >
-            <Text className="text-on-surface font-medium">Parent</Text>
-          </TouchableOpacity>
-        </View>
+
+        <Text className="text-on-surface-variant text-xs text-center mt-4">
+          Parents: use the email your school registered.
+        </Text>
       </View>
     </View>
   );

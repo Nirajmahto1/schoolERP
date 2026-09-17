@@ -51,6 +51,18 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
   });
 
   if (!res.ok) {
+    // ── 401 → single-flight refresh → retry once (port of the web client) ──
+    // The access token lives 15 minutes; without this every parent session
+    // dies mid-payment. Refresh is ROTATING, so concurrent 401s must share
+    // ONE refresh round-trip — a second concurrent refresh with the same
+    // token fails as "reused" and logs the user out.
+    if (res.status === 401 && !token) {
+      const ok = await tryRefresh();
+      if (ok) {
+        const t = await AsyncStorage.getItem('erp_token');
+        if (t) return apiRequest<T>(endpoint, { ...options, headers: { ...fetchOptions.headers, Authorization: `Bearer ${t}` } });
+      }
+    }
     const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, errorBody.detail || errorBody.title || 'Request failed', errorBody.errors);
   }
@@ -58,6 +70,35 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
   if (res.status === 204) return undefined as T;
 
   return res.json();
+}
+
+// Single-flight refresh — see the 401 handler in apiRequest.
+let refreshInFlight: Promise<boolean> | null = null;
+async function tryRefresh(): Promise<boolean> {
+  const refreshToken = await AsyncStorage.getItem('erp_refresh_token');
+  if (!refreshToken) return false;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        // Raw fetch on purpose — apiRequest would recurse on 401.
+        const res = await fetch(`${API_BASE}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+        if (!res.ok) return false;
+        const body = await res.json();
+        await AsyncStorage.setItem('erp_token', body.accessToken);
+        if (body.refreshToken) await AsyncStorage.setItem('erp_refresh_token', body.refreshToken);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
 }
 
 // ── Auth API ──
@@ -192,6 +233,38 @@ export const studentApi = {
 // ── Parents API ──
 export const parentApi = {
   getMeChildrenSummary: () => apiRequest<any>('/parents/me/children-summary'),
+};
+
+// ── Student self-service (parent app child views reuse these when the
+// logged-in account IS the student) ──
+export const studentSelfApi = {
+  getMyFees: () => apiRequest<any[]>('/students/my-fees'),
+  getMyAttendance: () => apiRequest<any>('/students/my-attendance'),
+};
+
+// ── Razorpay checkout (Phase 9 / BUILD_PLAN 4.1 client half) ──
+// Amounts are computed SERVER-SIDE from open invoices — the client only
+// names the student and (optionally) invoices, and later hands back the
+// checkout signature for verification. No SDK: Razorpay's RN checkout is a
+// WebView around the same order → pay → verify dance this module encodes.
+export interface CheckoutOrder {
+  paymentId: string;
+  orderId: string;
+  amount: number;
+  currency: string;
+  keyId: string | null;
+  invoices: Array<{ id: string; invoiceNo: string; dueDate: string; outstanding: number }>;
+}
+
+export const checkoutApi = {
+  createOrder: (body: { studentId: string; academicYearId: string; invoiceIds?: string[] }) =>
+    apiRequest<CheckoutOrder>('/fees/checkout/orders', { method: 'POST', body: JSON.stringify(body) }),
+
+  verify: (body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) =>
+    apiRequest<{ captured: boolean; reason?: string; paymentId?: string; receiptNo?: string }>('/fees/checkout/verify', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // ── Communication API ──

@@ -117,6 +117,21 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
         className: s.enrollments[0]?.class.name ?? null,
         sectionName: s.enrollments[0]?.section.name ?? null,
         recentResults: s.examResults,
+        // Open dues PER CHILD — the parent app's fees screen renders this
+        // list; the aggregate stats.pendingFees alone cannot (it is summed
+        // across children). Shape matches the checkout client: totalAmount,
+        // paidAmount, outstanding computed client-side for display only —
+        // the ORDER amount is still computed server-side at /checkout/orders.
+        openInvoices: s.invoices.map((inv) => ({
+          id: (inv as any).id,
+          invoiceNo: (inv as any).invoiceNo,
+          type: (inv as any).lines?.[0]?.feeHead?.name ?? 'School Fee',
+          status: (inv as any).status,
+          dueDate: (inv as any).dueDate,
+          totalAmount: Number((inv as any).totalAmount),
+          paidAmount: Number((inv as any).paidAmount),
+          outstanding: Math.max(0, Number((inv as any).totalAmount) - Number((inv as any).paidAmount)),
+        })),
         bookIssues: s.bookIssues,
       })),
       stats: {
