@@ -122,11 +122,19 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
   // ── Everything requires a gateway-signed, audience-bound assertion.
   //    A request arriving directly on the service port without one gets 401.
   //    (Auth/public routes live on identity-service since Phase 3.1.)
+  //
+  //    importRoutes declares its full path (router.post('/students/import')),
+  //    so it must be mounted WITHOUT a path prefix — any prefix would be
+  //    stripped and the route would never match. It was previously mounted at
+  //    /import (and briefly /students/import), which is why the endpoint 404ed
+  //    through the gateway and the Phase-8.5 UI could never reach the
+  //    Phase-3.2 backend. Mounted last: only requests the specific routers
+  //    above did not handle fall through to the assertion + import routes.
   const assertion = requireAssertion(env.INTERNAL_ASSERTION_PUBLIC_KEY, SERVICE_NAME);
   app.use('/students', assertion, studentRoutes);
   app.use('/parents', assertion, parentRoutes);
   app.use('/admissions', assertion, admissionRoutes);
-  app.use('/import', assertion, importRoutes);
+  app.use(assertion, importRoutes);
 
   return app;
 }

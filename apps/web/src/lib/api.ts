@@ -170,6 +170,20 @@ export const authApi = {
 };
 
 // ── Students API ──
+// Per-row report from the bulk import endpoint (student-service 3.2).
+export interface ImportReport {
+  mode: 'dry-run' | 'commit';
+  summary: { total: number; valid: number; invalid: number };
+  rows: Array<{
+    row: number;
+    admissionNo?: string;
+    ok: boolean;
+    errors: Array<{ field?: string; message: string }>;
+  }>;
+  committed?: Array<{ row: number; admissionNo: string; studentId: string; action: 'created' | 'updated' }>;
+  failed?: Array<{ row: number; admissionNo: string; message: string }>;
+}
+
 export const studentApi = {
   list: (params?: { search?: string; classId?: string; sectionId?: string; limit?: number; cursor?: string }) => {
     const qs = new URLSearchParams();
@@ -182,6 +196,23 @@ export const studentApi = {
   },
 
   get: (id: string) => apiRequest<any>(`/students/${id}`),
+
+  // Bulk Excel import (Phase 8.5 flagship). Two modes over ONE endpoint so
+  // the preview error report is byte-identical to what commit would do:
+  //   dry-run → per-row validation report, nothing written
+  //   commit  → writes only rows that passed the same validation
+  importStudents: async (file: File, mode: 'dry-run' | 'commit') => {
+    const b64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    return apiRequest<ImportReport>(`/students/import?mode=${mode}`, {
+      method: 'POST',
+      body: JSON.stringify({ file: b64 }),
+    });
+  },
 
   getDashboard: () => apiRequest<any>('/students/dashboard'),
 

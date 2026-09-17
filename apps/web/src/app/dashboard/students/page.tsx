@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { studentApi, academicApi, parentApi } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
+import ImportStudentsModal from './ImportStudentsModal';
 
 export default function StudentsPage() {
   const router = useRouter();
@@ -17,6 +18,7 @@ export default function StudentsPage() {
   const [search, setSearch] = useState('');
   const [filterClass, setFilterClass] = useState('All');
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
@@ -217,7 +219,10 @@ export default function StudentsPage() {
               {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </div>
-          <button className="btn btn-primary" onClick={() => { setShowAdd(!showAdd); setEditId(null); }}><span className="icon icon-sm">{showAdd ? 'close' : 'person_add'}</span>{showAdd ? 'Cancel' : 'Register Student'}</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" onClick={() => setShowImport(true)}><span className="icon icon-sm">upload_file</span>Import Excel</button>
+            <button className="btn btn-primary" onClick={() => { setShowAdd(!showAdd); setEditId(null); }}><span className="icon icon-sm">{showAdd ? 'close' : 'person_add'}</span>{showAdd ? 'Cancel' : 'Register Student'}</button>
+          </div>
         </div>
 
         {/* Add Form */}
@@ -379,6 +384,12 @@ export default function StudentsPage() {
           </div>
         )}
       </div>
+
+      <ImportStudentsModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onImported={fetchInitialData}
+      />
     </>
   );
 }
