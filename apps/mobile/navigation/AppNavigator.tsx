@@ -3,6 +3,7 @@ import { NavigationContainer, useNavigationContainerRef } from '@react-navigatio
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Text } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { configureForegroundPresentation, registerPushToken, extractDeepLink, routeForDeepLink } from '../lib/push';
 
@@ -365,11 +366,21 @@ export default function AppNavigator() {
 }
 
 function LoginScreenWrapper({ navigation }: any) {
+  // Sign-out must actually clear the session, not just swap screens: tokens
+  // and the academic-year hint live in AsyncStorage (shared-family devices
+  // are the norm for parent apps). The offline attendance outbox is kept —
+  // it holds the school's pending records and is declared in
+  // docs/ops/store-data-safety.md — and syncs under whoever signs in next.
+  const logout = () => {
+    AsyncStorage.multiRemove(['erp_token', 'erp_refresh_token', 'erp_academic_year_id'])
+      .catch(() => {})
+      .finally(() => navigation.replace('Login'));
+  };
   const handleLogin = (role: string) => {
-    if (role === 'principal') navigation.replace('AdminApp', { onLogout: () => navigation.replace('Login') });
-    else if (role === 'teacher') navigation.replace('TeacherApp', { onLogout: () => navigation.replace('Login') });
-    else if (role === 'finance') navigation.replace('FinanceApp', { onLogout: () => navigation.replace('Login') });
-    else if (role === 'parent') navigation.replace('ParentApp', { onLogout: () => navigation.replace('Login') });
+    if (role === 'principal') navigation.replace('AdminApp', { onLogout: logout });
+    else if (role === 'teacher') navigation.replace('TeacherApp', { onLogout: logout });
+    else if (role === 'finance') navigation.replace('FinanceApp', { onLogout: logout });
+    else if (role === 'parent') navigation.replace('ParentApp', { onLogout: logout });
     // Re-register after every login: the FCM token row is upserted against
     // the newest account on the phone (server keys by token).
     registerPushToken().catch(() => {});
