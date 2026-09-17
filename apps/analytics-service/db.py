@@ -39,6 +39,13 @@ async def init_pool() -> None:
             max_size=int(os.getenv("ANALYTICS_POOL_SIZE", "5")),
             command_timeout=15,
         )
+        # A wrong-DB boot is otherwise silent: every query returns honest zeros
+        # for a branch that exists only in another database. Log the connected
+        # database ONCE so the zombie-process class of bug is visible in the
+        # first log line, not after an hour of wondering why counts are 0.
+        async with _pool.acquire() as conn:
+            connected = await conn.fetchval("SELECT current_database()")
+        print(f"[analytics] connected to database: {connected}", flush=True)
 
 
 async def close_pool() -> None:
