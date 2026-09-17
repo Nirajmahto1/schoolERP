@@ -1,10 +1,14 @@
 import React, { useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
 import { authApi } from "../../lib/api";
 
 // ──────────────────────────────────────────────
 // Login — real gateway auth (Phase 9).
+//
+// White-label: the school's name rides in via app.config.ts extra.brand, so
+// each branded build greets its own school with zero runtime config.
 //
 // One email/password form; the ROLE comes from the token's claims, not from
 // which button the user tapped. The demo role-buttons remain as a dev
@@ -19,6 +23,11 @@ function roleFor(user: any): string {
   if (roles.includes('STUDENT')) return 'parent'; // student portal uses the same child views
   return 'principal';
 }
+
+// School name injected at build time by the white-label config
+// (apps/mobile/app.config.ts → extra.brand). Falls back neutrally in dev.
+const BRAND = (Constants.expoConfig?.extra as { brand?: { schoolName?: string } } | undefined)?.brand;
+const SCHOOL_NAME = BRAND?.schoolName ?? 'School ERP';
 
 export default function LoginScreen({ onLogin }: { onLogin: (role: string) => void }) {
   const [email, setEmail] = useState('');
@@ -50,7 +59,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (role: string) => vo
         </View>
         <Text className="text-3xl font-bold text-on-surface">Welcome Back</Text>
         <Text className="text-on-surface-variant mt-2 text-center">
-          Sign in to the School ERP
+          Sign in to {SCHOOL_NAME}
         </Text>
       </View>
 

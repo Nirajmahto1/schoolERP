@@ -77,7 +77,8 @@ export async function registerPushToken(): Promise<string | null> {
 }
 
 /** Hook the tap handler; returns the deepLink string if the notification
- *  carried one. `erp://fees`, `erp://attendance`, `erp://results` … */
+ *  carried one. `<scheme>://fees`, `<scheme>://attendance`, … — the scheme is
+ *  brand-dependent (erp://, dps://), the path vocabulary is shared. */
 export function extractDeepLink(response: Notifications.NotificationResponse): string | null {
   const data = response.notification.request.content.data as { deepLink?: string } | undefined;
   const link = data?.deepLink;
@@ -85,9 +86,13 @@ export function extractDeepLink(response: Notifications.NotificationResponse): s
 }
 
 /** Map a server deepLink to a navigation route + params. One place, so the
- *  server's link vocabulary and the app's routes stay in sync. */
+ *  server's link vocabulary and the app's routes stay in sync.
+ *  Scheme-agnostic on purpose: a branded build registers dps:// while the
+ *  dispatcher's vocabulary stays `fees`, `attendance`, `results` — strip ANY
+ *  `scheme://` prefix (or accept a bare path) so a brand change can never
+ *  break push navigation. */
 export function routeForDeepLink(link: string): { route: string; params?: Record<string, string> } | null {
-  const rest = link.replace(/^erp:\/\//, '');
+  const rest = link.replace(/^\w+:\/\//, '');
   switch (rest) {
     case 'fees':
     case 'fees/due':
