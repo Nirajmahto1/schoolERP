@@ -46,6 +46,10 @@ export default function StaffPage() {
     address: '', password: '',
     qualification: '', experience: '0',
     identityType: 'Aadhar', identityNumber: '',
+    // Academic leadership ticks — in addition to the base role. A HOD is
+    // usually still a teacher; these grant the academics permissions.
+    isHod: false,
+    isAcademicHead: false,
   };
   // Identity-proof file — uploaded to the document store after the staff row
   // exists (the create endpoint is JSON; the upload is its own multipart call).
@@ -148,6 +152,9 @@ export default function StaffPage() {
         // The password the admin chose (or auto-generated) — the account is
         // usable at once. Server defaults to 'staff123' when omitted.
         password: form.password || undefined,
+        // Leadership ticks → extra role assignments on the account.
+        isHod: form.isHod || undefined,
+        isAcademicHead: form.isAcademicHead || undefined,
       });
       // Documents upload after the row exists — a failed upload must not roll
       // back the staff record, but the user hears about it honestly.
@@ -267,6 +274,29 @@ export default function StaffPage() {
                   </select>
                 </div>
                 <div className="input-group"><label className="input-label">Address</label><input className="input" value={form.address} onChange={e => set('address', e.target.value)} placeholder="Residential address" /></div>
+              </div>
+
+              {/* Academic leadership — grants timetable builder, academics
+                  and exam management on top of the base role. */}
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', padding: '12px 16px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10, marginBottom: 24 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#166534' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.isHod}
+                    onChange={e => set('isHod', e.target.checked ? 'true' : '')}
+                    style={{ width: 16, height: 16, accentColor: '#16A34A' }}
+                  />
+                  Head of Department (HOD) — can edit timetable & manage their department's academics
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#166534' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.isAcademicHead}
+                    onChange={e => set('isAcademicHead', e.target.checked ? 'true' : '')}
+                    style={{ width: 16, height: 16, accentColor: '#16A34A' }}
+                  />
+                  Academic Head — oversees the whole academic program
+                </label>
               </div>
 
               {/* 3. Conditional: Teacher Qualifications */}

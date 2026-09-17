@@ -51,3 +51,41 @@ export async function ensureAdminRolePermissions(prisma: PrismaClient, roleCodes
     });
   }
 }
+
+/**
+ * Academic leadership grants (HOD / ACADEMIC_HEAD): a focused subset —
+ * full academics CRUD, exam management + marks entry, read-only students
+ * and staff (a timetable builder must see who teaches and who studies),
+ * attendance update, announcements, reports. No fees, payroll or deletes.
+ *
+ * Migration 0010 seeds this for existing tenants; this mirrors it for fresh
+ * wizard bootstraps so both paths produce working academic leaders.
+ */
+const ACADEMIC_LEADER_GRANTS: Array<Record<string, string[]>> = [
+  { academics: ['create', 'read', 'update', 'delete'] },
+  { exams: ['create', 'read', 'update'] },
+  { students: ['read'] },
+  { staff: ['read'] },
+  { attendance: ['read', 'update'] },
+  { communication: ['read', 'create'] },
+  { reports: ['read'] },
+];
+
+export async function ensureAcademicLeaderPermissions(prisma: PrismaClient): Promise<void> {
+  const permissionIds = await ensurePermissionCatalog(prisma);
+  const roles = await prisma.role.findMany({
+    where: { code: { in: ['HOD', 'ACADEMIC_HEAD'] } },
+    select: { id: true, code: true },
+  });
+  for (const role of roles) {
+    const data = [];
+    for (const grant of ACADEMIC_LEADER_GRANTS) {
+      const [module, actions] = Object.entries(grant)[0];
+      for (const action of actions) {
+        const permissionId = permissionIds.get(`${module}.${action}`);
+        if (permissionId) data.push({ id: `rp_${role.id}_${module}_${action}`, roleId: role.id, permissionId });
+      }
+    }
+    await prisma.rolePermission.createMany({ data, skipDuplicates: true });
+  }
+}

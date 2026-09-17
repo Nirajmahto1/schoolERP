@@ -30,6 +30,7 @@ export async function resolveIdentity(
       email: true,
       isActive: true,
       defaultBranchId: true,
+      activeBranchId: true,
       roleAssignments: {
         where: { isActive: true },
         select: {
@@ -55,8 +56,14 @@ export async function resolveIdentity(
     }
   }
 
+  // Active-branch override first (POST /auth/switch-branch), then the legacy
+  // order. A stale override (assignment removed since) degrades safely.
   const branchId =
-    user.roleAssignments.find((a) => a.branchId)?.branchId ?? user.defaultBranchId;
+    (user.activeBranchId && user.roleAssignments.some((a) => a.branchId === null || a.branchId === user.activeBranchId)
+      ? user.activeBranchId
+      : null) ??
+    user.roleAssignments.find((a) => a.branchId)?.branchId ??
+    user.defaultBranchId;
 
   return {
     userId: user.id,

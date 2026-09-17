@@ -515,7 +515,24 @@ r.post('/timetable/slots', async (req, res) => {
 
 r.get('/timetable', async (req, res) => {
   try {
-    const { sectionId } = req.query;
+    const { sectionId, all } = req.query;
+    // Branch-wide mode: the builder loads every section's slots once so it can
+    // grey out teachers who are already teaching ANY class at that (day,
+    // period) — the one-teacher-one-place rule needs the whole picture.
+    if (!sectionId && all === '1') {
+      const { branchId } = ctx(req);
+      const slots = await prisma.timetableSlot.findMany({
+        where: branchId ? { section: { class: { branchId } } } : {},
+        include: {
+          subject: { select: { name: true, code: true } },
+          staff: { select: { firstName: true, lastName: true, employeeId: true } },
+          section: { select: { name: true, class: { select: { name: true } } } },
+        },
+        orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
+      });
+      res.json({ data: slots });
+      return;
+    }
     if (!sectionId) { res.status(400).json({ detail: 'sectionId is required' }); return; }
     const slots = await prisma.timetableSlot.findMany({
       where: { sectionId: sectionId as string },

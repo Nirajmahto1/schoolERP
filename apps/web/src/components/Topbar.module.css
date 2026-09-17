@@ -36,3 +36,18 @@
   .searchBar { display: none; }
   .title { font-size: 1.125rem; }
 }
+
+/* Branch switcher — only renders for multi-branch users (2+ options). */
+.branchSwitcher {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  color: var(--text, #1e293b);
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 180px;
+  cursor: pointer;
+}
+.branchSwitcher:disabled { opacity: 0.6; cursor: wait; }

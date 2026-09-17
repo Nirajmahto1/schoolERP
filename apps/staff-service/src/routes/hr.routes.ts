@@ -56,6 +56,11 @@ const staffSchema = z.object({
   // 'staff123' to match the UI's promise) but NEVER ignored — the account
   // must be able to log in the moment it is created.
   password: z.string().min(8).max(128).optional(),
+  // Academic leadership ticks (in ADDITION to the base role): a HOD or
+  // Academic Head is usually still a teacher — they hold both roles, and
+  // the academics permissions come from the leadership one.
+  isHod: z.boolean().optional(),
+  isAcademicHead: z.boolean().optional(),
 });
 
 /** Designation/department → role code. The HR form sends the job title the
@@ -168,7 +173,16 @@ hrRoutes.post('/', async (req: Request, res: Response) => {
           email: data.email ?? `${branchId}-${data.employeeId.toLowerCase()}@staff.school-erp.local`,
           passwordHash,
           defaultBranchId: branchId,
-          roleAssignments: { create: { roleId: roleCodeForStaff(data.designation, data.department), branchId } },
+          roleAssignments: {
+            create: [
+              // Base role from the job title…
+              { roleId: roleCodeForStaff(data.designation, data.department), branchId },
+              // …plus any leadership ticks, so a HOD holds TEACHER + HOD and
+              // their /me permission set carries the academics grants.
+              ...(data.isHod ? [{ roleId: 'sys_hod', branchId }] : []),
+              ...(data.isAcademicHead ? [{ roleId: 'sys_academic_head', branchId }] : []),
+            ],
+          },
         },
         select: { id: true },
       });

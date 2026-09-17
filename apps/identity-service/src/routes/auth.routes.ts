@@ -105,6 +105,7 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
       email: true,
       isActive: true,
       defaultBranchId: true,
+      activeBranchId: true,
       roleAssignments: {
         where: { isActive: true },
         select: { branchId: true, role: { select: { code: true } } },
@@ -114,8 +115,17 @@ async function loadUser(prisma: PrismaClient, userId: string): Promise<LiveUser 
   if (!user) return null;
 
   const roles = user.roleAssignments.map((a) => a.role.code);
+  // Active-branch override first (multi-branch owners switching campuses);
+  // falls back through branch-scoped assignments to the UX default. The
+  // override is written only by POST /switch-branch, which verifies the user
+  // actually holds a role for that branch — stale pointers degrade safely to
+  // the old resolution order.
   const branchId =
-    user.roleAssignments.find((a) => a.branchId)?.branchId ?? user.defaultBranchId;
+    (user.activeBranchId && user.roleAssignments.some((a) => a.branchId === null || a.branchId === user.activeBranchId)
+      ? user.activeBranchId
+      : null) ??
+    user.roleAssignments.find((a) => a.branchId)?.branchId ??
+    user.defaultBranchId;
 
   return {
     id: user.id,

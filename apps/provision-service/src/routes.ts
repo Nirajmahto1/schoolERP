@@ -22,6 +22,7 @@ import type { PrismaClient } from '@school-erp/database';
 import type { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import type { ProvisionEnv } from '@school-erp/config';
 import { requireRole } from '@school-erp/auth';
+import bcrypt from 'bcryptjs';
 import {
   bootstrapTenant,
   addBranch,
@@ -295,6 +296,221 @@ branchRouter.post('/', requireRole('SUPER_ADMIN'), async (req: Request, res: Res
     }
     logger.error(`branch create failed: ${(err as Error).message}`);
     problem(res, 500, 'branch-create-failed', 'Branch Not Added', 'Could not create the branch. Check the service logs.');
+  }
+});
+
+// ── Branch admins ──
+// Creating a branch provisioned its year and classes, but nobody could WORK
+// in it: there was no way to attach an account, and the owner's session was
+// pinned to their first branch. These routes make a branch operable:
+//   GET    /branches/:id/admins  → who can manage it
+//   POST   /branches/:id/admins  → attach an EXISTING user, or create a new
+//                                  branch-admin account inline
+//   DELETE /branches/:id/admins/:userId → remove that user's branch role
+// A user attached here can switch into the branch from the topbar switcher
+// (POST /auth/switch-branch honors exactly these assignments).
+
+const branchIdParam = z.string().min(1).max(64);
+
+const addAdminSchema = z.object({
+  // Either attach an existing account…
+  userId: z.string().min(1).max(64).optional(),
+  // …or create a fresh branch-admin with these.
+  email: z.string().email().optional(),
+  password: z.string().min(10).max(128).optional(),
+  firstName: z.string().min(1).max(60).optional(),
+  lastName: z.string().min(1).max(60).optional(),
+  phone: z.string().max(15).optional(),
+  roleCode: z.enum(['BRANCH_ADMIN', 'PRINCIPAL']).optional().default('BRANCH_ADMIN'),
+});
+
+branchRouter.get('/:id/admins', requireRole('SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'), async (req: Request, res: Response) => {
+  if (!branchIdParam.safeParse(req.params.id).success) {
+    problem(res, 400, 'validation-error', 'Invalid Input', 'A branch id is required.');
+    return;
+  }
+  try {
+    const assignments = await prismaOf(req).userRoleAssignment.findMany({
+      where: { branchId: req.params.id, isActive: true, role: { code: { in: ['BRANCH_ADMIN', 'PRINCIPAL', 'SUPER_ADMIN'] } } },
+      select: {
+        id: true,
+        role: { select: { code: true } },
+        user: {
+          select: {
+            id: true,
+            email: true,
+            isActive: true,
+            lastLogin: true,
+            staff: { select: { firstName: true, lastName: true, phone: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json(
+      assignments.map((a) => ({
+        assignmentId: a.id,
+        userId: a.user.id,
+        email: a.user.email,
+        name: a.user.staff ? `${a.user.staff.firstName} ${a.user.staff.lastName}`.trim() : null,
+        phone: a.user.staff?.phone ?? null,
+        roleCode: a.role.code,
+        isActive: a.user.isActive,
+        lastLogin: a.user.lastLogin,
+      })),
+    );
+  } catch (err) {
+    logger.error(`branch admins list failed: ${(err as Error).message}`);
+    problem(res, 500, 'admins-list-failed', 'Lookup Failed', 'Could not list branch admins.');
+  }
+});
+
+branchRouter.post('/:id/admins', requireRole('SUPER_ADMIN'), async (req: Request, res: Response) => {
+  if (!branchIdParam.safeParse(req.params.id).success) {
+    problem(res, 400, 'validation-error', 'Invalid Input', 'A branch id is required.');
+    return;
+  }
+  let body: z.infer<typeof addAdminSchema>;
+  try {
+    body = addAdminSchema.parse(req.body ?? {});
+  } catch (err) {
+    const flat = (err as z.ZodError).flatten();
+    problem(res, 400, 'validation-error', 'Invalid Input', 'Provide a userId to attach, or email + password to create.', flat.fieldErrors);
+    return;
+  }
+  if (!body.userId && !(body.email && body.password)) {
+    problem(res, 400, 'validation-error', 'Invalid Input', 'Provide a userId to attach, or email + password to create.');
+    return;
+  }
+
+  const prisma = prismaOf(req);
+  try {
+    const branch = await prisma.branch.findUnique({ where: { id: req.params.id }, select: { id: true, name: true, code: true, schoolId: true } });
+    if (!branch) {
+      problem(res, 404, 'branch-not-found', 'Not Found', 'No such branch.');
+      return;
+    }
+
+    const role = await prisma.role.findUnique({ where: { code: body.roleCode }, select: { id: true } });
+    if (!role) {
+      problem(res, 400, 'validation-error', 'Invalid Input', `Unknown role ${body.roleCode}.`);
+      return;
+    }
+
+    let userId = body.userId ?? null;
+    let created = false;
+    if (userId) {
+      const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, isActive: true } });
+      if (!user) {
+        problem(res, 404, 'user-not-found', 'Not Found', 'No such user.');
+        return;
+      }
+      if (!user.isActive) {
+        problem(res, 409, 'user-inactive', 'Conflict', 'That account is deactivated.');
+        return;
+      }
+    } else {
+      const email = body.email!.trim().toLowerCase();
+      const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+      if (clash) {
+        problem(res, 409, 'email-taken', 'Already Exists', 'An account with that email already exists — attach it by user id instead.');
+        return;
+      }
+      const passwordHash = await bcrypt.hash(body.password!, 12);
+      const school = await prisma.school.findUnique({ where: { id: branch.schoolId }, select: { code: true } });
+      const localPart = email.split('@')[0] || 'Admin';
+      const [first, ...rest] = localPart.split(/[._-]+/).filter(Boolean);
+      const user = await prisma.user.create({
+        data: {
+          email,
+          passwordHash,
+          defaultBranchId: branch.id,
+          roleAssignments: { create: { roleId: role.id, branchId: branch.id } },
+        },
+      });
+      // Every account needs a Staff row or staff-scoped surfaces 404 on it
+      // (the profile lesson from the setup wizard).
+      const staffCount = await prisma.staff.count({ where: { branchId: branch.id } });
+      await prisma.staff.create({
+        data: {
+          userId: user.id,
+          employeeId: `ADM-${branch.code}-${String(staffCount + 1).padStart(3, '0')}`,
+          firstName: (body.firstName ?? (first ?? 'Branch').charAt(0).toUpperCase() + (first ?? 'Branch').slice(1)).trim(),
+          lastName: body.lastName ?? (rest.join(' ') || 'Admin'),
+          dateOfBirth: new Date('1970-01-01'),
+          gender: 'OTHER',
+          designation: body.roleCode === 'PRINCIPAL' ? 'Principal' : 'Branch Admin',
+          department: 'Administration',
+          qualification: '—',
+          joinDate: new Date(),
+          salary: 0,
+          address: '—',
+          phone: body.phone?.trim() || '0000000000',
+          branchId: branch.id,
+        },
+      });
+      userId = user.id;
+      created = true;
+    }
+
+    // Idempotent attach: re-adding an existing (userId, roleId, branchId)
+    // triple reactivates a previously-removed assignment instead of erroring.
+    const assignment = await prisma.userRoleAssignment.upsert({
+      where: { userId_roleId_branchId: { userId: userId!, roleId: role.id, branchId: branch.id } },
+      create: { userId: userId!, roleId: role.id, branchId: branch.id },
+      update: { isActive: true },
+      select: { id: true },
+    });
+
+    // A newly created admin lands in their branch on first login.
+    if (created) {
+      await prisma.user.update({ where: { id: userId! }, data: { defaultBranchId: branch.id, activeBranchId: branch.id }, select: { id: true } });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId! },
+      select: { id: true, email: true, staff: { select: { firstName: true, lastName: true } } },
+    });
+
+    res.status(201).json({
+      ok: true,
+      assignmentId: assignment.id,
+      userId,
+      email: user?.email,
+      name: user?.staff ? `${user.staff.firstName} ${user.staff.lastName}`.trim() : null,
+      roleCode: body.roleCode,
+      created,
+    });
+  } catch (err) {
+    logger.error(`branch admin assign failed: ${(err as Error).message}`);
+    problem(res, 500, 'admin-assign-failed', 'Not Assigned', 'Could not assign the branch admin. Check the service logs.');
+  }
+});
+
+branchRouter.delete('/:id/admins/:userId', requireRole('SUPER_ADMIN'), async (req: Request, res: Response) => {
+  try {
+    const prisma = prismaOf(req);
+    // Deactivate, never delete: the assignment's audit history stays intact.
+    const result = await prisma.userRoleAssignment.updateMany({
+      where: {
+        userId: req.params.userId,
+        branchId: req.params.id,
+        isActive: true,
+        role: { code: { in: ['BRANCH_ADMIN', 'PRINCIPAL'] } },
+      },
+      data: { isActive: false },
+    });
+    if (result.count === 0) {
+      problem(res, 404, 'assignment-not-found', 'Not Found', 'No active admin assignment for that user in this branch.');
+      return;
+    }
+    // Drop any stale active-branch pointer so their next token resolves to a
+    // branch they still hold.
+    await prisma.user.updateMany({ where: { id: req.params.userId, activeBranchId: req.params.id }, data: { activeBranchId: null } });
+    res.json({ ok: true, removed: result.count });
+  } catch (err) {
+    logger.error(`branch admin remove failed: ${(err as Error).message}`);
+    problem(res, 500, 'admin-remove-failed', 'Not Removed', 'Could not remove the branch admin.');
   }
 });
 

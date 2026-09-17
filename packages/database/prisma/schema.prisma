@@ -58,6 +58,7 @@ model Branch {
 
   userRoleAssignments    UserRoleAssignment[]
   defaultBranchUsers     User[]                     @relation("UserDefaultBranch")
+  activeBranchUsers      User[]                     @relation("UserActiveBranch")
   students               Student[]
   staff                  Staff[]
   staffBranchAssignments StaffBranchAssignment[]
@@ -120,6 +121,12 @@ model User {
   // UX default branch. Authorization comes from role assignments; nothing is
   // derived from this column.
   defaultBranchId String?
+  // Explicit "which branch am I working in" override for multi-branch users
+  // (the owner managing several campuses). NULL = resolve the old way: first
+  // branch-scoped role assignment, then defaultBranchId. Written only through
+  // POST /auth/switch-branch, which verifies the user actually holds a role
+  // for the target branch.
+  activeBranchId  String?
   // TOTP secret for admin/finance roles (BUILD_PLAN 2.1.5). NULL = no MFA.
   mfaSecret       String?
   lastLogin       DateTime?
@@ -127,6 +134,7 @@ model User {
   updatedAt       DateTime  @updatedAt
 
   defaultBranch   Branch?              @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id])
+  activeBranch    Branch?              @relation("UserActiveBranch", fields: [activeBranchId], references: [id])
   roleAssignments UserRoleAssignment[]
   student         Student?
   staff           Staff?

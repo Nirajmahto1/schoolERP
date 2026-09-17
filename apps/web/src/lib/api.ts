@@ -158,6 +158,13 @@ export const authApi = {
       body: JSON.stringify({ refreshToken }),
     }),
 
+  /** Reissue the session scoped to another branch (owner/assigned admins only). */
+  switchBranch: (branchId: string) =>
+    apiRequest<{ accessToken: string; refreshToken: string; branchId: string; user?: any }>('/auth/switch-branch', {
+      method: 'POST',
+      body: JSON.stringify({ branchId }),
+    }),
+
   logout: () =>
     apiRequest<void>('/auth/logout', { method: 'POST' }),
 };
@@ -297,6 +304,9 @@ export const hrApi = {
     address: string;
     phone: string;
     email?: string;
+    /** Academic leadership ticks — extra role assignments on the account. */
+    isHod?: boolean;
+    isAcademicHead?: boolean;
   }) => apiRequest<any>('/hr', { method: 'POST', body: JSON.stringify(data) }),
 
   getLeaves: () => apiRequest<{ data: any[] }>('/hr/leaves'),
@@ -502,11 +512,34 @@ export const timetableApi = {
   get: (sectionId: string) =>
     apiRequest<{ data: any[] }>(`/academics/timetable?sectionId=${encodeURIComponent(sectionId)}`),
 
+  // Every section's slots in the branch — powers the live "teacher is busy
+  // elsewhere" grey-out across the whole school, not just this section.
+  getAll: () =>
+    apiRequest<{ data: any[] }>('/academics/timetable?all=1'),
+
   createSlot: (data: { sectionId: string; subjectId: string; staffId?: string; day: string; startTime: string; endTime: string; room?: string }) =>
     apiRequest<any>('/academics/timetable/slots', { method: 'POST', body: JSON.stringify(data) }),
 
   deleteSlot: (id: string) =>
     apiRequest<void>(`/academics/timetable/slots/${id}`, { method: 'DELETE' }),
+
+  // Full-branch generation via the Go constraint solver. periods ≤ 8; the
+  // default grid already puts lunch after period 4 (45-min periods, 30-min
+  // break). keepSectionIds freezes sections the user locked in the UI.
+  generate: (data: {
+    periods?: number;
+    periodTimes?: Array<{ start: string; end: string }>;
+    subjectPeriods?: Record<string, number>;
+    keepSectionIds?: string[];
+    seed?: number;
+  }) =>
+    apiRequest<{
+      status: 'solved' | 'infeasible';
+      persisted: number;
+      skipped: Array<{ sectionId: string; subjectId: string; reason: string }>;
+      stats: { attempts: number; nodesExplored: number; elapsedMs: number; placements: number };
+      violations: Array<{ rule: string; detail: string }> | null;
+    }>('/academics/timetable/generate', { method: 'POST', body: JSON.stringify(data), timeout: 60_000 } as never),
 };
 
 // ── Communication API ──
@@ -712,7 +745,30 @@ export const branchApi = {
     apiRequest<{ ok: boolean; branchId: string }>('/branches', { method: 'POST', body: JSON.stringify(body) }),
   update: (id: string, body: { name?: string; address?: string; phone?: string; email?: string; isActive?: boolean }) =>
     apiRequest<{ ok: boolean }>(`/branches/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  admins: (id: string) =>
+    apiRequest<BranchAdmin[]>(`/branches/${id}/admins`),
+  assignAdmin: (
+    id: string,
+    body: { userId?: string; email?: string; password?: string; firstName?: string; lastName?: string; phone?: string; roleCode?: 'BRANCH_ADMIN' | 'PRINCIPAL' },
+  ) =>
+    apiRequest<{ ok: boolean; userId: string; email: string; name: string | null; created: boolean }>(
+      `/branches/${id}/admins`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  removeAdmin: (id: string, userId: string) =>
+    apiRequest<{ ok: boolean; removed: number }>(`/branches/${id}/admins/${userId}`, { method: 'DELETE' }),
 };
+
+export interface BranchAdmin {
+  assignmentId: string;
+  userId: string;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  roleCode: string;
+  isActive: boolean;
+  lastLogin: string | null;
+}
 
 // Export the base request function for custom endpoints
 export { apiRequest, ApiError };

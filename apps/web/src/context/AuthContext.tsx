@@ -20,7 +20,7 @@ export function resolveLogoUrl(logoUrl: string | null | undefined): string | nul
   return `${API_BASE}${logoUrl}`;
 }
 
-export type UserRole = 'SUPER_ADMIN' | 'BRANCH_ADMIN' | 'PRINCIPAL' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'ACCOUNTANT' | 'LIBRARIAN' | 'TRANSPORT_MANAGER' | 'FINANCE';
+export type UserRole = 'SUPER_ADMIN' | 'BRANCH_ADMIN' | 'PRINCIPAL' | 'HOD' | 'ACADEMIC_HEAD' | 'TEACHER' | 'STUDENT' | 'PARENT' | 'ACCOUNTANT' | 'LIBRARIAN' | 'TRANSPORT_MANAGER' | 'FINANCE';
 
 export interface User {
   id: string;
@@ -51,6 +51,10 @@ interface AuthContextType {
   logout: () => void;
   error: string | null;
   hasPerm: (permission: string) => boolean;
+  /** Reissue the session scoped to another branch — for owners/admins who
+   *  work across branches. Swaps BOTH tokens + branchId so refresh keeps the
+   *  branch, then re-hydrates permissions for the new scope. */
+  switchBranch: (branchId: string) => Promise<void>;
 }
 
 // Map backend role CODES to frontend role union (used for legacy `role` field
@@ -60,6 +64,8 @@ function mapRole(backendRole: string): UserRole {
     SUPER_ADMIN: 'SUPER_ADMIN',
     BRANCH_ADMIN: 'BRANCH_ADMIN',
     PRINCIPAL: 'PRINCIPAL',
+    HOD: 'HOD',
+    ACADEMIC_HEAD: 'ACADEMIC_HEAD',
     TEACHER: 'TEACHER',
     STUDENT: 'STUDENT',
     PARENT: 'PARENT',
@@ -72,7 +78,7 @@ function mapRole(backendRole: string): UserRole {
 }
 
 export const ROLE_CODES = [
-  'SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'STUDENT',
+  'SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD', 'TEACHER', 'STUDENT',
   'PARENT', 'ACCOUNTANT', 'LIBRARIAN', 'TRANSPORT_MANAGER', 'FINANCE',
 ];
 
@@ -208,12 +214,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
   };
 
+  /** Swap the session to another branch: new token pair (the token's branchId
+   *  claim is what every service trusts, so only a reissue changes scope),
+   *  updated stored user, and a fresh permission hydration. */
+  const switchBranch = useCallback(async (branchId: string) => {
+    if (!user) throw new Error('Not signed in.');
+    const result = await authApi.switchBranch(branchId);
+    localStorage.setItem('erp_token', result.accessToken);
+    localStorage.setItem('erp_refresh_token', result.refreshToken);
+    const newBranch = result.branchId ?? result.user?.branchId ?? branchId;
+    const updated: User = { ...user, branchId: newBranch };
+    localStorage.setItem('erp_user', JSON.stringify(updated));
+    setUser(updated);
+    await hydrateMe();
+  }, [user, hydrateMe]);
+
   /** Permission check against the resolved `module.action` set (identity /me). */
   const hasPerm = useCallback((permission: string) => {
     return user?.permissions?.includes(permission) ?? false;
   }, [user]);
 
-  return <AuthContext.Provider value={{ user, school, loading, login, logout, error, hasPerm }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, school, loading, login, logout, error, hasPerm, switchBranch }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
@@ -232,12 +253,12 @@ export function hasPermission(role: UserRole, permission: string): boolean {
     'manage:students':   ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'],
     'manage:staff':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'],
     'view:students':     ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER'],
-    'view:staff':        ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'],
-    'manage:academics':  ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'],
-    'view:academics':    ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'STUDENT', 'PARENT'],
-    'manage:exams':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL'],
-    'enter:marks':       ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER'],
-    'view:results':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'STUDENT', 'PARENT'],
+    'view:staff':        ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'],
+    'manage:academics':  ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'],
+    'view:academics':    ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD', 'TEACHER', 'STUDENT', 'PARENT'],
+    'manage:exams':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'],
+    'enter:marks':       ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'HOD', 'ACADEMIC_HEAD'],
+    'view:results':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'HOD', 'ACADEMIC_HEAD', 'STUDENT', 'PARENT'],
     'mark:attendance':   ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER'],
     'view:attendance':   ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'STUDENT', 'PARENT'],
     'manage:fees':       ['SUPER_ADMIN', 'BRANCH_ADMIN', 'FINANCE', 'ACCOUNTANT'],
@@ -257,8 +278,8 @@ export function hasPermission(role: UserRole, permission: string): boolean {
     'borrow:books':      ['TEACHER', 'STUDENT'],
     'manage:transport':  ['SUPER_ADMIN', 'BRANCH_ADMIN', 'TRANSPORT_MANAGER'],
     'view:transport':    ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'STUDENT', 'PARENT', 'TRANSPORT_MANAGER'],
-    'view:analytics':    ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'FINANCE'],
-    'view:reports':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'FINANCE'],
+    'view:analytics':    ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'FINANCE', 'HOD', 'ACADEMIC_HEAD'],
+    'view:reports':      ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'FINANCE', 'HOD', 'ACADEMIC_HEAD'],
   };
   return (permissions[permission] || []).includes(role);
 }

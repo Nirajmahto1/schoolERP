@@ -15,7 +15,7 @@ import bcrypt from 'bcryptjs';
 import type { PrismaClient } from '@school-erp/database';
 import type { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { emailHash } from '@school-erp/tenant';
-import { ensureAdminRolePermissions } from './permissions-catalog';
+import { ensureAdminRolePermissions, ensureAcademicLeaderPermissions } from './permissions-catalog';
 
 export interface BootstrapInput {
   schoolName: string;
@@ -84,6 +84,9 @@ export async function bootstrapTenant(
   // Permission catalog + admin grants first: the owner's first /me must
   // resolve a full permission set or the dashboard renders empty.
   await ensureAdminRolePermissions(prisma, ['SUPER_ADMIN', 'BRANCH_ADMIN']);
+  // HOD / ACADEMIC_HEAD exist as grantable roles from day one (migration 0010
+  // does the same for tenants created before this existed).
+  await ensureAcademicLeaderPermissions(prisma);
 
   const passwordHash = await bcrypt.hash(input.adminPassword, 12);
   const adminEmail = input.adminEmail.trim().toLowerCase();
@@ -128,10 +131,21 @@ export async function bootstrapTenant(
   });
 
   // Class ladder + one section each — a new school starts with structure.
+  // Every class also gets the standard elementary subject set so the
+  // timetable solver has demands to schedule on day one (subjects without
+  // teachers are skipped by the solver; the owner assigns teachers from the
+  // Timetable Builder).
   const LADDER: Array<[string, number]> = [
     ['NURSERY', 0], ['LKG', 1], ['UKG', 2], ['ONE', 3], ['TWO', 4], ['THREE', 5],
     ['FOUR', 6], ['FIVE', 7], ['SIX', 8], ['SEVEN', 9], ['EIGHT', 10], ['NINE', 11],
     ['TEN', 12], ['ELEVEN', 13], ['TWELVE', 14],
+  ];
+  const CORE_SUBJECTS = [
+    { name: 'Mathematics', code: 'MATH' },
+    { name: 'Science', code: 'SCI' },
+    { name: 'English', code: 'ENG' },
+    { name: 'Hindi', code: 'HIN' },
+    { name: 'Social Science', code: 'SST' },
   ];
   for (const [name, order] of LADDER) {
     await prisma.class.create({
@@ -141,6 +155,7 @@ export async function bootstrapTenant(
         branchId: branch.id,
         academicYearId: academicYear.id,
         sections: { create: [{ name: 'A', capacity: 40 }] },
+        subjects: { create: CORE_SUBJECTS.map((s) => ({ ...s })) },
       },
     });
   }
@@ -165,6 +180,31 @@ export async function bootstrapTenant(
           { roleId: roleId('PRINCIPAL')!, branchId: branch.id },
         ],
       },
+    },
+  });
+
+  // The owner IS staff (the principal) — without a Staff row every
+  // staff-scoped surface (profile, HR detail, payroll) 404s on the very
+  // account that runs the school. Profile-derived name falls back to the
+  // email local-part when the wizard doesn't collect one.
+  const localPart = adminEmail.split('@')[0] || 'Principal';
+  const [firstName, ...rest] = localPart.split(/[._-]+/).filter(Boolean);
+  await prisma.staff.create({
+    data: {
+      userId: admin.id,
+      employeeId: `OWN-${schoolCode}-001`,
+      firstName: (firstName ?? 'Principal').charAt(0).toUpperCase() + (firstName ?? 'Principal').slice(1),
+      lastName: rest.join(' ') || '—',
+      dateOfBirth: new Date('1970-01-01'),
+      gender: 'OTHER',
+      designation: 'Principal',
+      department: 'Administration',
+      qualification: '—',
+      joinDate: now,
+      salary: 0,
+      address: input.address.trim() || '—',
+      phone: input.phone.trim() || '0000000000',
+      branchId: branch.id,
     },
   });
 

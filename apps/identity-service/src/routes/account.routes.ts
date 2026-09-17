@@ -460,4 +460,93 @@ accountRouter.post('/impersonate', requireRole('SUPER_ADMIN'), async (req: Reque
   }
 });
 
+// ── POST /auth/switch-branch ── move the session to another branch.
+//
+// Multi-branch users (the owner managing several campuses) were pinned to the
+// branch their first branch-scoped role assignment pointed at — a second
+// campus was unreachable without DB surgery. This persists the choice on the
+// user (users.activeBranchId, migration 0011) so it survives token refresh
+// (refresh re-reads loadUser), and immediately reissues the token pair so no
+// re-login is needed.
+//
+// Authorization: the caller must hold a role FOR the target branch (branch-
+// scoped assignment) or a school-wide role (branchId NULL covers every
+// branch). SUPER_ADMIN is not special-cased — an owner without any assignment
+// in a branch still cannot switch into it; assign one (Branches → Admins).
+const switchBranchSchema = z.object({ branchId: z.string().min(1).max(64) });
+
+accountRouter.post('/switch-branch', async (req: Request, res: Response) => {
+  try {
+    const context = ctx(req);
+    let body: z.infer<typeof switchBranchSchema>;
+    try {
+      body = switchBranchSchema.parse(req.body);
+    } catch {
+      problem(res, 400, 'validation-error', 'Invalid Input', 'branchId is required.');
+      return;
+    }
+    const prisma = prismaOf(req);
+    const env = envOf(req);
+
+    const branch = await prisma.branch.findUnique({
+      where: { id: body.branchId },
+      select: { id: true, isActive: true },
+    });
+    if (!branch || !branch.isActive) {
+      problem(res, 404, 'branch-not-found', 'Not Found', 'No such active branch.');
+      return;
+    }
+
+    const identity = await resolveIdentity(prisma, context.userId);
+    if (!identity || !identity.isActive) {
+      problem(res, 401, 'authentication-error', 'Unauthorized', 'Account is not active.');
+      return;
+    }
+
+    const entitled = await prisma.userRoleAssignment.findFirst({
+      where: { userId: context.userId, isActive: true, OR: [{ branchId: body.branchId }, { branchId: null }] },
+      select: { id: true },
+    });
+    if (!entitled) {
+      problem(res, 403, 'not-assigned', 'Forbidden', 'You do not hold a role in that branch. Ask the owner to assign you (Branches → Admins).');
+      return;
+    }
+
+    await prisma.user.update({
+      where: { id: context.userId },
+      data: { activeBranchId: branch.id },
+      select: { id: true },
+    });
+
+    const liveUser: LiveUser = {
+      id: identity.userId,
+      email: identity.email,
+      isActive: identity.isActive,
+      tenantId: context.tenantId,
+      schoolId: context.schoolId,
+      branchId: branch.id,
+      roles: identity.roles,
+    };
+    const pair = await issueTokenPair(liveUser, tokenConfig(env), tokenStore);
+
+    await audit(prisma, req, {
+      entity: 'User',
+      entityId: context.userId,
+      action: 'branch.switch',
+      after: { branchId: branch.id },
+    });
+
+    logger.info(`Branch switch: ${identity.email} → ${branch.id}`);
+    res.json({
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+      expiresIn: pair.expiresIn,
+      branchId: branch.id,
+    });
+  } catch (error) {
+    logger.error(`switch-branch error: ${(error as Error).message}`);
+    problem(res, 500, 'internal-error', 'Server Error', 'An unexpected error occurred.');
+  }
+});
+
 export { router as publicAccountRoutes, accountRouter as accountRoutes };

@@ -1,9 +1,59 @@
 'use client';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth, UserRole, hasPermission } from '@/context/AuthContext';
 import styles from './Sidebar.module.css';
+
+// ── Global collapse store ──
+// One module-level value + useSyncExternalStore: every consumer (Sidebar,
+// Topbar, pages) sees the SAME state and re-renders together. The previous
+// hook handed each caller an independent useState copy — the Builder page
+// collapsed the CSS width while the Sidebar component never heard about it,
+// so the rail kept its full-width labels and overflowed the shrunken layout.
+let collapsedState = false;
+let storeReady = false;
+const listeners = new Set<() => void>();
+
+function applyWidth(): void {
+  document.documentElement.style.setProperty('--sidebar-width', collapsedState ? '68px' : '260px');
+}
+
+function initStore(): void {
+  if (storeReady || typeof window === 'undefined') return;
+  storeReady = true;
+  collapsedState = window.localStorage.getItem('sidebar-collapsed') === '1';
+  applyWidth();
+}
+
+function setCollapsedGlobal(v: boolean): void {
+  collapsedState = v;
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem('sidebar-collapsed', v ? '1' : '0');
+    applyWidth();
+  }
+  listeners.forEach((l) => l());
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Shared collapse state — same value in every component, persisted per browser. */
+export function useSidebarCollapsed(): [boolean, (v: boolean) => void] {
+  const collapsed = useSyncExternalStore(
+    subscribe,
+    () => {
+      initStore();
+      return collapsedState;
+    },
+    () => false,
+  );
+  return [collapsed, setCollapsedGlobal];
+}
 
 interface NavItem {
   label: string;
@@ -20,6 +70,7 @@ const allNavItems: NavItem[] = [
   { label: 'Students', icon: 'group', href: '/dashboard/students', permission: 'view:students' },
   { label: 'Staff & HR', icon: 'badge', href: '/dashboard/staff', permission: 'view:staff' },
   { label: 'Academics', icon: 'menu_book', href: '/dashboard/academics', permission: 'view:academics' },
+  { label: 'Timetable Builder', icon: 'grid_view', href: '/dashboard/timetable-builder', permission: 'manage:academics' },
   { label: 'Attendance', icon: 'event_available', href: '/dashboard/attendance', permission: 'view:attendance' },
   { label: 'Fees', icon: 'payments', href: '/dashboard/fees', permission: 'view:fees' },
   { label: 'Communication', icon: 'campaign', href: '/dashboard/communication', permission: 'view:announcements' },
@@ -84,12 +135,32 @@ const financeNavItems: NavItem[] = [
   { label: 'Communication', icon: 'campaign', href: '/dashboard/communication' },
 ];
 
-function getNavItems(role: UserRole): NavItem[] {
+function getNavItems(role: UserRole, roles: UserRole[] = []): NavItem[] {
+  // A teacher who is ALSO a HOD / Academic Head gets the teacher home items
+  // plus everything the leadership roles unlock (Timetable Builder,
+  // Academics, Exams…) — the base-role switch alone would hide those.
+  if (role === 'TEACHER' && (roles.includes('HOD') || roles.includes('ACADEMIC_HEAD'))) {
+    const leadership = allNavItems.filter(item =>
+      !item.permission || hasPermission(role, item.permission)
+    );
+    const merged = [...teacherNavItems];
+    for (const item of leadership) {
+      if (!merged.some((m) => m.href === item.href)) merged.push(item);
+    }
+    return merged;
+  }
   switch (role) {
     case 'STUDENT': return studentNavItems;
     case 'PARENT': return parentNavItems;
     case 'TEACHER': return teacherNavItems;
     case 'FINANCE': return financeNavItems;
+    case 'HOD':
+    case 'ACADEMIC_HEAD':
+      // Leadership-only accounts: dashboard + profile + everything their
+      // permissions unlock (academics, exams, students, staff…).
+      return allNavItems.filter(item =>
+        !item.permission || hasPermission(role, item.permission)
+      );
     default:
       return allNavItems.filter(item =>
         !item.permission || hasPermission(role, item.permission)
@@ -101,6 +172,8 @@ const roleLabels: Record<UserRole, string> = {
   SUPER_ADMIN: 'Super Admin',
   BRANCH_ADMIN: 'Branch Admin',
   PRINCIPAL: 'Principal',
+  HOD: 'Head of Dept.',
+  ACADEMIC_HEAD: 'Academic Head',
   TEACHER: 'Teacher',
   STUDENT: 'Student',
   PARENT: 'Parent',
@@ -115,10 +188,11 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
 
   if (!user) return null;
 
-  const navItems = getNavItems(user.role);
+  const navItems = getNavItems(user.role, user.roles);
   const bottomNavItems = navItems.slice(0, 5);
 
   return (
@@ -131,7 +205,14 @@ export default function Sidebar() {
       {/* Overlay */}
       {mobileOpen && <div className={styles.overlay} onClick={() => setMobileOpen(false)} />}
 
-      <aside className={`${styles.sidebar} ${mobileOpen ? styles.open : ''}`}>
+      <aside className={`${styles.sidebar} ${mobileOpen ? styles.open : ''} ${collapsed ? styles.collapsed : ''}`}>
+        <button
+          className={styles.collapseToggle}
+          title={collapsed ? 'Show labels' : 'Hide sidebar'}
+          onClick={() => setCollapsed(!collapsed)}
+        >
+          <span className="icon">{collapsed ? 'chevron_right' : 'chevron_left'}</span>
+        </button>
         {/* Logo — the school's own branding, falling back to the generic
             mark when no logo was uploaded or the file went missing. */}
         <div className={styles.logo}>
@@ -171,9 +252,10 @@ export default function Sidebar() {
             return (
               <Link key={item.href} href={item.href}
                 className={`${styles.navItem} ${isActive ? styles.active : ''}`}
+                title={item.label}
                 onClick={() => setMobileOpen(false)}>
                 <span className="icon">{item.icon}</span>
-                <span>{item.label}</span>
+                <span className={styles.navLabel}>{item.label}</span>
               </Link>
             );
           })}

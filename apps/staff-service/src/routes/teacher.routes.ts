@@ -305,27 +305,56 @@ teacherRoutes.get('/my-transport', async (req: Request, res: Response) => {
 });
 
 // GET /profile
+// Identity-first: User row always exists, Staff row may not (the setup
+// wizard's owner is SUPER_ADMIN + PRINCIPAL with no staff record unless the
+// bootstrap created one). A missing Staff row is NOT a 404 — the profile
+// page renders from the user identity, staff extras degrade to placeholders.
 teacherRoutes.get('/profile', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
     const { userId } = ctx(req);
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, isActive: true, defaultBranchId: true, lastLogin: true },
+    });
+    if (!user) return res.status(404).json({ detail: 'Profile not found' });
     const staff = await prisma.staff.findUnique({ where: { userId } });
-    if (!staff) return res.status(404).json({ detail: 'Profile not found' });
-    res.json(staff);
+    if (!staff) {
+      return res.json({
+        userOnly: true,
+        firstName: user.email.split('@')[0],
+        lastName: '',
+        email: user.email,
+        phone: '',
+        isActive: user.isActive,
+        lastLogin: user.lastLogin,
+        designation: null,
+        department: null,
+      });
+    }
+    res.json({ ...staff, email: user.email, lastLogin: user.lastLogin });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
 // PUT /profile
+// With no Staff row there is nothing staff-scoped to edit — say so plainly
+// (400 with guidance) instead of Prisma's opaque P2025 → 500.
 teacherRoutes.put('/profile', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.get('prisma');
     const { userId } = ctx(req);
     const { firstName, lastName, phone } = req.body;
-    const staff = await prisma.staff.update({
+    const staff = await prisma.staff.findUnique({ where: { userId }, select: { id: true } });
+    if (!staff) {
+      return res.status(400).json({
+        detail: 'This account has no staff record to edit. Ask an admin to create one from Staff & HR.',
+      });
+    }
+    const updated = await prisma.staff.update({
       where: { userId },
       data: { firstName, lastName, phone }
     });
-    res.json(staff);
+    res.json(updated);
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
