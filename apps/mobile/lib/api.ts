@@ -269,6 +269,11 @@ export const checkoutApi = {
 
 // ── Communication API ──
 export const communicationApi = {
+  // Phase 9.3: register this phone's FCM token after login (§5.4 registry).
+  registerDevice: (data: { token: string; platform: 'ANDROID' | 'IOS' | 'WEB'; label?: string }) =>
+    apiRequest<{ id: string }>('/communication/devices', { method: 'POST', body: JSON.stringify(data) }),
+  unregisterDevice: (deviceId: string) =>
+    apiRequest<void>(`/communication/devices/${deviceId}`, { method: 'DELETE' }),
   getAnnouncements: () => apiRequest<{ data: any[] }>('/communication/announcements'),
 
   createAnnouncement: (data: { title: string; content: string; type: string; targetRoles: string[] }) =>

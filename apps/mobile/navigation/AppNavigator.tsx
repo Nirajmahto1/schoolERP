@@ -1,8 +1,10 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useEffect, useRef } from 'react';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Text } from 'react-native';
+import * as Notifications from 'expo-notifications';
+import { configureForegroundPresentation, registerPushToken, extractDeepLink, routeForDeepLink } from '../lib/push';
 
 // ── Core Screens ──
 import LoginScreen from '../components/screens/LoginScreen';
@@ -320,8 +322,37 @@ function ParentTabs() {
 // ═══════════════════════════════════════════════
 
 export default function AppNavigator() {
+  // Push tap → deepLink → navigate. The ref survives role switches because
+  // every role lives inside the same RootStack; a tap on "fees due" always
+  // lands on the Fees tab of whatever app shell is active.
+  const navigationRef = useNavigationContainerRef();
+  const routeRef = useRef<{ current: { navigate: (route: string) => void } | null }>({ current: null });
+
+  useEffect(() => {
+    configureForegroundPresentation();
+    registerPushToken().catch(() => {});
+
+    // Cold start: the app was killed and the user tapped a notification.
+    Notifications.getLastNotificationResponseAsync().then((res) => {
+      const link = res ? extractDeepLink(res) : null;
+      if (link) routeRef.current.current?.navigate(routeForDeepLink(link)?.route ?? 'Fees');
+    });
+
+    // Warm start: notification tapped while the app is open.
+    const sub = Notifications.addNotificationResponseReceivedListener((res) => {
+      const link = extractDeepLink(res);
+      if (link) {
+        const target = routeForDeepLink(link);
+        // Tab routes are nested inside role shells, so the typed navigator
+        // only knows the shell names — navigate dynamically by string.
+        if (target) (navigationRef.current as any)?.navigate?.(target.route);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <RootStack.Navigator screenOptions={{ headerShown: false }}>
         <RootStack.Screen name="Login" component={LoginScreenWrapper} />
         <RootStack.Screen name="AdminApp" component={AdminTabs} />
@@ -339,6 +370,9 @@ function LoginScreenWrapper({ navigation }: any) {
     else if (role === 'teacher') navigation.replace('TeacherApp', { onLogout: () => navigation.replace('Login') });
     else if (role === 'finance') navigation.replace('FinanceApp', { onLogout: () => navigation.replace('Login') });
     else if (role === 'parent') navigation.replace('ParentApp', { onLogout: () => navigation.replace('Login') });
+    // Re-register after every login: the FCM token row is upserted against
+    // the newest account on the phone (server keys by token).
+    registerPushToken().catch(() => {});
   };
 
   return <LoginScreen onLogin={handleLogin} />;
