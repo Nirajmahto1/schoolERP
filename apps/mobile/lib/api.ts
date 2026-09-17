@@ -261,7 +261,7 @@ export const checkoutApi = {
     apiRequest<CheckoutOrder>('/fees/checkout/orders', { method: 'POST', body: JSON.stringify(body) }),
 
   verify: (body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) =>
-    apiRequest<{ captured: boolean; reason?: string; paymentId?: string; receiptNo?: string }>('/fees/checkout/verify', {
+    apiRequest<{ captured: boolean; reason?: 'AMOUNT_MISMATCH' | 'ALREADY_CAPTURED' | 'NOT_INITIATED'; payment?: { id: string; receiptNo: string | null } }>('/fees/checkout/verify', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

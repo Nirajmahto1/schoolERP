@@ -1,22 +1,27 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, RefreshControl } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, ActivityIndicator, Alert, RefreshControl, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import RazorpayCheckout from "react-native-razorpay";
 import { parentApi, studentSelfApi, checkoutApi, type CheckoutOrder } from "../../lib/api";
 
 // ──────────────────────────────────────────────
-// Fees & Payments — LIVE dues + Razorpay checkout (Phase 9 / Gate 9).
+// Fees & Payments — LIVE dues + Razorpay NATIVE checkout (Phase 9 / Gate 9).
 //
 // Flow (§9.1 "fee dues + pay in app"):
 //   1. Load open dues — parents via children-summary, student accounts via
 //      /students/my-fees (the same invoices, resolved by the token's role).
 //   2. "Pay now" → POST /fees/checkout/orders. The SERVER computes the
 //      amount from its own open invoices; the client never states one.
-//   3. The order (orderId, keyId, amount) hands off to Razorpay checkout —
-//      in RN this is Razorpay's native sheet via the checkout prop or a
-//      WebView; this build renders the handoff card so the flow is testable
-//      end-to-end without store credentials, and the verify step is real.
-//   4. verify(razorpay_order_id, payment_id, signature) → capture inside the
-//      server's ledger transaction → receipt number comes back.
+//   3. react-native-razorpay opens the native sheet with { key, order_id,
+//      amount(paise), currency }. Success returns razorpay_order_id /
+//      razorpay_payment_id / razorpay_signature.
+//   4. verify(...) → capture inside the server's ledger transaction →
+//      receipt number. The webhook may also arrive first; capture is
+//      idempotent, so both paths credit exactly once.
+//
+// NO key material lives in the app: keyId comes from the server's order
+// response. Test-mode keys work in the Expo dev client; a store build needs
+// a config-plugin prebuild (the SDK ships native modules).
 // ──────────────────────────────────────────────
 interface Due {
   id: string;
@@ -100,41 +105,47 @@ export default function StudentFeesScreen() {
     try {
       const o = await checkoutApi.createOrder({ studentId: childId, academicYearId });
       setOrder(o);
-      // Razorpay RN checkout (react-native-razorpay) opens its native sheet
-      // here with { keyId, orderId, amount, currency } and returns
-      // razorpay_order_id / payment_id / signature. This testable build
-      // shows the handoff state and lets the user complete verification.
-      Alert.alert(
-        'Checkout ready',
-        `Order ${o.orderId}\n${o.currency} ${o.amount.toLocaleString('en-IN')}`,
-        [{ text: 'OK' }],
-      );
-    } catch (e: any) {
-      Alert.alert('Could not start payment', e?.detail || 'Please try again.');
-    }
-    setPaying(false);
-  };
+      if (!o.keyId) {
+        Alert.alert('Not configured', 'This deployment has no Razorpay keys — payment is unavailable.');
+        setPaying(false);
+        return;
+      }
 
-  const completeVerification = async () => {
-    if (!order) return;
-    setPaying(true);
-    try {
-      // Dev-complete flow: in production the values come from the Razorpay
-      // sheet callback; here they are simulated up to the REAL verify call,
-      // which still runs the server's HMAC + capture path.
+      // ── Native checkout sheet (react-native-razorpay) ──
+      // Amount in PAISE; the sheet returns the signature triple that the
+      // server's /verify endpoint HMAC-checks before capture.
+      const data = await RazorpayCheckout.open({
+        key: o.keyId,
+        amount: Math.round(o.amount * 100),
+        currency: o.currency || 'INR',
+        name: 'School Fees',
+        description: o.invoices?.length === 1 ? `Invoice ${o.invoices[0].invoiceNo}` : 'Fee payment',
+        order_id: o.orderId,
+        theme: { color: '#5048E5' },
+      });
+
+      // ── Verify → server capture (idempotent; webhook may have won) ──
       const res = await checkoutApi.verify({
-        razorpay_order_id: order.orderId,
-        razorpay_payment_id: `pay_test_${Date.now()}`,
-        razorpay_signature: 'invalid-on-purpose',
+        razorpay_order_id: data.razorpay_order_id ?? o.orderId,
+        razorpay_payment_id: data.razorpay_payment_id,
+        razorpay_signature: data.razorpay_signature ?? '',
       });
       if (res.captured) {
-        setReceipt(res.receiptNo ?? 'receipt');
+        setReceipt(res.payment?.receiptNo ?? 'receipt');
+        setOrder(null);
+        await load(false);
       } else {
-        Alert.alert('Not captured', res.reason ?? 'Payment was not completed.');
+        Alert.alert('Not captured', res.reason === 'ALREADY_CAPTURED'
+          ? 'This payment was already recorded.'
+          : (res.reason ?? 'Payment could not be verified.'));
       }
     } catch (e: any) {
-      // Expected in the testable build: a bogus signature is rejected 400.
-      Alert.alert('Verification rejected', e?.detail || 'The gateway signature was invalid — this is correct behaviour for a tampered callback.');
+      // RazorpayCheckout errors: { code, description, ... } — user closing
+      // the sheet is a normal path, not an alert-worthy failure.
+      const cancelled = e?.code === 2 || /cancel|dismissed/i.test(String(e?.description ?? e?.message ?? ''));
+      if (!cancelled) {
+        Alert.alert('Payment failed', e?.description || e?.detail || 'Please try again.');
+      }
     }
     setPaying(false);
   };
@@ -166,11 +177,10 @@ export default function StudentFeesScreen() {
                 ? <ActivityIndicator color="#fff" />
                 : <Text className="text-white font-bold text-lg">Pay Now</Text>}
             </TouchableOpacity>
-
-            {order && (
-              <TouchableOpacity className="mt-3 border border-on-error-container rounded-xl py-3 items-center" onPress={completeVerification} disabled={paying}>
-                <Text className="text-on-error-container font-semibold">Complete verification (order {order.orderId.slice(-8)})</Text>
-              </TouchableOpacity>
+            {Platform.OS === 'web' && (
+              <Text className="text-on-error-container text-xs mt-3 text-center">
+                Payments open in the native sheet on Android/iOS builds.
+              </Text>
             )}
           </View>
         )}
