@@ -8,6 +8,7 @@
 // ──────────────────────────────────────────────
 
 import express, { type Express, type RequestHandler, type Request } from 'express';
+import type { Server as HttpServer } from 'http';
 import { requireAssertion, stripSpoofableHeaders } from './middleware';
 
 /**
@@ -175,6 +176,9 @@ export function createServiceApp(options: ServiceAppOptions): ServiceApp {
 /**
  * Bind a listener with signal handling, so `docker stop` drains in-flight
  * requests rather than severing them mid-transaction.
+ *
+ * Returns the underlying http.Server so entrypoints can attach protocol
+ * upgrades to the same listener (the chat WebSocket hub does exactly that).
  */
 export function listenWithGracefulShutdown(
   app: Express,
@@ -182,7 +186,7 @@ export function listenWithGracefulShutdown(
   serviceName: string,
   onShutdown?: () => Promise<void>,
   log: (msg: string) => void = console.log,
-): void {
+): HttpServer {
   const server = app.listen(port, () => {
     log(`${serviceName} listening on http://localhost:${port}`);
   });
@@ -197,4 +201,6 @@ export function listenWithGracefulShutdown(
       setTimeout(() => process.exit(1), 10_000).unref();
     });
   }
+
+  return server;
 }

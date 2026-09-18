@@ -17,6 +17,17 @@ const server = app.listen(env.PORT_GATEWAY, () => {
   logger.info(`   env=${env.NODE_ENV} cors=${env.CORS_ALLOWED_ORIGINS.join(', ')}`);
 });
 
+// Attach the WS upgrade dispatcher built at factory time (see buildApp) —
+// one listener, routed by public prefix. Without this, a client whose first
+// request is a WebSocket upgrade gets no answer.
+const wsDispatcher = (app as unknown as {
+  wsUpgradeDispatcher?: (req: import('http').IncomingMessage, socket: import('net').Socket, head: Buffer) => void;
+}).wsUpgradeDispatcher;
+if (wsDispatcher) {
+  server.on('upgrade', wsDispatcher);
+  logger.info('   ws upgrade dispatcher attached');
+}
+
 // Let in-flight school requests finish before the process dies.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {

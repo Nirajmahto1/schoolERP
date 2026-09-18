@@ -129,8 +129,7 @@ const messagingSchema = z.object({
 
 // ── Gateway ──
 
-export const gatewayEnvSchema = baseSchema
-  .merge(jwtSchema)
+export const gatewayEnvSchema = baseSchema.merge(jwtSchema)
   .merge(redisSchema)
   .merge(assertionSignerSchema)
   .extend({
@@ -251,6 +250,29 @@ export const loadProvisionEnv = () => parseEnv(provisionEnvSchema, 'provision-se
 // every peer call must be an enhancement, never a correctness dependency.
 const peerServicesSchema = z.object({
   COMMUNICATION_SERVICE_URL: z.string().url().default('http://localhost:4005'),
+  // Chat WebSocket hub (Phase 9): communication-service attaches a `ws`
+  // server to its HTTP listener for live class-room chat delivery. The
+  // ticket secret signs short-lived connect tickets minted by the
+  // assertion-verified /chat/ticket route. OPTIONAL: unset means live
+  // delivery is disabled and /chat/ticket answers 503 — polling still
+  // works. Generate with `openssl rand -hex 32`.
+  CHAT_TICKET_SECRET: z.preprocess(
+    (v) => (typeof v !== 'string' || v.trim() === '' ? undefined : v),
+    z.string().min(32).optional(),
+  ),
+  // Dedicated listener for the chat hub. The hub ALSO listens on the main
+  // HTTP port (behind the gateway's ws proxy); this second port exists for
+  // direct containers/mobile builds that bypass the gateway.
+  CHAT_HUB_PORT: port(4015),
+  // Optional Redis pub/sub: with it, several communication-service replicas
+  // deliver chat to every connected socket; without it, delivery is
+  // in-process only (single-node dev). Presence/rooms always resolve live
+  // from the DB, so a dropped Redis only means missed live pushes, never
+  // stale history.
+  REDIS_URL: z.preprocess(
+    (v) => (typeof v !== 'string' || v.trim() === '' ? undefined : v),
+    connectionString(['redis', 'rediss']).optional(),
+  ),
   // Timetable engine (Phase 6.2): the constraint solver academic-service calls
   // to generate/persist timetables and suggest substitutions.
   TIMETABLE_ENGINE_URL: z.string().url().default('http://localhost:6003'),

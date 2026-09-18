@@ -161,6 +161,10 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       host,
       port: env.PORT_COMMUNICATION_SERVICE,
       rewriteTo: '',
+      // Class-room chat live delivery (Phase 9): WebSocket upgrades for
+      // /api/v1/communication/chat/ws are proxied with the standard auth
+      // pipeline applied to the initiating HTTP request.
+      ws: true,
     },
     {
       path: '/api/v1/attendance',

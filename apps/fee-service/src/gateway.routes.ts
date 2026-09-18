@@ -65,15 +65,59 @@ export function createGatewayRoutes(options: GatewayRoutesOptions): Router {
   // we compute the payable amount from OUR open invoices, not from the client.
   r.post('/orders', async (req, res) => {
     try {
-      if (!options.razorpay) {
-        res.status(503).json({ type: 'unavailable', title: 'Not Configured', status: 503, detail: 'Razorpay is not configured on this deployment.' });
+      const { branchId, roles, userId } = ctx(req);
+      if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+      const { studentId, invoiceIds } = req.body ?? {};
+      let { academicYearId } = req.body ?? {};
+      if (!studentId) {
+        res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'studentId is required.' });
         return;
       }
-      const { branchId } = ctx(req);
-      if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
-      const { studentId, academicYearId, invoiceIds } = req.body ?? {};
-      if (!studentId || !academicYearId) {
-        res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'studentId and academicYearId are required.' });
+      // Academic year is server-resolved when the client omits it: the
+      // branch's isCurrent year. Clients (mobile) that cannot know the year
+      // id must not be locked out of paying — the DB row is the truth.
+      if (!academicYearId) {
+        const current = await prisma.academicYear.findFirst({
+          where: { branchId, isCurrent: true },
+          select: { id: true },
+        });
+        if (!current) {
+          res.status(409).json({ type: 'conflict', title: 'No Academic Year', status: 409, detail: 'The branch has no current academic year set.' });
+          return;
+        }
+        academicYearId = current.id;
+      }
+
+      // Ownership gate: the order is FOR a student, so the caller must be
+      // that student, a guardian linked to them, or branch staff. Without
+      // this, any logged-in user in the branch could mint a payment intent
+      // against anyone's dues (discovered in the student-portal review).
+      const isStaff = roles.some((r) =>
+        ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'FINANCE', 'ACCOUNTANT'].includes(r),
+      );
+      if (!isStaff) {
+        const own = await prisma.student.findFirst({
+          where: {
+            id: studentId,
+            branchId,
+            deletedAt: null,
+            OR: [
+              { userId },
+              { guardians: { some: { guardian: { userId } } } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (!own) {
+          res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'You are not linked to this student.' });
+          return;
+        }
+      }
+
+      // Razorpay configured? Checked AFTER authorization so an unconfigured
+      // deployment still 403s a stranger instead of 503-ing everyone alike.
+      if (!options.razorpay) {
+        res.status(503).json({ type: 'unavailable', title: 'Not Configured', status: 503, detail: 'Razorpay is not configured on this deployment.' });
         return;
       }
 

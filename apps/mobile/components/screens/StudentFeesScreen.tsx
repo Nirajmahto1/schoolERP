@@ -81,8 +81,8 @@ export default function StudentFeesScreen() {
       setDues(list);
       if (studentId) {
         setChildId(studentId);
-        // The academic year the dues belong to — from the first invoice row
-        // the summary exposes; the orders endpoint requires it explicitly.
+        // academicYearId is optional now — the server resolves the branch's
+        // current year when the client omits it.
         const yearId = await AsyncStorage.getItem('erp_academic_year_id');
         setAcademicYearId(yearId);
       }
@@ -97,13 +97,13 @@ export default function StudentFeesScreen() {
   const totalOutstanding = dues.reduce((s, d) => s + (d.rawOutstanding ?? parseAmountINR(d.amt)), 0);
 
   const startPayment = async () => {
-    if (!childId || !academicYearId) {
-      Alert.alert('Not ready', 'Payment needs an academic year context — open this screen from your school dashboard once invoices are issued.');
+    if (!childId) {
+      Alert.alert('Not ready', 'No student context — open this screen from your dashboard once invoices are issued.');
       return;
     }
     setPaying(true);
     try {
-      const o = await checkoutApi.createOrder({ studentId: childId, academicYearId });
+      const o = await checkoutApi.createOrder(academicYearId ? { studentId: childId, academicYearId } : { studentId: childId });
       setOrder(o);
       if (!o.keyId) {
         Alert.alert('Not configured', 'This deployment has no Razorpay keys — payment is unavailable.');

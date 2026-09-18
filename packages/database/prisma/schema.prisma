@@ -140,6 +140,7 @@ model User {
   staff           Staff?
   guardians       Guardian[]
   deviceTokens    DeviceToken[]
+  chatMessages    ChatMessage[]
 
   @@index([email])
   @@map("users")
@@ -1902,17 +1903,51 @@ model Setting {
 // PUSH row's userId to these rows. Several rows per user is normal (phone +
 // tablet), and a token that FCM reports unregistered/invalid is deleted on
 // sight — stale tokens are the #1 reason push "silently stops working".
+// ──────────────────────────────────────────────
+// Class-room chat (Phase 9 — student/parent feature)
+//
+// The "room" is not a row — it is (branchId, classId, sectionId). Membership
+// is derived at read/write time from the caller's live enrollment (or the
+// child's, for a guardian), so a student who changes sections automatically
+// leaves the old room and joins the new one. Every message carries the
+// branch: cross-branch chatter is impossible by construction, not by filter.
+// Moderation posture: students may post only to their own room; staff may
+// read any room in their branch. No edits, no deletes — messages are
+// append-only and the author is stamped, which is the whole anti-bullying
+// audit story.
+// ──────────────────────────────────────────────
+model ChatMessage {
+  id         String    @id @default(cuid())
+  branchId   String
+  classId    String
+  sectionId  String
+  authorId   String
+  // Author display name stamped at send time — reads must not join users so
+  // the list stays one indexed query, and a renamed account keeps its
+  // historical byline (same convention as ledger narration).
+  authorName String
+  body       String
+  createdAt  DateTime  @default(now())
+  // Soft-mute: hidden from reads, kept for moderation review.
+  hiddenAt   DateTime?
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([branchId, classId, sectionId, createdAt])
+  @@map("chat_messages")
+}
+
 model DeviceToken {
-  id          String   @id @default(cuid())
-  userId      String
+  id         String   @id @default(cuid())
+  userId     String
   // FCM registration token — opaque, ~140–180 chars, rotates on app restore.
-  token       String   @unique
-  platform    String // ANDROID | IOS | WEB
+  token      String   @unique
+  platform   String // ANDROID | IOS | WEB
   // Human-readable label the app sends ("Ravi's Redmi", "iPad of Class 6B").
-  label       String?
-  isActive    Boolean  @default(true)
-  lastSeenAt  DateTime @default(now())
-  createdAt   DateTime @default(now())
+  label      String?
+  isActive   Boolean  @default(true)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1981,17 +2016,17 @@ enum NotificationStatus {
 // report. Read-only by construction — nothing here can mutate school data.
 
 model SavedReport {
-  id        String   @id @default(cuid())
+  id        String       @id @default(cuid())
   branchId  String
   name      String
   kind      String // AT_RISK | ATTENDANCE | FEE_FUNNEL | ENROLLMENT_TREND | PERFORMANCE | TEACHER_WORKLOAD | BRANCH_COMPARISON
   format    ReportFormat @default(XLSX)
   /// Dashboard filters (days, months, academicYearId) as declared per kind.
-  filters   Json     @default("{}")
+  filters   Json         @default("{}")
   createdBy String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   schedules ReportSchedule[]
 
@@ -2000,12 +2035,12 @@ model SavedReport {
 }
 
 model ReportSchedule {
-  id            String      @id @default(cuid())
+  id            String              @id @default(cuid())
   savedReportId String
   branchId      String
   cadence       ReportCadence
   /// Local hour (0–23) the sweep may send in — schools read reports at breakfast.
-  hourLocal     Int         @default(7)
+  hourLocal     Int                 @default(7)
   dayOfWeek     Int? // 1–7, WEEKLY only
   dayOfMonth    Int? // 1–28, MONTHLY only
   channel       NotificationChannel @default(EMAIL)
@@ -2013,13 +2048,13 @@ model ReportSchedule {
   targetRoles   String[]
   /// Extra raw addresses/numbers for people without an account (auditor, CA).
   recipients    String[]
-  isActive      Boolean     @default(true)
+  isActive      Boolean             @default(true)
   nextRunAt     DateTime
   lastRunAt     DateTime?
   lastStatus    String? // SENT | PARTIAL | FAILED
   lastError     String?
   createdBy     String?
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime            @default(now())
 
   savedReport SavedReport      @relation(fields: [savedReportId], references: [id], onDelete: Cascade)
   deliveries  ReportDelivery[]
@@ -2030,24 +2065,24 @@ model ReportSchedule {
 }
 
 model ReportDelivery {
-  id         String   @id @default(cuid())
+  id         String               @id @default(cuid())
   scheduleId String
   branchId   String
   /// sha256 of the download token — the plaintext exists only in the sent message.
-  tokenHash  String   @unique
+  tokenHash  String               @unique
   format     ReportFormat
   fileName   String
   /// The snapshot: bytes as rendered at delivery time.
   artifact   Bytes
-  rowCount   Int      @default(0)
-  sizeBytes  Int      @default(0)
+  rowCount   Int                  @default(0)
+  sizeBytes  Int                  @default(0)
   status     ReportDeliveryStatus @default(STORED)
   /// How many recipients the dispatcher accepted, and why if it failed.
-  recipients Int      @default(0)
+  recipients Int                  @default(0)
   error      String?
-  downloads  Int      @default(0)
+  downloads  Int                  @default(0)
   expiresAt  DateTime
-  createdAt  DateTime @default(now())
+  createdAt  DateTime             @default(now())
 
   schedule ReportSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 

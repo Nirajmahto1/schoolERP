@@ -31,13 +31,17 @@ export interface UpstreamRoute {
 export function createUpstreamProxy(
   route: UpstreamRoute,
   timeoutMs: number,
+  /** Mounted instances pass ws:false — upgrade dispatch goes through the
+   *  dedicated handler below, so the proxy must never self-subscribe to the
+   *  server's 'upgrade' event (double handling corrupts the socket). */
+  opts: { ws?: boolean } = {},
 ): RequestHandler {
   const target = `http://${route.host}:${route.port}`;
 
   const options: Options = {
     target,
     changeOrigin: true,
-    ws: route.ws ?? false,
+    ws: opts.ws ?? false,
     proxyTimeout: timeoutMs,
     timeout: timeoutMs,
     // NOTE: http-proxy pipes the raw request stream. NO middleware before the
@@ -101,4 +105,22 @@ export function createUpstreamProxy(
   };
 
   return createProxyMiddleware(options);
+}
+
+/**
+ * Dedicated upgrade dispatcher for ws-enabled upstreams. This instance is
+ * NEVER mounted in the middleware chain (so it never lazily self-subscribes);
+ * the entrypoint attaches the returned handler to the HTTP server, giving
+ * exactly one 'upgrade' listener per ws route.
+ */
+export function createUpstreamUpgradeHandler(
+  route: UpstreamRoute,
+  timeoutMs: number,
+): (req: import('http').IncomingMessage, socket: import('net').Socket, head: Buffer) => void {
+  const proxy = createUpstreamProxy(route, timeoutMs, { ws: false });
+  const upgrade = (proxy as unknown as { upgrade?: unknown }).upgrade;
+  if (typeof upgrade !== 'function') {
+    throw new Error('http-proxy-middleware did not expose an upgrade handler');
+  }
+  return upgrade as (req: import('http').IncomingMessage, socket: import('net').Socket, head: Buffer) => void;
 }

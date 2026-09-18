@@ -44,6 +44,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (role: string) => vo
       const res = await authApi.login(email.trim(), password);
       await AsyncStorage.setItem('erp_token', res.accessToken);
       await AsyncStorage.setItem('erp_refresh_token', res.refreshToken);
+      // Roles persist for shell decisions that cannot wait for an API round
+      // trip (e.g. whether the student shell shows a Chat tab).
+      await AsyncStorage.setItem('erp_roles', JSON.stringify(res.user?.roles ?? []));
       onLogin(roleFor(res.user));
     } catch (e: any) {
       Alert.alert('Sign in failed', e?.detail || 'Check your email and password.');

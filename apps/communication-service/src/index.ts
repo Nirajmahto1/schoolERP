@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 
 import express, { Router } from 'express';
+import { createServer } from 'http';
 import { Prisma, PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { loadServiceEnv } from '@school-erp/config';
@@ -17,9 +18,23 @@ import { scanAbsencesForDate } from './absence-alerts';
 import { scanFeeRemindersForDate } from './fee-reminders';
 import { scanExamSchedules, notifyResultsPublished } from './exam-triggers';
 import { tryDecrementCredits } from './credit-gate';
+import { ChatHub, mintChatTicket, defaultRedisFactory } from './chat-hub';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
+
+// ── Class-room chat live delivery (Phase 9) ──
+// The hub + ticket secret are assigned by the app factory so the chat routes
+// can mint tickets and publish. A deployment without a ticket secret simply
+// never assigns them: /chat/ticket answers 503 and clients fall back to
+// polling — the service still boots. Module scope so the entrypoint can
+// reach the hub via getChatHub() to attach listeners.
+let activeChatHub: ChatHub | null = null;
+let chatTicketSecret: string | undefined;
+/** Entrypoints call this after createCommunicationApp to attach the hub to their listener(s). */
+export function getChatHub(): ChatHub | null {
+  return activeChatHub;
+}
 
 /**
  * Messaging providers from process env. Every key is optional — the service
@@ -76,7 +91,7 @@ function messagingFromEnv() {
 }
 
 export interface CommunicationAppOptions {
-  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string };
+  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string; CHAT_TICKET_SECRET?: string; REDIS_URL?: string };
   prisma: PrismaClient;
   /** Injected messaging config (defaults from loadServiceEnv). */
   messaging?: {
@@ -88,6 +103,8 @@ export interface CommunicationAppOptions {
     messagingWebhookSecret?: string;
     quietHours: { start: number; end: number };
   };
+  /** Test seam: override the chat hub's Redis client factory. */
+  redisFactory?: (url: string) => { publisher: { publish(c: string, p: string): Promise<unknown>; subscribe(c: string): Promise<unknown>; on(e: 'message', h: (c: string, p: string) => void): unknown; quit(): Promise<unknown> }; subscriber: { publish(c: string, p: string): Promise<unknown>; subscribe(c: string): Promise<unknown>; on(e: 'message', h: (c: string, p: string) => void): unknown; quit(): Promise<unknown> } };
 }
 
 /**
@@ -97,6 +114,14 @@ export interface CommunicationAppOptions {
 export function createCommunicationApp(options: CommunicationAppOptions) {
   const { prisma } = options;
   const env = { INTERNAL_ASSERTION_PUBLIC_KEY: options.env.INTERNAL_ASSERTION_PUBLIC_KEY };
+
+  // Chat hub (Phase 9): live WebSocket delivery. Created only when a ticket
+  // secret is configured — tests and unconfigured deployments stay
+  // polling-only, exactly like fee-service boots without Razorpay keys.
+  chatTicketSecret = options.env.CHAT_TICKET_SECRET;
+  activeChatHub = chatTicketSecret
+    ? new ChatHub({ ticketSecret: chatTicketSecret, redisFactory: options.redisFactory ?? defaultRedisFactory })
+    : null;
 
   // Providers come from env; null means "not configured" — the service and
   // dispatcher still run, sends fail closed with clear errors (§5.1/5.2).
@@ -164,6 +189,23 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
           summary: 'Register this account\'s push device (FCM token) — called by the mobile apps after login', tags: ['push'],
           requestBody: { type: 'object', properties: { token: { type: 'string' }, platform: { type: 'string', enum: ['ANDROID', 'IOS', 'WEB'] }, label: { type: 'string' } } },
           responses: { '201': { description: 'Registered' } },
+        },
+      },
+      '/chat/messages': {
+        get: {
+          summary: 'Class-room chat: the caller\'s own room (student) or their child\'s (guardian, read-only); staff may pass classId+sectionId within their branch', tags: ['chat'],
+          responses: { '200': { description: 'OK' }, '404': { description: 'No room' } },
+        },
+        post: {
+          summary: 'Post to the class room (students only, own room, rate-limited)', tags: ['chat'],
+          requestBody: { type: 'object', properties: { body: { type: 'string', maxLength: 1000 } }, required: ['body'] },
+          responses: { '201': { description: 'Posted' }, '403': { description: 'Not a student / not their room' }, '429': { description: 'Rate limited' } },
+        },
+      },
+      '/chat/ticket': {
+        get: {
+          summary: 'Mint a 60s connect ticket for the chat WebSocket (room resolved server-side; staff may pass classId+sectionId)', tags: ['chat'],
+          responses: { '200': { description: 'Ticket issued' }, '404': { description: 'No room' }, '503': { description: 'Live chat not configured' } },
         },
       },
       '/devices/{id}': {
@@ -261,6 +303,155 @@ r.delete('/announcements/:id', async (req, res) => {
   try {
     await prisma.announcement.update({ where: { id: req.params.id }, data: { isActive: false } });
     res.status(204).send();
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Class-room chat (Phase 9) ──
+//
+// The room IS the (branchId, classId, sectionId) triple — no room rows, no
+// joins to maintain. Membership is derived from the LIVE enrollment at every
+// request: a student who transfers sections leaves the old room and joins
+// the new one with zero bookkeeping. Guardians read their child's room
+// read-only (children's peer chat is not an adult posting surface); students
+// read and post; staff read any room in their branch for moderation.
+// Post is student-only, rate-limited per user, append-only.
+
+const CHAT_POST_INTERVAL_MS = 1500;
+const lastChatPostAt = new Map<string, number>();
+
+/** Resolve the caller's chat room: their own enrollment, or their child's.
+ *  Returns null when the caller has neither — they simply have no room. */
+async function chatRoomFor(userId: string) {
+  const self = await prisma.student.findFirst({
+    where: { userId, deletedAt: null },
+    orderBy: { createdAt: 'desc' },
+    select: { branchId: true, enrollments: { orderBy: { fromDate: 'desc' }, take: 1, select: { classId: true, sectionId: true } } },
+  });
+  if (self && self.enrollments[0]) {
+    return { branchId: self.branchId, classId: self.enrollments[0].classId, sectionId: self.enrollments[0].sectionId, canPost: true };
+  }
+  const child = await prisma.studentGuardian.findFirst({
+    where: { guardian: { userId } },
+    orderBy: { createdAt: 'desc' },
+    select: { student: { select: { branchId: true, deletedAt: true, enrollments: { orderBy: { fromDate: 'desc' }, take: 1, select: { classId: true, sectionId: true } } } } },
+  });
+  const s = child?.student;
+  if (s && !s.deletedAt && s.enrollments[0]) {
+    return { branchId: s.branchId, classId: s.enrollments[0].classId, sectionId: s.enrollments[0].sectionId, canPost: false };
+  }
+  return null;
+}
+
+r.get('/chat/messages', async (req, res) => {
+  try {
+    const { userId, roles, branchId: staffBranch } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+
+    const isStaff = roles.some((x) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'HOD', 'ACADEMIC_HEAD'].includes(x));
+    let room: { branchId: string; classId: string; sectionId: string; canPost: boolean } | null = null;
+
+    if (isStaff && staffBranch) {
+      // Staff moderation view: any room inside their branch.
+      const classId = String(req.query.classId ?? '');
+      const sectionId = String(req.query.sectionId ?? '');
+      if (classId && sectionId) room = { branchId: staffBranch, classId, sectionId, canPost: false };
+    }
+    if (!room) room = await chatRoomFor(userId);
+    if (!room) { res.status(404).json({ type: 'not-found', title: 'No Room', status: 404, detail: 'You are not enrolled in any class section, and no child is linked to your account.' }); return; }
+
+    // Cursor pagination: `before` = an ISO instant; return messages strictly
+    // older. The mobile client polls with its newest seen timestamp.
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    const messages = await prisma.chatMessage.findMany({
+      where: {
+        branchId: room.branchId, classId: room.classId, sectionId: room.sectionId,
+        hiddenAt: null,
+        ...(before && !isNaN(before.getTime()) ? { createdAt: { lt: before } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    res.json({
+      data: messages.reverse().map((m) => ({
+        id: m.id, authorId: m.authorId, authorName: m.authorName, body: m.body,
+        createdAt: m.createdAt, mine: m.authorId === userId,
+      })),
+      canPost: room.canPost,
+    });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+r.post('/chat/messages', async (req, res) => {
+  try {
+    const { userId, branchId } = ctx(req);
+    if (!userId || !branchId) { res.status(403).json({ detail: 'Account has no user or branch — cannot post.' }); return; }
+    const room = await chatRoomFor(userId);
+    if (!room || !room.canPost || room.branchId !== branchId) {
+      res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'Only students may post in their own class room.' });
+      return;
+    }
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!body || body.length > 1000) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'body is required (max 1000 chars).' });
+      return;
+    }
+    // Per-user rate limit: one post per 1.5s. In-memory on purpose — a
+    // single-node debounce, not an abuse-proof quota.
+    const now = Date.now();
+    const last = lastChatPostAt.get(userId) ?? 0;
+    if (now - last < CHAT_POST_INTERVAL_MS) {
+      res.status(429).json({ type: 'rate-limited', title: 'Too Fast', status: 429, detail: 'Slow down — one message every couple of seconds.' });
+      return;
+    }
+    lastChatPostAt.set(userId, now);
+    const author = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const me = await prisma.student.findFirst({ where: { userId, deletedAt: null }, select: { firstName: true, lastName: true } });
+    const authorName = me ? `${me.firstName} ${me.lastName}` : (author?.email ?? 'Student');
+    const msg = await prisma.chatMessage.create({
+      data: { branchId: room.branchId, classId: room.classId, sectionId: room.sectionId, authorId: userId, authorName, body },
+    });
+    // Live delivery: fan the persisted message out to every socket in the
+    // room (this instance via the local pass, other replicas via Redis).
+    // Delivery is best-effort — the row is already durable; a client that
+    // misses the push still gets it on reconnect/poll.
+    if (activeChatHub) {
+      void activeChatHub.publish({
+        room: { branchId: room.branchId, classId: room.classId, sectionId: room.sectionId },
+        message: { id: msg.id, authorId: msg.authorId, authorName: msg.authorName, body: msg.body, createdAt: msg.createdAt.toISOString() },
+      });
+    }
+    res.status(201).json({ id: msg.id, createdAt: msg.createdAt });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Chat WebSocket ticket ──
+// Browsers cannot set headers on a WebSocket, so the connect credential is a
+// short-lived ticket minted here (assertion already verified by the mount)
+// and carried as ?t= on the upgrade. The room is resolved SERVER-SIDE at mint
+// time — the client never names its own room.
+
+r.get('/chat/ticket', async (req, res) => {
+  try {
+    const { userId, roles, branchId: staffBranch } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!activeChatHub || !chatTicketSecret) {
+      res.status(503).json({ type: 'not-configured', title: 'Live Chat Disabled', status: 503, detail: 'Live chat delivery is not configured on this deployment; the app will keep polling.' });
+      return;
+    }
+    const isStaff = roles.some((x) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'HOD', 'ACADEMIC_HEAD'].includes(x));
+    let room: { branchId: string; classId: string; sectionId: string; canPost: boolean } | null = null;
+    if (isStaff && staffBranch) {
+      const classId = String(req.query.classId ?? '');
+      const sectionId = String(req.query.sectionId ?? '');
+      if (classId && sectionId) room = { branchId: staffBranch, classId, sectionId, canPost: false };
+    }
+    if (!room) room = await chatRoomFor(userId);
+    if (!room) { res.status(404).json({ type: 'not-found', title: 'No Room', status: 404, detail: 'You are not enrolled in any class section, and no child is linked to your account.' }); return; }
+    const ticket = mintChatTicket(
+      { sub: userId, branchId: room.branchId, classId: room.classId, sectionId: room.sectionId, canPost: room.canPost },
+      chatTicketSecret,
+    );
+    res.json({ ticket, wsPath: '/api/v1/communication/chat/ws', directPort: process.env.CHAT_HUB_PORT ?? null, expiresIn: 60 });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
@@ -753,7 +944,38 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
   const env = loadServiceEnv(SERVICE_NAME, 'PORT_COMMUNICATION_SERVICE');
   const prisma = new PrismaClient();
   const app = createCommunicationApp({ env, prisma });
-  listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+  const server = listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => {
+    await getChatHub()?.close();
+    await directHubServer?.close();
+    await prisma.$disconnect();
+  });
+
+  // ── Chat WebSocket hub (Phase 9) ──
+  // Attached to the MAIN listener (the gateway proxies /api/v1/communication
+  // upgrades with ws:true) and, when CHAT_HUB_PORT is set, ALSO on a dedicated
+  // port for direct mobile/container connections that bypass the gateway.
+  const hub = getChatHub();
+  let directHubServer: import('http').Server | null = null;
+  if (hub) {
+    hub.attach(server, env.REDIS_URL);
+    if (env.CHAT_HUB_PORT && env.CHAT_HUB_PORT !== env.PORT) {
+      directHubServer = createServer((_req, res) => {
+        res.writeHead(426, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ detail: 'Upgrade Required — connect with WebSocket to /chat/ws?t=<ticket>' }));
+      });
+      directHubServer.on('upgrade', (req, socket, head) => {
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        if (url.pathname !== '/chat/ws') { socket.destroy(); return; }
+        (hub as unknown as { handleUpgrade: (r: unknown, s: unknown, h: Buffer) => void }).handleUpgrade(req, socket, head);
+      });
+      directHubServer.listen(env.CHAT_HUB_PORT, () => {
+        console.log(`[chat-hub] direct listener on :${env.CHAT_HUB_PORT}`);
+        directHubServer?.unref?.();
+      });
+    }
+  } else {
+    console.log('[chat-hub] CHAT_TICKET_SECRET not set — live chat delivery disabled (polling only)');
+  }
 
   // ── Morning absence sweep + queue drain (BUILD_PLAN 5.6 #1) ──
   // The live path (attendance-service firing the scan after /mark) is the

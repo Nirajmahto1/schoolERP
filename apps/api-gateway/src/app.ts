@@ -5,7 +5,7 @@
 // ──────────────────────────────────────────────
 
 import { randomUUID } from 'crypto';
-import express, { type Express } from 'express';
+import express, { type Express, type RequestHandler } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -21,7 +21,7 @@ import { createAuthMiddleware, createOptionalAuthMiddleware } from './middleware
 import { errorHandler } from './middleware/errorHandler';
 import { authLimiter, ipAuthLimiter, methodAwareLimiter } from './middleware/rateLimit';
 import { createTenantHintResolver, TENANT_SLUG_HEADER } from './middleware/tenant';
-import { createUpstreamProxy } from './proxy';
+import { createUpstreamProxy, createUpstreamUpgradeHandler } from './proxy';
 import { buildRoutes } from './routes';
 import { logger } from './utils/logger';
 
@@ -119,8 +119,22 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
   const ipLoginThrottle = ipAuthLimiter(20, 15);
   const routes = buildRoutes(env);
 
+  // WebSocket upgrade dispatch: ws-enabled upstreams get a dedicated,
+  // never-mounted upgrade handler (see proxy.ts). The entrypoint attaches
+  // the single dispatcher below to the HTTP server; it routes by public
+  // prefix — without this, the first-attached handler would claim upgrades
+  // belonging to another service.
+  const wsRoutes: Array<{
+    path: string;
+    handler: (req: import('http').IncomingMessage, socket: import('net').Socket, head: Buffer) => void;
+  }> = [];
+
   for (const route of routes) {
-    const proxy = createUpstreamProxy(route, env.UPSTREAM_TIMEOUT_MS);
+    // Mounted proxy instances NEVER self-subscribe to 'upgrade' (ws:false):
+    // a lazily-added second listener races the dedicated handler and corrupts
+    // WebSocket streams. Upgrades are dispatched solely via the dedicated
+    // handler attached by the entrypoint.
+    const proxy = createUpstreamProxy(route, env.UPSTREAM_TIMEOUT_MS, { ws: false });
 
     if (route.public) {
       // Optional auth: a valid Bearer on a public prefix still gets an
@@ -136,8 +150,18 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
       app.use(route.path, optionalAuthenticate, ipLoginThrottle, proxy);
       logger.info(`  ${route.path} → ${route.service} (public)`);
     } else {
-      app.use(route.path, authenticate, throttle, proxy);
-      logger.info(`  ${route.path} → ${route.service}`);
+      // Live-delivery upstreams (chat hub) authenticate WebSocket upgrades
+      // with a short-lived ticket in the query string — a WS client cannot
+      // send an Authorization header, and a long-lived token in a URL leaks
+      // into logs. So upgrades bypass the Bearer gate here; the downstream
+      // ticket check (signed, 60s, minted only behind full auth) is the real
+      // credential. Every normal HTTP call on this prefix still requires it.
+      const auth: RequestHandler = (rq, rs, nx) => {
+        if (String(rq.headers.upgrade ?? '').toLowerCase() === 'websocket') return nx();
+        return authenticate(rq, rs, nx);
+      };
+      app.use(route.path, auth, throttle, proxy);
+      logger.info(`  ${route.path} → ${route.service}${route.ws ? ' (ws)' : ''}`);
     }
   }
 
@@ -151,6 +175,24 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
   });
 
   app.use(errorHandler);
+
+  // Dedicated upgrade handlers for ws-enabled upstreams, built on the SAME
+  // target/rewrite as the mounted proxies but never self-subscribed.
+  for (const route of routes.filter((r) => r.ws)) {
+    wsRoutes.push({ path: route.path, handler: createUpstreamUpgradeHandler(route, env.UPSTREAM_TIMEOUT_MS) });
+  }
+
+  const wsUpgradeDispatcher = (req: import('http').IncomingMessage, socket: import('net').Socket, head: Buffer): void => {
+    const pathname = (req.url ?? '/').split('?')[0];
+    for (const r of wsRoutes) {
+      if (pathname === r.path || pathname.startsWith(`${r.path}/`)) {
+        r.handler(req, socket, head);
+        return;
+      }
+    }
+    socket.destroy();
+  };
+  (app as unknown as { wsUpgradeDispatcher: typeof wsUpgradeDispatcher }).wsUpgradeDispatcher = wsUpgradeDispatcher;
 
   return app;
 }

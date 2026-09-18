@@ -235,11 +235,36 @@ export const parentApi = {
   getMeChildrenSummary: () => apiRequest<any>('/parents/me/children-summary'),
 };
 
+// ── Class-room chat (Phase 9) ──
+// Room membership is server-derived (own enrollment, or the child's for a
+// guardian). Cursor polling: pass `before` = newest seen ISO instant to page
+// history; poll without it for the tail.
+export interface ChatMessage {
+  id: string;
+  authorId: string;
+  authorName: string;
+  body: string;
+  createdAt: string;
+  mine: boolean;
+}
+export const chatApi = {
+  list: (before?: string) =>
+    apiRequest<{ data: ChatMessage[]; canPost: boolean }>(
+      `/communication/chat/messages${before ? `?before=${encodeURIComponent(before)}` : ''}`,
+    ),
+  send: (body: string) =>
+    apiRequest<{ id: string; createdAt: string }>('/communication/chat/messages', {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+};
+
 // ── Student self-service (parent app child views reuse these when the
 // logged-in account IS the student) ──
 export const studentSelfApi = {
   getMyFees: () => apiRequest<any[]>('/students/my-fees'),
   getMyAttendance: () => apiRequest<any>('/students/my-attendance'),
+  getMyTimetable: () => apiRequest<{ className: string; timetable: Array<{ time: string; mon: string; tue: string; wed: string; thu: string; fri: string }> }>('/students/my-timetable'),
 };
 
 // ── Razorpay checkout (Phase 9 / BUILD_PLAN 4.1 client half) ──
@@ -257,7 +282,11 @@ export interface CheckoutOrder {
 }
 
 export const checkoutApi = {
-  createOrder: (body: { studentId: string; academicYearId: string; invoiceIds?: string[] }) =>
+  // academicYearId is optional: the server resolves the branch's current
+  // year when omitted (the mobile client cannot know the id). The ownership
+  // check still applies — caller must be the student, a linked guardian, or
+  // branch staff.
+  createOrder: (body: { studentId: string; academicYearId?: string; invoiceIds?: string[] }) =>
     apiRequest<CheckoutOrder>('/fees/checkout/orders', { method: 'POST', body: JSON.stringify(body) }),
 
   verify: (body: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) =>

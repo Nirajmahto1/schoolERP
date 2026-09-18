@@ -40,6 +40,7 @@ import ParentChildResults from '../components/screens/ParentChildResults';
 import StudentProfileScreen from '../components/screens/StudentProfileScreen';
 
 // ── Shared Screens ──
+import ChatScreen from '../components/screens/ChatScreen';
 import LibraryScreen from '../components/screens/LibraryScreen';
 import TransportScreen from '../components/screens/TransportScreen';
 import AnnouncementsScreen from '../components/screens/AnnouncementsScreen';
@@ -287,6 +288,21 @@ function FinanceTabs({ route }: any) {
 }
 
 function ParentTabs() {
+  // Role-sensitivity without a second shell: STUDENT accounts get posting in
+  // the Chat room; guardians get their child's room read-only (the server's
+  // canPost drives the ChatScreen). The tab stays visible for both — a
+  // parent of a Class 6 child sees the room their child chats in.
+  const [isStudent, setIsStudent] = React.useState(false);
+  React.useEffect(() => {
+    AsyncStorage.getItem('erp_roles')
+      .then((raw) => {
+        const roles: unknown = raw ? JSON.parse(raw) : [];
+        setIsStudent(Array.isArray(roles) && roles.includes('STUDENT'));
+      })
+      .catch(() => {});
+  }, []);
+  void isStudent; // consumed by ChatScreen via canPost; kept for the tab badge future
+
   return (
     <Tab.Navigator screenOptions={tabScreenOptions}>
       <Tab.Screen
@@ -303,6 +319,11 @@ function ParentTabs() {
         name="Timetable"
         component={StudentTimetableScreen}
         options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>📅</Text> }}
+      />
+      <Tab.Screen
+        name="Chat"
+        component={ChatScreen}
+        options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>💬</Text> }}
       />
       <Tab.Screen
         name="Fees"

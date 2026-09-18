@@ -26,8 +26,8 @@ function childrenInclude() {
           orderBy: { fromDate: 'desc' as const },
           take: 1,
           include: {
-            class: { select: { name: true } },
-            section: { select: { name: true } },
+            class: { select: { id: true, name: true } },
+            section: { select: { id: true, name: true } },
           },
         },
         examResults: {
@@ -52,7 +52,7 @@ type StudentGuardianWithStudent = {
     lastName: string;
     admissionNo: string;
     deletedAt: Date | null;
-    enrollments: Array<{ class: { name: string }; section: { name: string } }>;
+    enrollments: Array<{ class: { id: string; name: string }; section: { id: string; name: string } }>;
     examResults: unknown[];
     invoices: Array<{ totalAmount: unknown; paidAmount: unknown }>;
     bookIssues: unknown[];
@@ -74,9 +74,21 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
       include: childrenInclude(),
     })) as unknown as StudentGuardianWithStudent[];
 
-    const students = links
+    let students = links
       .map((l) => l.student)
       .filter((s) => s.deletedAt === null);
+
+    // Self-resolution (student portal): a STUDENT account has no guardian
+    // links — the caller IS the child. Same summary shape, one row, so the
+    // mobile student shell (dashboard, fees, chat) reuses the parent screens
+    // untouched.
+    if (students.length === 0 && ctx(req).roles.includes('STUDENT')) {
+      const self = (await prisma.student.findFirst({
+        where: { userId, deletedAt: null },
+        include: childrenInclude().student.include,
+      })) as unknown as StudentGuardianWithStudent['student'] | null;
+      if (self) students = [self];
+    }
 
     if (students.length === 0) {
       res.status(404).json({ detail: 'No children are linked to this account.' });
@@ -116,6 +128,10 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
         admissionNo: s.admissionNo,
         className: s.enrollments[0]?.class.name ?? null,
         sectionName: s.enrollments[0]?.section.name ?? null,
+        // Stable ids for the student shell: the fees checkout (studentId) and
+        // the class chat room (classId + sectionId) both key off these.
+        classId: s.enrollments[0]?.class.id ?? null,
+        sectionId: s.enrollments[0]?.section.id ?? null,
         recentResults: s.examResults,
         // Open dues PER CHILD — the parent app's fees screen renders this
         // list; the aggregate stats.pendingFees alone cannot (it is summed
