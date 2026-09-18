@@ -48,6 +48,13 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       rewriteTo: '/branches',
     },
     {
+      path: '/api/v1/dpdp',
+      service: 'student-service',
+      host,
+      port: env.PORT_STUDENT_SERVICE,
+      rewriteTo: '/dpdp',
+    },
+    {
       path: '/api/v1/students',
       service: 'student-service',
       host,

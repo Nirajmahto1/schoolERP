@@ -19,6 +19,7 @@ import { studentRoutes } from './routes/student.routes';
 import { parentRoutes } from './routes/parent.routes';
 import { admissionRoutes } from './routes/admission.routes';
 import { certificateRoutes } from './routes/certificate.routes';
+import { dpdpRoutes } from './routes/dpdp.routes';
 import { importRoutes } from './routes/import.routes';
 import { logger } from './utils/logger';
 
@@ -109,6 +110,25 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
       '/admissions/tcs/{tcId}/pdf': {
         get: { summary: 'Download a transfer certificate as the CBSE-style ruled PDF', tags: ['tc'], responses: { '200': { description: 'PDF' } } },
       },
+      '/dpdp/{studentId}/consent': {
+        get: { summary: 'Consent ledger for one child (DPDP §10.1)', tags: ['dpdp'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Grant verifiable parental consent for one purpose', tags: ['dpdp'], responses: { '201': { description: 'Granted' } } },
+      },
+      '/dpdp/{studentId}/consent/{purpose}/withdraw': {
+        post: { summary: 'Withdraw consent (the DPDP withdrawal path)', tags: ['dpdp'], responses: { '200': { description: 'Withdrawn' } } },
+      },
+      '/dpdp/{studentId}/data-export': {
+        get: { summary: 'Full data export for one child (DPDP access right)', tags: ['dpdp'], responses: { '200': { description: 'JSON export' } } },
+      },
+      '/dpdp/{studentId}/erasure-requests': {
+        post: { summary: 'File an erasure request (DPDP erasure right)', tags: ['dpdp'], responses: { '201': { description: 'Filed' } } },
+      },
+      '/dpdp/erasure-requests': {
+        get: { summary: 'Erasure inbox for the grievance officer', tags: ['dpdp'], responses: { '200': { description: 'OK' } } },
+      },
+      '/dpdp/erasure-requests/{id}/process': {
+        post: { summary: 'Complete or reject an erasure request (audited, retention-aware)', tags: ['dpdp'], responses: { '200': { description: 'Processed' } } },
+      },
       '/parents/...': {
         get: { summary: 'Guardian portal endpoints (see parent.routes.ts)', tags: ['parents'], responses: { '200': { description: 'OK' } } },
       },
@@ -149,6 +169,7 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
   // prefix that issues the TC (GET /admissions/tcs/:tcId/pdf).
   app.use('/admissions', assertion, admissionRoutes);
   app.use('/admissions', assertion, certificateRoutes);
+  app.use('/dpdp', assertion, dpdpRoutes);
   app.use(assertion, importRoutes);
 
   return app;

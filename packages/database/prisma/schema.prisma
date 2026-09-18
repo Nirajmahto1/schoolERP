@@ -93,6 +93,8 @@ model Branch {
   admissionApplications  AdmissionApplication[]     @relation("AdmissionApplicationBranch")
   transferCertificates   TransferCertificate[]      @relation("TransferCertificateBranch")
   certificates           StudentCertificate[]       @relation("StudentCertificateBranch")
+  consentRecords         ConsentRecord[]            @relation("ConsentRecordBranch")
+  erasureRequests        ErasureRequest[]           @relation("ErasureRequestBranch")
   chequePayments         ChequePayment[]
   bankDeposits           BankDeposit[]
   virtualAccounts        VirtualAccount[]
@@ -382,6 +384,8 @@ model Student {
   attendanceSummaries   AttendanceMonthlySummary[]
   transferCertificates  TransferCertificate[]      @relation("TransferCertificateStudent")
   certificates          StudentCertificate[]       @relation("StudentCertificateStudent")
+  consentRecords        ConsentRecord[]            @relation("ConsentRecordStudent")
+  erasureRequests       ErasureRequest[]           @relation("ErasureRequestStudent")
   admissionApplications AdmissionApplication[]     @relation("AdmissionApplicationStudent")
 
   @@unique([branchId, admissionNo])
@@ -1833,6 +1837,81 @@ model Sequence {
 
   @@unique([branchId, code])
   @@map("sequences")
+}
+
+// ── DPDP Act 2023 scaffolding (BUILD_PLAN 10.1) ──
+//
+// Students are minors, which puts the school in the strictest category the
+// Act defines. Two records anchor the compliance surface:
+//
+//   ConsentRecord — verifiable parental consent, per child per purpose,
+//   with the capture method + evidence and an explicit withdrawal path.
+//   One row per (student, purpose) so the row itself tells the lifecycle.
+//
+//   ErasureRequest — the data-principal's erasure right. Filing is open to
+//   the guardian; the DECISION records why statutory-retention records
+//   (fees, academics) survive while contact/photograph data is erased.
+//
+// Every state transition also writes an AuditLog row — consent history is
+// exactly what a Data Fiduciary (the school) must produce on demand.
+enum ConsentStatus {
+  GRANTED
+  WITHDRAWN
+}
+
+model ConsentRecord {
+  id          String         @id @default(cuid())
+  branchId    String
+  studentId   String
+  guardianId  String?
+  // Processing purpose, e.g. "fee_processing", "photos_publication",
+  // "transport_gps". Free string on purpose — new purposes must not
+  // require a migration.
+  purpose     String
+  status      ConsentStatus
+  grantedAt   DateTime?
+  withdrawnAt DateTime?
+  // Verifiable capture: PORTAL (assertion-authenticated guardian click),
+  // PHYSICAL_FORM (office uploads/countersigns a paper form), ONBOARDING
+  // (captured at admission, evidence = the admitting user).
+  method      String
+  evidence    String?
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  branch  Branch  @relation("ConsentRecordBranch", fields: [branchId], references: [id])
+  student Student @relation("ConsentRecordStudent", fields: [studentId], references: [id])
+
+  @@unique([studentId, purpose])
+  @@index([branchId, studentId])
+  @@map("consent_records")
+}
+
+enum ErasureStatus {
+  PENDING
+  COMPLETED
+  REJECTED
+}
+
+model ErasureRequest {
+  id             String        @id @default(cuid())
+  branchId       String
+  studentId      String
+  requestedBy    String
+  reason         String?
+  status         ErasureStatus @default(PENDING)
+  processedBy    String?
+  processedAt    DateTime?
+  resolutionNote String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  branch  Branch  @relation("ErasureRequestBranch", fields: [branchId], references: [id])
+  student Student @relation("ErasureRequestStudent", fields: [studentId], references: [id])
+
+  @@index([branchId, status])
+  @@map("erasure_requests")
 }
 
 // ── Cross-cutting (BUILD_PLAN 2.7) ──
