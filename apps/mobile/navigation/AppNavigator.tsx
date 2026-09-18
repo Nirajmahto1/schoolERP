@@ -1,11 +1,13 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text } from 'react-native';
+import { Text, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { configureForegroundPresentation, registerPushToken, extractDeepLink, routeForDeepLink } from '../lib/push';
+import { connectNotifyLive, type LiveNotification } from '../lib/notify-ws';
+import LiveNotificationBanner from '../components/LiveNotificationBanner';
 
 // ── Core Screens ──
 import LoginScreen from '../components/screens/LoginScreen';
@@ -380,6 +382,28 @@ export default function AppNavigator() {
   const navigationRef = useNavigationContainerRef();
   const routeRef = useRef<{ current: { navigate: (route: string) => void } | null }>({ current: null });
 
+  // Live WebSocket notifications (engine): a per-user socket while the app
+  // is open — leave decisions, announcements. Ephemeral by design; FCM covers
+  // app-closed delivery. Logged-out (no token) it stays silent.
+  const [liveNotification, setLiveNotification] = useState<LiveNotification | null>(null);
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    AsyncStorage.getItem('erp_token').then((token) => {
+      if (!token || cancelled) return;
+      connectNotifyLive({
+        onNotification: (n) => setLiveNotification(n),
+      }).then((d) => {
+        if (cancelled) d();
+        else dispose = d;
+      }).catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+
   useEffect(() => {
     configureForegroundPresentation();
     registerPushToken().catch(() => {});
@@ -405,13 +429,24 @@ export default function AppNavigator() {
 
   return (
     <NavigationContainer ref={navigationRef}>
-      <RootStack.Navigator screenOptions={{ headerShown: false }}>
-        <RootStack.Screen name="Login" component={LoginScreenWrapper} />
-        <RootStack.Screen name="AdminApp" component={AdminTabs} />
-        <RootStack.Screen name="TeacherApp" component={TeacherTabs} />
-        <RootStack.Screen name="FinanceApp" component={FinanceTabs} />
-        <RootStack.Screen name="ParentApp" component={ParentTabs} />
-      </RootStack.Navigator>
+      <View className="flex-1">
+        <RootStack.Navigator screenOptions={{ headerShown: false }}>
+          <RootStack.Screen name="Login" component={LoginScreenWrapper} />
+          <RootStack.Screen name="AdminApp" component={AdminTabs} />
+          <RootStack.Screen name="TeacherApp" component={TeacherTabs} />
+          <RootStack.Screen name="FinanceApp" component={FinanceTabs} />
+          <RootStack.Screen name="ParentApp" component={ParentTabs} />
+        </RootStack.Navigator>
+        {/* Tapping the banner navigates by deepLink (erp://leaves → Leaves). */}
+        <LiveNotificationBanner
+          notification={liveNotification}
+          onTap={(n) => {
+            setLiveNotification(null);
+            const target = n.deepLink ? routeForDeepLink(n.deepLink) : null;
+            if (target) (navigationRef.current as any)?.navigate?.(target.route);
+          }}
+        />
+      </View>
     </NavigationContainer>
   );
 }

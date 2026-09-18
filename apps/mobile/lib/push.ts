@@ -107,6 +107,9 @@ export function routeForDeepLink(link: string): { route: string; params?: Record
       return { route: 'More' };
     case 'timetable':
       return { route: 'Timetable' };
+    case 'leaves':
+    case 'leaves/decision':
+      return { route: 'Leaves' };
     default:
       return null;
   }

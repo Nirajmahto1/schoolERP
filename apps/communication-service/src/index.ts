@@ -859,6 +859,47 @@ r.post('/exam-triggers/results-published', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Staff notification (single-user push) ──
+// Peer services (staff-service leave decisions, exam publishes, payroll runs)
+// call this with an internal assertion to notify ONE user on their registered
+// devices. It writes a PUSH NotificationLog row (the delivery-dispute trail)
+// and drains urgently — quiet hours never delay a decision the teacher is
+// waiting for. recipientId = userId because PUSH resolves recipients through
+// the device registry (§5.4). `link:erp://…` in the template slot becomes the
+// push's deepLink, the same convention the class dispatch uses.
+// Service-only: the gateway signs SYSTEM assertions for peers; humans have
+// named roles, so this gate cannot be satisfied by any logged-in account.
+r.post('/staff-notify', async (req, res) => {
+  try {
+    const { userId, roles, branchId } = ctx(req);
+    if (!roles.includes('SYSTEM')) {
+      res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'Service-only endpoint.' });
+      return;
+    }
+    const { targetUserId, title, body, deepLink } = req.body ?? {};
+    if (!targetUserId || !title || !body) {
+      res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'targetUserId, title, and body are required.' });
+      return;
+    }
+    const log = await prisma.notificationLog.create({
+      data: {
+        branchId: branchId!,
+        channel: 'PUSH',
+        recipientType: 'USER',
+        recipientId: String(targetUserId),
+        subject: String(title).slice(0, 120),
+        body: String(body).slice(0, 500),
+        ...(deepLink ? { template: `link:${String(deepLink)}` } : {}),
+        status: 'QUEUED',
+      },
+    });
+    // Urgent drain bounds this route's latency; failures leave the row QUEUED
+    // for the regular drainer (retry-with-backoff), never lost.
+    const drained = await dispatcher.drain({ urgent: true, limit: 5 });
+    res.status(201).json({ id: log.id, drained: { sent: drained.sent, failed: drained.failed } });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 r.get('/dispatch-logs', async (req, res) => {
   try {
     const { branchId } = ctx(req);

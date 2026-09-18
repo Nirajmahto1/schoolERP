@@ -7,7 +7,7 @@ import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
-import { teacherRoutes } from './routes/teacher.routes';
+import { teacherRoutes, configureTeacherNotifications } from './routes/teacher.routes';
 import { adminRoutes } from './routes/admin.routes';
 import { hrRoutes } from './routes/hr.routes';
 
@@ -27,6 +27,15 @@ const { app, mount, finalize } = createServiceApp({
 // Route handlers fetch the client via `req.app.get('prisma')` so they stay
 // unit-testable — register the shared instance here.
 app.set('prisma', prisma);
+
+// Peer-notification endpoints (leave decisions → FCM push + live WebSocket).
+// Both are optional: without the private key the decision route simply skips
+// the fire-and-forget calls (ADR-3 leaf-service posture).
+configureTeacherNotifications({
+  internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+  communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+  notificationEngineUrl: env.NOTIFICATION_ENGINE_URL,
+});
 
 mount('/teacher', teacherRoutes);
 mount('/admin', adminRoutes);

@@ -276,6 +276,11 @@ const peerServicesSchema = z.object({
   // Timetable engine (Phase 6.2): the constraint solver academic-service calls
   // to generate/persist timetables and suggest substitutions.
   TIMETABLE_ENGINE_URL: z.string().url().default('http://localhost:6003'),
+  // Notification engine (Phase 6.1): services push live WebSocket
+  // notifications here (POST /notifications/send, channel=user|branch|...).
+  // Like COMMUNICATION_SERVICE_URL: optional with a localhost default so
+  // single-machine dev just works and CI never needs the variable.
+  NOTIFICATION_ENGINE_URL: z.string().url().default('http://localhost:6001'),
   // Private signing material for direct peer calls (a service minting its
   // own assertion for a peer). Optional — leaf services hold only the
   // public key per ADR-3, and a service without it skips peer enhancements

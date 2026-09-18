@@ -1,6 +1,31 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
+import { notifyStaffUser } from '../notify';
+
+// Peer-notification endpoints, injected by the entrypoint (app.set) so the
+// route file stays free of env plumbing. Undefined = peer call skipped.
+let internalAssertionPrivateKey: string | undefined;
+let communicationBaseUrl: string | undefined;
+let notificationEngineUrl: string | undefined;
+
+/** The verified request identity (the approver), when the assertion carries it.
+ *  tenantId may be '' — single-DB deployments mint assertions with an empty
+ *  tenant, and the peer routes key on branchId, not tenant. */
+const identityOf = (req: Request): { userId: string; email: string; tenantId: string; branchId: string | null } | null => {
+  const c = ctx(req);
+  return c.userId ? { userId: c.userId, email: c.email, tenantId: c.tenantId, branchId: c.branchId } : null;
+};
+
+export function configureTeacherNotifications(cfg: {
+  internalAssertionPrivateKey?: string;
+  communicationBaseUrl?: string;
+  notificationEngineUrl?: string;
+}): void {
+  internalAssertionPrivateKey = cfg.internalAssertionPrivateKey;
+  communicationBaseUrl = cfg.communicationBaseUrl;
+  notificationEngineUrl = cfg.notificationEngineUrl;
+}
 
 export const teacherRoutes = Router();
 
@@ -399,6 +424,30 @@ teacherRoutes.post('/leave-requests/:id/decision', async (req: Request, res: Res
     if (claimed.count === 0) {
       return res.status(409).json({ type: 'conflict', title: 'Already Decided', status: 409, detail: 'This request has already been approved or rejected.' });
     }
+
+    // Notify the requesting teacher: FCM push (works with the app closed) +
+    // live WebSocket (instant when the app is open). Fire-and-forget behind
+    // the response — the decision is already committed; delivery problems
+    // are logged, never surfaced as an error to the approver.
+    const staffRow = await prisma.staff.findUnique({ where: { id: row.staffId }, select: { userId: true } });
+    if (staffRow && identityOf(req)) {
+      const approverIdentity = identityOf(req)!;
+      void notifyStaffUser(
+        approverIdentity,
+        {
+          targetUserId: staffRow.userId,
+          title: `Leave ${decision === 'APPROVED' ? 'approved' : 'rejected'}`,
+          body: `${decision === 'APPROVED' ? 'Approved' : 'Rejected'} by ${approverName}${note ? ` — ${note}` : ''}`.slice(0, 200),
+          deepLink: 'erp://leaves',
+        },
+        {
+          internalAssertionPrivateKey: internalAssertionPrivateKey,
+          communicationBaseUrl: communicationBaseUrl,
+          notificationEngineUrl: notificationEngineUrl,
+        },
+      );
+    }
+
     res.json({ id: row.id, status: decision, approvedBy: approverName, decisionNote: note, decidedAt: new Date().toISOString() });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
