@@ -7,6 +7,7 @@ import { PrismaClient } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
+import { udiseRoutes } from './udise.routes';
 import {
   generateAndPersist,
   buildSubstitutionProblem,
@@ -101,6 +102,12 @@ export function createAcademicApp(options: AcademicAppOptions) {
       '/library/books': { get: { summary: 'Search library books', tags: ['library'], responses: { '200': { description: 'OK' } } } },
       '/library/issue': { post: { summary: 'Issue a book', tags: ['library'], responses: { '201': { description: 'Issued' } } } },
       '/library/return/{id}': { post: { summary: 'Return a book (fine computed)', tags: ['library'], responses: { '200': { description: 'Returned' } } } },
+      '/udise/export': {
+        get: { summary: 'UDISE+ DCF export (JSON) for the current or given academic year', tags: ['udise'], responses: { '200': { description: 'Export' } } },
+      },
+      '/udise/export.csv': {
+        get: { summary: 'UDISE+ DCF export as CSV for portal entry', tags: ['udise'], responses: { '200': { description: 'CSV' } } },
+      },
     },
   });
   app.get('/openapi.json', (_req, res) => { res.json(openapi); });
@@ -661,6 +668,7 @@ r.post('/calendar', async (req, res) => {
 });
 
   mount('/', r);
+  mount('/udise', udiseRoutes);
   finalize();
 
   return app;
