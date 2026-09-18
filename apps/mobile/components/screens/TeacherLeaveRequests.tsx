@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { teacherApi } from "../../lib/api";
+import { leaveTypeLabel, statusLabel } from "../../lib/leave-labels";
 import { useFocusEffect } from "@react-navigation/native";
 
 // ──────────────────────────────────────────────
@@ -19,7 +20,10 @@ type LeaveRow = {
   startDate: string;
   endDate: string;
   reason: string;
+  decisionNote?: string | null;
   status: "PENDING" | "APPROVED" | "REJECTED";
+  approvedBy?: string | null;
+  decidedAt?: string | null;
   createdAt: string;
 };
 
@@ -160,9 +164,9 @@ export default function TeacherLeaveRequests() {
             return (
               <View key={l.id} className="bg-white rounded-2xl p-4 shadow-sm border border-surface-container-highest mb-3">
                 <View className="flex-row justify-between items-center">
-                  <Text className="text-on-surface font-semibold text-base">{l.leaveType}</Text>
+                  <Text className="text-on-surface font-semibold text-base">{leaveTypeLabel(l.leaveType)}</Text>
                   <View className={`px-3 py-1 rounded-full ${s.chip}`}>
-                    <Text className={`font-bold text-xs ${s.text}`}>{l.status}</Text>
+                    <Text className={`font-bold text-xs ${s.text}`}>{statusLabel(l.status)}</Text>
                   </View>
                 </View>
                 <Text className="text-on-surface-variant text-sm mt-1">
@@ -171,6 +175,23 @@ export default function TeacherLeaveRequests() {
                 {l.reason ? (
                   <Text className="text-on-surface-variant text-sm mt-2" numberOfLines={2}>{l.reason}</Text>
                 ) : null}
+
+                {/* Decision stamp — who decided, their note, and when. Only on
+                    decided rows; PENDING shows nothing. */}
+                {l.status !== "PENDING" && (l.approvedBy || l.decisionNote || l.decidedAt) && (
+                  <View className="mt-3 rounded-xl bg-surface-container-low p-3">
+                    <View className="flex-row items-center">
+                      <Text className="text-on-surface text-xs">
+                        <Text className="font-bold">{l.status === "APPROVED" ? "Approved" : "Rejected"}</Text>
+                        {l.approvedBy ? ` by ${l.approvedBy}` : ""}
+                        {l.decidedAt ? ` · ${fmtDate(l.decidedAt)}` : ""}
+                      </Text>
+                    </View>
+                    {l.decisionNote ? (
+                      <Text className="text-on-surface-variant text-xs mt-1">“{l.decisionNote}”</Text>
+                    ) : null}
+                  </View>
+                )}
               </View>
             );
           })
@@ -205,7 +226,7 @@ export default function TeacherLeaveRequests() {
                   onPress={() => setLeaveType(t)}
                   className={`px-3 py-1.5 rounded-full mr-2 mb-2 ${leaveType === t ? "bg-primary" : "bg-surface-container-low border border-surface-container-highest"}`}
                 >
-                  <Text className={`text-xs font-semibold ${leaveType === t ? "text-white" : "text-on-surface-variant"}`}>{t}</Text>
+                  <Text className={`text-xs font-semibold ${leaveType === t ? "text-white" : "text-on-surface-variant"}`}>{leaveTypeLabel(t)}</Text>
                 </TouchableOpacity>
               ))}
             </View>

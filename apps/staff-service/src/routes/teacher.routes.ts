@@ -75,6 +75,10 @@ teacherRoutes.get('/students', async (req: Request, res: Response) => {
 });
 
 // GET /leave-requests
+// Decision details ride along: who decided it, their optional note (stored
+// appended to `reason` — split back out here, never shown as the teacher's
+// own words), and when (updatedAt doubles as the decision timestamp once the
+// row leaves PENDING).
 teacherRoutes.get('/leave-requests', async (req: Request, res: Response) => {
   try {
     const prisma: PrismaClient = req.app.get('prisma');
@@ -88,7 +92,21 @@ teacherRoutes.get('/leave-requests', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    res.json(requests);
+    res.json(requests.map((r) => {
+      const { reason, decisionNote } = splitDecisionNote(r.reason);
+      return {
+        id: r.id,
+        leaveType: r.leaveType,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        reason,
+        decisionNote,
+        status: r.status,
+        approvedBy: r.status === 'PENDING' ? null : r.approvedBy,
+        decidedAt: r.status === 'PENDING' ? null : r.updatedAt,
+        createdAt: r.createdAt,
+      };
+    }));
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
@@ -266,6 +284,16 @@ teacherRoutes.post('/leave-requests', async (req: Request, res: Response) => {
 // so a second decision 404s (count 0) instead of overriding the first.
 const APPROVER_ROLES = ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'];
 
+// The decision POST appends the approver's note to `reason` with this exact
+// marker (there is no dedicated column). Splitting it back out here keeps the
+// teacher's original words and the approver's note separate on every read.
+const APPROVER_NOTE_MARK = '\n— Approver note: ';
+function splitDecisionNote(reason: string): { reason: string; decisionNote: string | null } {
+  const idx = reason.indexOf(APPROVER_NOTE_MARK);
+  if (idx === -1) return { reason, decisionNote: null };
+  return { reason: reason.slice(0, idx), decisionNote: reason.slice(idx + APPROVER_NOTE_MARK.length) || null };
+}
+
 // GET /leave-approvals?status=PENDING|APPROVED|REJECTED
 // Returns PENDING first when no status filter is passed — the inbox is what
 // an approver opens this screen for.
@@ -304,19 +332,25 @@ teacherRoutes.get('/leave-approvals', async (req: Request, res: Response) => {
     });
 
     res.json({
-      data: rows.map((r: (typeof rows)[number]) => ({
-        id: r.id,
-        teacherName: `${r.staff.firstName} ${r.staff.lastName}`,
-        employeeId: r.staff.employeeId,
-        department: r.staff.department,
-        designation: r.staff.designation,
-        leaveType: r.leaveType,
-        startDate: r.startDate,
-        endDate: r.endDate,
-        reason: r.reason,
-        status: r.status,
-        createdAt: r.createdAt,
-      })),
+      data: rows.map((r: (typeof rows)[number]) => {
+        const { reason, decisionNote } = splitDecisionNote(r.reason);
+        return {
+          id: r.id,
+          teacherName: `${r.staff.firstName} ${r.staff.lastName}`,
+          employeeId: r.staff.employeeId,
+          department: r.staff.department,
+          designation: r.staff.designation,
+          leaveType: r.leaveType,
+          startDate: r.startDate,
+          endDate: r.endDate,
+          reason,
+          decisionNote,
+          status: r.status,
+          approvedBy: r.status === 'PENDING' ? null : r.approvedBy,
+          decidedAt: r.status === 'PENDING' ? null : r.updatedAt,
+          createdAt: r.createdAt,
+        };
+      }),
       scope: isHodOnly ? 'department' : 'branch',
     });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
@@ -352,18 +386,20 @@ teacherRoutes.post('/leave-requests/:id/decision', async (req: Request, res: Res
 
     // updateMany scoped to PENDING: a re-decision updates 0 rows — surfaced
     // as 409, so the first decision always stands.
+    const approverName = `${approver?.firstName ?? 'Approver'} ${approver?.lastName ?? ''}`.trim();
+    const note = req.body?.note ? String(req.body.note).slice(0, 300) : null;
     const claimed = await prisma.leaveRequest.updateMany({
       where: { id: row.id, status: 'PENDING' },
       data: {
         status: decision,
-        approvedBy: `${approver?.firstName ?? 'Approver'} ${approver?.lastName ?? ''}`.trim(),
-        ...(req.body?.note ? { reason: `${row.reason}\n— Approver note: ${String(req.body.note).slice(0, 300)}` } : {}),
+        approvedBy: approverName,
+        ...(note ? { reason: `${row.reason}${APPROVER_NOTE_MARK}${note}` } : {}),
       },
     });
     if (claimed.count === 0) {
       return res.status(409).json({ type: 'conflict', title: 'Already Decided', status: 409, detail: 'This request has already been approved or rejected.' });
     }
-    res.json({ id: row.id, status: decision });
+    res.json({ id: row.id, status: decision, approvedBy: approverName, decisionNote: note, decidedAt: new Date().toISOString() });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
