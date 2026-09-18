@@ -21,7 +21,7 @@
     "@types/node": "^20.14.0",
     "express": "^4.21.0",
     "rimraf": "^5.0.0",
-    "typescript": "^5.4.0",
+    "typescript": "^7.0.2",
     "vitest": "^2.1.0"
   },
   "peerDependencies": {
