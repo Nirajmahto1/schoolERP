@@ -25,6 +25,7 @@ import TeacherEnterMarks from '../components/screens/TeacherEnterMarks';
 import TeacherLeaveRequests from '../components/screens/TeacherLeaveRequests';
 import TeacherTimetableScreen from '../components/screens/TeacherTimetableScreen';
 import TeacherProfileScreen from '../components/screens/TeacherProfileScreen';
+import TeacherStudentsScreen from '../components/screens/TeacherStudentsScreen';
 
 // ── Finance Screens ──
 import FinanceInvoices from '../components/screens/FinanceInvoices';
@@ -92,6 +93,7 @@ function TeacherMoreStack() {
             navigation={navigation}
             items={[
               { label: 'My Timetable', icon: '📅', route: 'TeacherTimetable', description: 'View your class schedule' },
+              { label: 'Students', icon: '🎒', route: 'TeacherStudents', description: 'Rosters & student info' },
               { label: 'Library', icon: '📚', route: 'Library', description: 'Issued & available books' },
               { label: 'Announcements', icon: '📢', route: 'Announcements', description: 'School notices' },
               { label: 'Profile', icon: '👤', route: 'TeacherProfile', description: 'Your account details' },
@@ -100,6 +102,7 @@ function TeacherMoreStack() {
         )}
       </MoreStack.Screen>
       <MoreStack.Screen name="TeacherTimetable" component={TeacherTimetableScreen} />
+      <MoreStack.Screen name="TeacherStudents" component={TeacherStudentsScreen} />
       <MoreStack.Screen name="Library" component={LibraryScreen} />
       <MoreStack.Screen name="Announcements" component={AnnouncementsScreen} />
       <MoreStack.Screen name="TeacherProfile" component={TeacherProfileScreen} />

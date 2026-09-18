@@ -38,17 +38,27 @@ teacherRoutes.get('/my-classes', async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
-// GET /students?className=&sectionName=
+// GET /students?className=&sectionName=&search=
 teacherRoutes.get('/students', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.get('prisma');
-    const { className, sectionName } = req.query;
+    const { className, sectionName, search } = req.query;
     if (!className || !sectionName) { return res.status(400).json({ detail: 'className and sectionName required' }); }
 
-    // Class/section live on the CURRENT enrollment (Phase 2).
+    // Class/section live on the CURRENT enrollment (Phase 2). `search` is an
+    // optional teacher convenience: name or admission number substring.
     const students = await prisma.student.findMany({
       where: {
         deletedAt: null,
+        ...(search
+          ? {
+              OR: [
+                { firstName: { contains: search as string, mode: 'insensitive' as const } },
+                { lastName: { contains: search as string, mode: 'insensitive' as const } },
+                { admissionNo: { contains: search as string, mode: 'insensitive' as const } },
+              ],
+            }
+          : {}),
         enrollments: {
           some: {
             status: 'ENROLLED',
@@ -359,74 +369,127 @@ teacherRoutes.put('/profile', async (req: Request, res: Response) => {
 });
 
 // GET /timetable
+// Real week grid from timetable_slots where this staff member takes the
+// slot (2.7.6): day → ordered periods with subject, class-section and room.
 teacherRoutes.get('/timetable', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.get('prisma');
     const { userId } = ctx(req);
-    const staff = await prisma.staff.findUnique({ 
-      where: { userId }, 
-      include: { subjectTeachers: { include: { subject: { include: { class: { include: { sections: true } } } } } } } 
+    const staff = await prisma.staff.findUnique({ where: { userId }, select: { id: true, branchId: true } });
+    if (!staff) return res.json({ days: [] });
+
+    const slots = await prisma.timetableSlot.findMany({
+      where: { staffId: staff.id, section: { class: { branchId: staff.branchId } } },
+      include: {
+        subject: { select: { name: true } },
+        section: { select: { name: true, class: { select: { name: true } } } },
+      },
+      orderBy: { startTime: 'asc' },
     });
-    
-    // Map subjects into a simple schedule grid structure
-    const st = staff?.subjectTeachers || [];
-    const timetable = [
-      { time: '09:00 - 09:45', mon: st[0]?.subject.name || 'Planning', tue: st[1]?.subject.name || 'Admin', wed: st[0]?.subject.name || '-', thu: st[1]?.subject.name || '-', fri: st[0]?.subject.name || '-' },
-      { time: '09:45 - 10:30', mon: st[1]?.subject.name || '-', tue: st[0]?.subject.name || '-', wed: st[1]?.subject.name || '-', thu: st[0]?.subject.name || '-', fri: st[1]?.subject.name || '-' },
-      { time: '10:30 - 10:45', mon: 'Break', tue: 'Break', wed: 'Break', thu: 'Break', fri: 'Break' },
-      { time: '10:45 - 11:30', mon: st[0]?.subject.name || '-', tue: st[1]?.subject.name || '-', wed: st[0]?.subject.name || '-', thu: st[1]?.subject.name || '-', fri: st[0]?.subject.name || '-' },
-    ];
-    res.json({ className: 'Assigned Classes', timetable });
+
+    const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+    const days = DAYS
+      .map((day) => ({
+        day,
+        slots: slots
+          .filter((s: (typeof slots)[number]) => s.day.toUpperCase() === day)
+          .map((s: (typeof slots)[number]) => ({
+            id: s.id,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            subject: s.subject.name,
+            classSection: `${s.section.class.name}-${s.section.name}`,
+            room: s.room,
+          })),
+      }))
+      .filter((d) => d.slots.length > 0);
+
+    res.json({ days });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
 // GET /dashboard
+// Real numbers: assigned class-sections from subjectTeacher rows, student
+// counts from LIVE enrollments (not section capacity), today's attendance
+// from attendance records, today's teaching schedule from timetable_slots.
 teacherRoutes.get('/dashboard', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.get('prisma');
     const { userId } = ctx(req);
-    const staff = await prisma.staff.findUnique({ 
-      where: { userId }, 
-      include: { subjectTeachers: { include: { subject: { include: { class: { include: { sections: true } } } } } } } 
+    const staff = await prisma.staff.findUnique({
+      where: { userId },
+      include: { subjectTeachers: { include: { subject: { include: { class: { include: { sections: true } } } } } } },
     });
-    
-    if (!staff) return res.json({ totalClasses: 0, totalStudents: 0, attendanceToday: '0/0', examsPending: 0, schedule: [], tasks: [], classOverview: [] });
 
-    // Flatten subject->class->sections
-    const assignedSections = staff.subjectTeachers.flatMap((s: any) => 
-      s.subject.class.sections.map((sec: any) => ({
-        clsName: s.subject.class.name,
-        secName: sec.name,
-        subject: s.subject.name,
-        cap: sec.capacity
-      }))
-    );
+    if (!staff) return res.json({ totalClasses: 0, totalStudents: 0, attendanceToday: '0/0', attendanceRate: null, examsPending: 0, schedule: [], tasks: [], classOverview: [] });
 
-    const uniqueClasses = new Set(assignedSections.map((s: any) => `${s.clsName}-${s.secName}`)).size;
-    const totalStudents = assignedSections.reduce((acc: number, curr: any) => acc + curr.cap, 0);
+    // Distinct sections this teacher teaches.
+    const sectionMap = new Map<string, { classId: string; sectionId: string; cls: string; sec: string; subject: string }>();
+    for (const st of staff.subjectTeachers) {
+      for (const sec of st.subject.class.sections) {
+        const key = sec.id;
+        if (!sectionMap.has(key)) {
+          sectionMap.set(key, { classId: st.subject.classId, sectionId: sec.id, cls: st.subject.class.name, sec: sec.name, subject: st.subject.name });
+        }
+      }
+    }
+    const sections: Array<{ classId: string; sectionId: string; cls: string; sec: string; subject: string }> = [...sectionMap.values()];
 
-    const schedule = assignedSections.slice(0, 4).map((s: any, i: number) => ({
-      time: ['9:00-9:45', '9:45-10:30', '11:00-11:45', '12:00-12:45'][i],
-      cls: `${s.clsName}-${s.secName}`,
-      sub: s.subject,
-      room: `Room 10${i}`
+    // Live enrolled counts per section.
+    const classIds = [...new Set(sections.map((s) => s.classId))];
+    const sectionIds = sections.map((s) => s.sectionId);
+    const enrollments = classIds.length
+      ? await prisma.studentEnrollment.findMany({
+          where: { status: 'ENROLLED', classId: { in: classIds }, sectionId: { in: sectionIds }, student: { deletedAt: null } },
+          select: { classId: true, sectionId: true },
+        })
+      : [];
+    const countBy = (cid: string, sid: string) => enrollments.filter((e: { classId: string; sectionId: string }) => e.classId === cid && e.sectionId === sid).length;
+    const totalStudents = enrollments.length;
+
+    // Today's attendance across this teacher's sections (their sections only).
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today.getTime() + 86_400_000);
+    const sessions = sectionIds.length
+      ? await prisma.attendanceSession.findMany({
+          where: { date: { gte: today, lt: tomorrow }, classId: { in: classIds }, sectionId: { in: sectionIds } },
+          include: { records: { select: { status: true } } },
+        })
+      : [];
+    const records = sessions.flatMap((s: { records: Array<{ status: string }> }) => s.records);
+    const present = records.filter((r: { status: string }) => r.status === 'PRESENT').length;
+    const marked = records.length;
+
+    // Today's teaching schedule from the real timetable (branch day name).
+    const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+    const todayName = dayNames[today.getDay()];
+    const slots = await prisma.timetableSlot.findMany({
+      where: { staffId: staff.id, day: todayName, section: { class: { branchId: staff.branchId } } },
+      include: { subject: { select: { name: true } }, section: { select: { name: true, class: { select: { name: true } } } } },
+      orderBy: { startTime: 'asc' },
+    });
+    const schedule = slots.map((s: (typeof slots)[number]) => ({
+      time: `${s.startTime}-${s.endTime}`,
+      cls: `${s.section.class.name}-${s.section.name}`,
+      sub: s.subject.name,
+      room: s.room ?? '—',
     }));
 
-    const classOverview = assignedSections.slice(0, 3).map((s: any) => ({
-      cls: `${s.clsName}-${s.secName}`,
-      students: s.cap,
-      att: '95%',
-      avg: 80
+    const classOverview = sections.slice(0, 4).map((s: { cls: string; sec: string; classId: string; sectionId: string }) => ({
+      cls: `${s.cls}-${s.sec}`,
+      students: countBy(s.classId, s.sectionId),
     }));
 
     res.json({
-      totalClasses: uniqueClasses,
+      totalClasses: sections.length,
       totalStudents,
-      attendanceToday: `${Math.floor(totalStudents * 0.95)}/${totalStudents}`,
-      examsPending: uniqueClasses > 0 ? 1 : 0,
+      attendanceToday: marked > 0 ? `${present}/${marked}` : null,
+      attendanceRate: marked > 0 ? Math.round((present / marked) * 100) : null,
+      examsPending: 0,
       schedule,
-      tasks: [ { t: 'Update Gradebook', due: 'Tomorrow', p: 'High' } ],
-      classOverview
+      tasks: [],
+      classOverview,
     });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });

@@ -160,8 +160,8 @@ export const academicApi = {
 export const teacherApi = {
   getDashboard: () => apiRequest<any>('/teacher/dashboard'),
   getMyClasses: () => apiRequest<any[]>('/teacher/my-classes'),
-  getStudents: (className: string, sectionName: string) =>
-    apiRequest<{ data: any[] }>(`/teacher/students?className=${className}&sectionName=${sectionName}`),
+  getStudents: (className: string, sectionName: string, search?: string) =>
+    apiRequest<{ data: any[] }>(`/teacher/students?className=${encodeURIComponent(className)}&sectionName=${encodeURIComponent(sectionName)}${search ? `&search=${encodeURIComponent(search)}` : ""}`),
   getDailyAttendance: (date: string, className: string, sectionName: string) =>
     apiRequest<{ data: any[] }>(`/teacher/attendance?date=${date}&className=${className}&sectionName=${sectionName}`),
   markAttendance: (payload: any) =>
@@ -182,7 +182,7 @@ export const teacherApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  getMyTimetable: () => apiRequest<{ className: string; timetable: any[] }>('/teacher/timetable'),
+  getMyTimetable: () => apiRequest<{ days: Array<{ day: string; slots: Array<{ id: string; startTime: string; endTime: string; subject: string; classSection: string; room: string | null }> }> }>('/teacher/timetable'),
   getProfile: () => apiRequest<any>('/teacher/profile'),
   updateProfile: (payload: any) =>
     apiRequest<any>('/teacher/profile', {
