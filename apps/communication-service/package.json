@@ -16,6 +16,7 @@
     "@school-erp/control-plane": "^1.0.0",
     "@school-erp/database": "*",
     "@school-erp/http": "*",
+    "@school-erp/notify": "*",
     "@school-erp/shared-types": "*",
     "@types/jsonwebtoken": "^9.0.10",
     "express": "^4.21.0",

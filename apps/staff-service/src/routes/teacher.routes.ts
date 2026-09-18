@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
-import { notifyStaffUser } from '../notify';
+import { notifyStaffUser } from '@school-erp/notify';
 
 // Peer-notification endpoints, injected by the entrypoint (app.set) so the
 // route file stays free of env plumbing. Undefined = peer call skipped.

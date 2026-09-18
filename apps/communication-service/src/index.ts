@@ -19,6 +19,7 @@ import { scanFeeRemindersForDate } from './fee-reminders';
 import { scanExamSchedules, notifyResultsPublished } from './exam-triggers';
 import { tryDecrementCredits } from './credit-gate';
 import { ChatHub, mintChatTicket, defaultRedisFactory } from './chat-hub';
+import { notifyStaffUsers } from '@school-erp/notify';
 
 /** MUST equal the gateway route-table audience for this service. */
 const SERVICE_NAME = 'communication-service';
@@ -31,6 +32,8 @@ const SERVICE_NAME = 'communication-service';
 // reach the hub via getChatHub() to attach listeners.
 let activeChatHub: ChatHub | null = null;
 let chatTicketSecret: string | undefined;
+/** Module-scope peer WS-notify config, assigned by the factory (route files read it). */
+let engineNotifyConfig: { internalAssertionPrivateKey?: string; notificationEngineUrl?: string } = {};
 /** Entrypoints call this after createCommunicationApp to attach the hub to their listener(s). */
 export function getChatHub(): ChatHub | null {
   return activeChatHub;
@@ -91,7 +94,7 @@ function messagingFromEnv() {
 }
 
 export interface CommunicationAppOptions {
-  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string; CHAT_TICKET_SECRET?: string; REDIS_URL?: string };
+  env: { INTERNAL_ASSERTION_PUBLIC_KEY: string; CHAT_TICKET_SECRET?: string; REDIS_URL?: string; INTERNAL_ASSERTION_PRIVATE_KEY?: string; NOTIFICATION_ENGINE_URL?: string };
   prisma: PrismaClient;
   /** Injected messaging config (defaults from loadServiceEnv). */
   messaging?: {
@@ -119,6 +122,12 @@ export function createCommunicationApp(options: CommunicationAppOptions) {
   // secret is configured — tests and unconfigured deployments stay
   // polling-only, exactly like fee-service boots without Razorpay keys.
   chatTicketSecret = options.env.CHAT_TICKET_SECRET;
+  // Peer WS-notification config (announcement live heads-up). Optional —
+  // tests and leaf deployments leave it unset and the dispatch route skips.
+  engineNotifyConfig = {
+    internalAssertionPrivateKey: options.env.INTERNAL_ASSERTION_PRIVATE_KEY,
+    notificationEngineUrl: options.env.NOTIFICATION_ENGINE_URL,
+  };
   activeChatHub = chatTicketSecret
     ? new ChatHub({ ticketSecret: chatTicketSecret, redisFactory: options.redisFactory ?? defaultRedisFactory })
     : null;
@@ -596,7 +605,7 @@ r.post('/dispatch', async (req, res) => {
     const render = (text: string, vars: Record<string, string>) =>
       text.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
 
-    const logs: Array<{ channel: 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH'; recipientType: string; recipientId: string; recipient?: string; body: string; status: 'QUEUED' }> = [];
+    const logs: Array<{ channel: 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH'; recipientType: string; recipientId: string; recipient?: string; subject?: string; body: string; status: 'QUEUED' }> = [];
     const ch = (channel ?? 'SMS') as 'SMS' | 'EMAIL' | 'WHATSAPP' | 'PUSH';
     // The drain sends to `recipient` verbatim on every non-PUSH channel, so the
     // address must match the channel: EMAIL to an email address, SMS/WhatsApp to
@@ -620,6 +629,7 @@ r.post('/dispatch', async (req, res) => {
         // The where-clause guarantees userId is non-null for guardians.
         recipientId: ch === 'PUSH' ? (g.guardian.userId as string) : g.guardianId,
         recipient: addressFor(ch, { phone: g.guardian.phone, email: g.guardian.email }),
+        subject: title,
         body: render(body!, { guardianName: g.guardian.fullName, ...(variables ?? {}) }),
         status: 'QUEUED',
       });
@@ -631,6 +641,7 @@ r.post('/dispatch', async (req, res) => {
         recipientType: 'STAFF',
         recipientId: ch === 'PUSH' ? s.userId : s.id,
         recipient: addressFor(ch, { phone: s.phone, email: emailByUserId.get(s.userId) }),
+        subject: title,
         body: render(body!, { staffName: `${s.firstName} ${s.lastName}`, ...(variables ?? {}) }),
         status: 'QUEUED',
       });
@@ -644,6 +655,7 @@ r.post('/dispatch', async (req, res) => {
         // one, so a notification log still points at a person, not an address.
         recipientId: ch === 'PUSH' ? u.userId : (u.staff?.id ?? u.userId),
         recipient: addressFor(ch, { phone: u.staff?.phone, email: u.email }),
+        subject: title,
         body: render(body!, { staffName: name, userName: name, ...(variables ?? {}) }),
         status: 'QUEUED',
       });
@@ -668,6 +680,44 @@ r.post('/dispatch', async (req, res) => {
         createdBy: userId,
       },
     });
+
+    // Live WebSocket heads-up for staff recipients — the QUEUED rows above
+    // cover the durable channels (FCM/SMS/WhatsApp/email); this covers a
+    // staff member who has the app open RIGHT NOW. Recipients are user-keyed:
+    // staffTable covers the role-resolved HR rows, and the staff-only audience
+    // resolves by role (branch admins may hold no staff record at all), so the
+    // two unions cover everyone. The announce's own identity signs the engine
+    // call — a service-to-service enhancement, skipped silently when the
+    // private key is absent.
+    const wsTargets = [
+      ...new Set([
+        ...staff.map((s) => s.userId),
+        ...(ch === 'PUSH'
+          ? staffOnlyRecipients.map((u) => u.userId)
+          : staffOnlyRecipients.filter((u) => u.staff).map((u) => u.staff!.userId)),
+      ]),
+    ];
+    if (
+      wsTargets.length > 0 &&
+      engineNotifyConfig.internalAssertionPrivateKey &&
+      engineNotifyConfig.notificationEngineUrl
+    ) {
+      void notifyStaffUsers(
+        { userId, email: ctx(req).email, tenantId: ctx(req).tenantId, branchId },
+        {
+          title: title ?? 'Announcement',
+          body: String(body ?? '').slice(0, 200),
+          deepLink: 'erp://announcements',
+          kind: 'ANNOUNCEMENT',
+        },
+        wsTargets,
+        {
+          ...engineNotifyConfig,
+          // No communicationBaseUrl — these rows are ALREADY queued above;
+          // re-notifying would double-credit the FCM send.
+        },
+      );
+    }
 
     res.status(201).json({
       announcementId: announcement.id,

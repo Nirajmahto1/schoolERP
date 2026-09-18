@@ -16,6 +16,7 @@ import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders, ctx } from '@school-erp/auth';
 import type { ServiceEnv } from '@school-erp/config';
 import { buildOpenApiDocument } from '@school-erp/http';
+import { notifyStaffUsers } from '@school-erp/notify';
 
 /** MUST equal the gateway route-table audience for this service. */
 export const SERVICE_NAME = 'exam-service';
@@ -28,6 +29,12 @@ export interface ExamAppOptions {
 
 function problem(res: Response, status: number, type: string, title: string, detail: string): void {
   res.status(status).type('application/problem+json').json({ type, title, status, detail });
+}
+
+/** The verified caller identity for peer notifications (tenantId may be ''). */
+function identityOf(req: Request): { userId: string; email: string; tenantId: string; branchId: string | null } | null {
+  const c = ctx(req);
+  return c.userId ? { userId: c.userId, email: c.email, tenantId: c.tenantId, branchId: c.branchId } : null;
 }
 
 const router = Router();
@@ -68,6 +75,15 @@ const statusSchema = z.object({
 
 export function createExamApp({ env, prisma }: ExamAppOptions): Express {
   const app = express();
+
+  // Peer notifications (result-publish push + live WS to subject teachers).
+  // Enhancement-only: without the private key the publish route simply skips
+  // the fire-and-forget calls (ADR-3 leaf-service posture).
+  const notifyConfig = {
+    internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+    communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+    notificationEngineUrl: env.NOTIFICATION_ENGINE_URL,
+  };
 
   app.disable('x-powered-by');
   app.use(stripSpoofableHeaders);
@@ -294,6 +310,42 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
           ...(data.status === 'PUBLISHED' && { publishedAt: new Date(), publishedBy: userId }),
         },
       });
+
+      // PUBLISHED is the point of no return: teachers who entered marks get
+      // a same-moment heads-up (their results are now parent-visible). The
+      // guardian blast stays with communication-service's idempotent scan
+      // (§5.6 #4) — the ops-facing channel with the log-trail dedupe.
+      if (data.status === 'PUBLISHED') {
+        // Teachers of the exam's subjects (SubjectTeacher is the staff↔subject
+        // allocation table; ExamSubject only carries subject + schedule).
+        const examSubjects = await prisma.examSubject.findMany({
+          where: { examinationId: exam.id },
+          select: { subjectId: true },
+        });
+        const subjectIds = [...new Set(examSubjects.map((s) => s.subjectId))];
+        const allocations = subjectIds.length
+          ? await prisma.subjectTeacher.findMany({ where: { subjectId: { in: subjectIds } }, select: { staffId: true } })
+          : [];
+        const staffIds = [...new Set(allocations.map((a) => a.staffId).filter(Boolean))];
+        const staffUsers = staffIds.length
+          ? await prisma.staff.findMany({ where: { id: { in: staffIds }, deletedAt: null }, select: { userId: true } })
+          : [];
+        const identity = identityOf(req);
+        if (identity && staffUsers.length > 0) {
+          void notifyStaffUsers(
+            identity,
+            {
+              title: `Results published: ${exam.name}`,
+              body: 'Your entered marks are now live on the parent portal.',
+              deepLink: 'erp://results',
+              kind: 'EXAM_RESULT',
+            },
+            staffUsers.map((u) => u.userId),
+            notifyConfig,
+          );
+        }
+      }
+
       res.json(updated);
     } catch (e) {
       if (e instanceof z.ZodError) { problem(res, 400, 'validation-error', 'Invalid Input', e.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')); return; }

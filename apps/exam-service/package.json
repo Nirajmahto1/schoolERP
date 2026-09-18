@@ -18,6 +18,7 @@
     "express": "^4.21.0",
     "winston": "^3.14.0",
     "zod": "^3.23.0",
+    "@school-erp/notify": "*",
     "@school-erp/http": "*"
   },
   "devDependencies": {
