@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
   TextInput, Modal, Platform,
 } from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { teacherApi } from "../../lib/api";
 import { useFocusEffect } from "@react-navigation/native";
 
@@ -33,19 +34,37 @@ function fmtDate(iso: string) {
   return d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
 }
 
+/** Date → the YYYY-MM-DD the API's `new Date(...)` parses as a calendar day. */
+function toApiDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** Start of day (local) — the comparison basis for min dates. */
+function startOfToday(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 export default function TeacherLeaveRequests() {
   const [leaves, setLeaves] = useState<LeaveRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
 
-  // Apply sheet state
+  // Apply sheet state. Dates are real Date objects (the pickers' native
+  // value); they serialize to YYYY-MM-DD only at submit time.
   const [sheetOpen, setSheetOpen] = useState(false);
   const [leaveType, setLeaveType] = useState("SICK");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [fromDate, setFromDate] = useState<Date | null>(null);
+  const [toDate, setToDate] = useState<Date | null>(null);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Android: the picker is a modal dialog — mount it while picking, unmount
+  // on the change/dismiss event. iOS: rendered inline below the field.
+  const [showFrom, setShowFrom] = useState(false);
+  const [showTo, setShowTo] = useState(false);
 
   const load = async () => {
     try {
@@ -68,9 +87,14 @@ export default function TeacherLeaveRequests() {
     if (!fromDate || !toDate || !reason.trim()) return;
     setSubmitting(true);
     try {
-      await teacherApi.createLeaveRequest({ leaveType, startDate: fromDate, endDate: toDate, reason: reason.trim() });
+      await teacherApi.createLeaveRequest({
+        leaveType,
+        startDate: toApiDate(fromDate),
+        endDate: toApiDate(toDate),
+        reason: reason.trim(),
+      });
       setSheetOpen(false);
-      setFromDate(""); setToDate(""); setReason("");
+      setFromDate(null); setToDate(null); setReason("");
       await load();
     } catch (e: any) {
       // surface server detail (e.g. 'Staff not found')
@@ -78,6 +102,8 @@ export default function TeacherLeaveRequests() {
     }
     setSubmitting(false);
   };
+
+  const valid = !!fromDate && !!toDate && !!reason.trim();
 
   const counts = {
     ALL: leaves.length,
@@ -184,24 +210,59 @@ export default function TeacherLeaveRequests() {
               ))}
             </View>
 
-            <Text className="text-on-surface-variant text-xs mb-1">From (YYYY-MM-DD)</Text>
-            <TextInput
-              className="bg-white border border-surface-container-highest rounded-xl px-4 py-3 text-on-surface mb-3"
-              placeholder="2026-09-25"
-              placeholderTextColor="#737686"
-              value={fromDate}
-              onChangeText={setFromDate}
-              autoCapitalize="none"
-            />
-            <Text className="text-on-surface-variant text-xs mb-1">To (YYYY-MM-DD)</Text>
-            <TextInput
-              className="bg-white border border-surface-container-highest rounded-xl px-4 py-3 text-on-surface mb-3"
-              placeholder="2026-09-26"
-              placeholderTextColor="#737686"
-              value={toDate}
-              onChangeText={setToDate}
-              autoCapitalize="none"
-            />
+            {/* From — tap to open the native calendar. Android pops a modal
+                dialog; iOS renders the wheel inline below the field. */}
+            <Text className="text-on-surface-variant text-xs mb-1">From</Text>
+            <TouchableOpacity
+              className="bg-white border border-surface-container-highest rounded-xl px-4 py-3.5 mb-3 flex-row justify-between items-center"
+              onPress={() => { setShowTo(false); setShowFrom(true); }}
+            >
+              <Text className={`text-base ${fromDate ? "text-on-surface" : "text-gray-400"}`}>
+                {fromDate ? fmtDate(fromDate.toISOString()) : "Pick start date"}
+              </Text>
+              <Text className="text-primary">📅</Text>
+            </TouchableOpacity>
+            {showFrom && (
+              <DateTimePicker
+                value={fromDate ?? toDate ?? startOfToday()}
+                mode="date"
+                display={Platform.OS === "ios" ? "inline" : "default"}
+                minimumDate={startOfToday()}
+                onChange={(_e, d) => {
+                  if (Platform.OS === "android") setShowFrom(false);
+                  if (d) {
+                    setFromDate(d);
+                    // Keep the range coherent: move "to" forward if it now
+                    // precedes "from" (or has not been picked yet).
+                    if (!toDate || d > toDate) setToDate(d);
+                  }
+                }}
+              />
+            )}
+
+            {/* To — same pattern, floored at the chosen start date. */}
+            <Text className="text-on-surface-variant text-xs mb-1">To</Text>
+            <TouchableOpacity
+              className="bg-white border border-surface-container-highest rounded-xl px-4 py-3.5 mb-3 flex-row justify-between items-center"
+              onPress={() => { setShowFrom(false); setShowTo(true); }}
+            >
+              <Text className={`text-base ${toDate ? "text-on-surface" : "text-gray-400"}`}>
+                {toDate ? fmtDate(toDate.toISOString()) : "Pick end date"}
+              </Text>
+              <Text className="text-primary">📅</Text>
+            </TouchableOpacity>
+            {showTo && (
+              <DateTimePicker
+                value={toDate ?? fromDate ?? startOfToday()}
+                mode="date"
+                display={Platform.OS === "ios" ? "inline" : "default"}
+                minimumDate={fromDate ?? startOfToday()}
+                onChange={(_e, d) => {
+                  if (Platform.OS === "android") setShowTo(false);
+                  if (d) setToDate(d);
+                }}
+              />
+            )}
             <Text className="text-on-surface-variant text-xs mb-1">Reason</Text>
             <TextInput
               className="bg-white border border-surface-container-highest rounded-xl px-4 py-3 text-on-surface mb-5"
@@ -214,9 +275,9 @@ export default function TeacherLeaveRequests() {
             />
 
             <TouchableOpacity
-              className={`rounded-xl py-4 items-center ${!fromDate || !toDate || !reason.trim() ? "bg-primary/40" : "bg-primary"}`}
+              className={`rounded-xl py-4 items-center ${!valid ? "bg-primary/40" : "bg-primary"}`}
               onPress={submit}
-              disabled={!fromDate || !toDate || !reason.trim() || submitting}
+              disabled={!valid || submitting}
             >
               {submitting
                 ? <ActivityIndicator size="small" color="#fff" />
