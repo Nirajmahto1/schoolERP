@@ -260,6 +260,113 @@ teacherRoutes.post('/leave-requests', async (req: Request, res: Response) => {
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
 });
 
+// ── Leave approvals (HOD / Principal / admins) ──
+// HODs see only their own department's requests; Principal and above see the
+// whole branch. Decision is final — the updateMany is scoped to PENDING rows,
+// so a second decision 404s (count 0) instead of overriding the first.
+const APPROVER_ROLES = ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'];
+
+// GET /leave-approvals?status=PENDING|APPROVED|REJECTED
+// Returns PENDING first when no status filter is passed — the inbox is what
+// an approver opens this screen for.
+teacherRoutes.get('/leave-approvals', async (req: Request, res: Response) => {
+  try {
+    const prisma = req.app.get('prisma');
+    const { userId, roles, branchId } = ctx(req);
+    if (!userId || !branchId) { return res.status(403).json({ detail: 'Account has no branch — cannot list leave approvals.' }); }
+    if (!roles.some((r) => APPROVER_ROLES.includes(r))) {
+      return res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'Only HODs, principals, and admins can review leave requests.' });
+    }
+
+    const staff = await prisma.staff.findUnique({ where: { userId }, select: { department: true } });
+    const isHodOnly = roles.includes('HOD') && !roles.some((r) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'ACADEMIC_HEAD'].includes(r));
+
+    // Soft guard for a HOD without a staff row (or blank department): they
+    // would see nothing — tell the client why instead of an empty inbox.
+    if (isHodOnly && (!staff || !staff.department)) {
+      return res.status(409).json({ type: 'config-error', title: 'No Department', status: 409, detail: 'Your account is a HOD but has no department on its staff record. Ask an admin to set it.' });
+    }
+
+    const statusFilter = typeof req.query.status === 'string' && ['PENDING', 'APPROVED', 'REJECTED'].includes(req.query.status)
+      ? req.query.status
+      : undefined;
+
+    const rows = await prisma.leaveRequest.findMany({
+      where: {
+        staff: { branchId, ...(isHodOnly ? { department: staff!.department } : {}) },
+        ...(statusFilter ? { status: statusFilter as never } : {}),
+      },
+      orderBy: [{ status: 'desc' }, { createdAt: 'desc' }],
+      take: 200,
+      include: {
+        staff: { select: { firstName: true, lastName: true, employeeId: true, department: true, designation: true } },
+      },
+    });
+
+    res.json({
+      data: rows.map((r: (typeof rows)[number]) => ({
+        id: r.id,
+        teacherName: `${r.staff.firstName} ${r.staff.lastName}`,
+        employeeId: r.staff.employeeId,
+        department: r.staff.department,
+        designation: r.staff.designation,
+        leaveType: r.leaveType,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        reason: r.reason,
+        status: r.status,
+        createdAt: r.createdAt,
+      })),
+      scope: isHodOnly ? 'department' : 'branch',
+    });
+  } catch (err: any) { res.status(500).json({ detail: err.message }); }
+});
+
+// POST /leave-requests/:id/decision  { decision: 'APPROVED' | 'REJECTED', note? }
+// Same role gate as the list. Note is accepted for the audit string but there
+// is no dedicated column — it is appended to the stored reason.
+teacherRoutes.post('/leave-requests/:id/decision', async (req: Request, res: Response) => {
+  try {
+    const prisma = req.app.get('prisma');
+    const { userId, roles, branchId } = ctx(req);
+    if (!userId || !branchId) { return res.status(403).json({ detail: 'Account has no branch — cannot decide leave requests.' }); }
+    if (!roles.some((r) => APPROVER_ROLES.includes(r))) {
+      return res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'Only HODs, principals, and admins can decide leave requests.' });
+    }
+    const decision = req.body?.decision;
+    if (decision !== 'APPROVED' && decision !== 'REJECTED') {
+      return res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: "decision must be 'APPROVED' or 'REJECTED'." });
+    }
+
+    const approver = await prisma.staff.findUnique({ where: { userId }, select: { firstName: true, lastName: true, department: true } });
+    const isHodOnly = roles.includes('HOD') && !roles.some((r) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'ACADEMIC_HEAD'].includes(r));
+
+    const row = await prisma.leaveRequest.findFirst({
+      where: { id: req.params.id, staff: { branchId } },
+      include: { staff: { select: { department: true } } },
+    });
+    if (!row) { return res.status(404).json({ type: 'not-found', title: 'Not Found', status: 404, detail: 'Leave request not found in your branch.' }); }
+    if (isHodOnly && row.staff.department !== approver?.department) {
+      return res.status(403).json({ type: 'forbidden', title: 'Forbidden', status: 403, detail: 'This request belongs to another department.' });
+    }
+
+    // updateMany scoped to PENDING: a re-decision updates 0 rows — surfaced
+    // as 409, so the first decision always stands.
+    const claimed = await prisma.leaveRequest.updateMany({
+      where: { id: row.id, status: 'PENDING' },
+      data: {
+        status: decision,
+        approvedBy: `${approver?.firstName ?? 'Approver'} ${approver?.lastName ?? ''}`.trim(),
+        ...(req.body?.note ? { reason: `${row.reason}\n— Approver note: ${String(req.body.note).slice(0, 300)}` } : {}),
+      },
+    });
+    if (claimed.count === 0) {
+      return res.status(409).json({ type: 'conflict', title: 'Already Decided', status: 409, detail: 'This request has already been approved or rejected.' });
+    }
+    res.json({ id: row.id, status: decision });
+  } catch (err: any) { res.status(500).json({ detail: err.message }); }
+});
+
 // GET /my-library
 teacherRoutes.get('/my-library', async (req: Request, res: Response) => {
   try {

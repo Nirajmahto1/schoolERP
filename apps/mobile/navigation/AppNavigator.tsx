@@ -26,6 +26,7 @@ import TeacherLeaveRequests from '../components/screens/TeacherLeaveRequests';
 import TeacherTimetableScreen from '../components/screens/TeacherTimetableScreen';
 import TeacherProfileScreen from '../components/screens/TeacherProfileScreen';
 import TeacherStudentsScreen from '../components/screens/TeacherStudentsScreen';
+import LeaveApprovalsScreen from '../components/screens/LeaveApprovalsScreen';
 
 // ── Finance Screens ──
 import FinanceInvoices from '../components/screens/FinanceInvoices';
@@ -68,6 +69,7 @@ function AdminMoreStack() {
               { label: 'Transport', icon: '🚌', route: 'Transport', description: 'Routes & vehicles' },
               { label: 'Announcements', icon: '📢', route: 'Announcements', description: 'School-wide notices' },
               { label: 'Payroll', icon: '💵', route: 'Payroll', description: 'Staff salary management' },
+              { label: 'Leave Approvals', icon: '🙋', route: 'LeaveApprovals', description: 'Approve/reject staff leave' },
             ]}
           />
         )}
@@ -76,6 +78,7 @@ function AdminMoreStack() {
       <MoreStack.Screen name="Transport" component={TransportScreen} />
       <MoreStack.Screen name="Announcements" component={AnnouncementsScreen} />
       <MoreStack.Screen name="Payroll" component={PayrollScreen} />
+      <MoreStack.Screen name="LeaveApprovals" component={LeaveApprovalsScreen} />
     </MoreStack.Navigator>
   );
 }
@@ -94,6 +97,7 @@ function TeacherMoreStack() {
             items={[
               { label: 'My Timetable', icon: '📅', route: 'TeacherTimetable', description: 'View your class schedule' },
               { label: 'Students', icon: '🎒', route: 'TeacherStudents', description: 'Rosters & student info' },
+              { label: 'Leave Approvals', icon: '🙋', route: 'LeaveApprovals', description: 'Approve/reject leave requests' },
               { label: 'Library', icon: '📚', route: 'Library', description: 'Issued & available books' },
               { label: 'Announcements', icon: '📢', route: 'Announcements', description: 'School notices' },
               { label: 'Profile', icon: '👤', route: 'TeacherProfile', description: 'Your account details' },
@@ -103,6 +107,7 @@ function TeacherMoreStack() {
       </MoreStack.Screen>
       <MoreStack.Screen name="TeacherTimetable" component={TeacherTimetableScreen} />
       <MoreStack.Screen name="TeacherStudents" component={TeacherStudentsScreen} />
+      <MoreStack.Screen name="LeaveApprovals" component={LeaveApprovalsScreen} />
       <MoreStack.Screen name="Library" component={LibraryScreen} />
       <MoreStack.Screen name="Announcements" component={AnnouncementsScreen} />
       <MoreStack.Screen name="TeacherProfile" component={TeacherProfileScreen} />
@@ -229,6 +234,21 @@ function AdminTabs({ route }: any) {
 
 function TeacherTabs({ route }: any) {
   const onLogout = route.params?.onLogout;
+  // HODs / academic heads / principals get a live Approvals tab — read at
+  // mount from the roles persisted at login (see LoginScreen). Teachers
+  // without an approver role never see it; the server 403s regardless.
+  const [canApprove, setCanApprove] = React.useState(false);
+  React.useEffect(() => {
+    AsyncStorage.getItem('erp_roles')
+      .then((raw) => {
+        const roles: unknown = raw ? JSON.parse(raw) : [];
+        setCanApprove(
+          Array.isArray(roles) &&
+            roles.some((r) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'HOD', 'ACADEMIC_HEAD'].includes(String(r))),
+        );
+      })
+      .catch(() => {});
+  }, []);
   return (
     <Tab.Navigator screenOptions={tabScreenOptions}>
       <Tab.Screen
@@ -237,6 +257,13 @@ function TeacherTabs({ route }: any) {
       >
         {() => <TeacherDashboard onLogout={onLogout} />}
       </Tab.Screen>
+      {canApprove && (
+        <Tab.Screen
+          name="Approvals"
+          component={LeaveApprovalsScreen}
+          options={{ tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🙋</Text> }}
+        />
+      )}
       <Tab.Screen
         name="Attendance"
         component={TeacherAttendanceEntry}

@@ -182,6 +182,16 @@ export const teacherApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  // ── Approvals (HOD / Principal / admins) ──
+  getLeaveApprovals: (status?: string) =>
+    apiRequest<{ data: any[]; scope: 'department' | 'branch' }>(
+      `/teacher/leave-approvals${status ? `?status=${status}` : ''}`,
+    ),
+  decideLeaveRequest: (id: string, decision: 'APPROVED' | 'REJECTED', note?: string) =>
+    apiRequest<{ id: string; status: string }>(`/teacher/leave-requests/${id}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ decision, ...(note ? { note } : {}) }),
+    }),
   getMyTimetable: () => apiRequest<{ days: Array<{ day: string; slots: Array<{ id: string; startTime: string; endTime: string; subject: string; classSection: string; room: string | null }> }> }>('/teacher/timetable'),
   getProfile: () => apiRequest<any>('/teacher/profile'),
   updateProfile: (payload: any) =>
