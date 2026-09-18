@@ -18,6 +18,7 @@ import { buildOpenApiDocument } from '@school-erp/http';
 import { studentRoutes } from './routes/student.routes';
 import { parentRoutes } from './routes/parent.routes';
 import { admissionRoutes } from './routes/admission.routes';
+import { certificateRoutes } from './routes/certificate.routes';
 import { importRoutes } from './routes/import.routes';
 import { logger } from './utils/logger';
 
@@ -98,6 +99,16 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
       '/admissions/tcs/{studentId}': {
         post: { summary: 'Issue a TC: closes the active enrollment, deactivates the student', tags: ['tc'], responses: { '201': { description: 'Issued' }, '409': { description: 'No active enrollment' } } },
       },
+      '/students/{studentId}/certificates': {
+        get: { summary: "List a student's certificates (staff, or the owning student/parent)", tags: ['certificates'], responses: { '200': { description: 'OK' } } },
+        post: { summary: 'Issue a certificate (BONAFIDE/CHARACTER/FEE_CERTIFICATE/ID_CARD/ADMIT_CARD)', tags: ['certificates'], responses: { '201': { description: 'Issued' }, '409': { description: 'No exam schedule for an admit card' } } },
+      },
+      '/students/{studentId}/certificates/{certId}/pdf': {
+        get: { summary: 'Download the certificate PDF (renders from the issue-time snapshot)', tags: ['certificates'], responses: { '200': { description: 'PDF' }, '404': { description: 'Not found' } } },
+      },
+      '/admissions/tcs/{tcId}/pdf': {
+        get: { summary: 'Download a transfer certificate as the CBSE-style ruled PDF', tags: ['tc'], responses: { '200': { description: 'PDF' } } },
+      },
       '/parents/...': {
         get: { summary: 'Guardian portal endpoints (see parent.routes.ts)', tags: ['parents'], responses: { '200': { description: 'OK' } } },
       },
@@ -132,8 +143,12 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
   //    above did not handle fall through to the assertion + import routes.
   const assertion = requireAssertion(env.INTERNAL_ASSERTION_PUBLIC_KEY, SERVICE_NAME);
   app.use('/students', assertion, studentRoutes);
+  app.use('/students', assertion, certificateRoutes);
   app.use('/parents', assertion, parentRoutes);
+  // Also mounted under /admissions so the TC PDF downloads from the same
+  // prefix that issues the TC (GET /admissions/tcs/:tcId/pdf).
   app.use('/admissions', assertion, admissionRoutes);
+  app.use('/admissions', assertion, certificateRoutes);
   app.use(assertion, importRoutes);
 
   return app;

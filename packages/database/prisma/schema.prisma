@@ -92,6 +92,7 @@ model Branch {
   admissionEnquiries     AdmissionEnquiry[]         @relation("AdmissionEnquiryBranch")
   admissionApplications  AdmissionApplication[]     @relation("AdmissionApplicationBranch")
   transferCertificates   TransferCertificate[]      @relation("TransferCertificateBranch")
+  certificates           StudentCertificate[]       @relation("StudentCertificateBranch")
   chequePayments         ChequePayment[]
   bankDeposits           BankDeposit[]
   virtualAccounts        VirtualAccount[]
@@ -380,6 +381,7 @@ model Student {
   documents             Document[]
   attendanceSummaries   AttendanceMonthlySummary[]
   transferCertificates  TransferCertificate[]      @relation("TransferCertificateStudent")
+  certificates          StudentCertificate[]       @relation("StudentCertificateStudent")
   admissionApplications AdmissionApplication[]     @relation("AdmissionApplicationStudent")
 
   @@unique([branchId, admissionNo])
@@ -1669,6 +1671,47 @@ model TransferCertificate {
   @@index([branchId])
   @@index([studentId])
   @@map("transfer_certificates")
+}
+
+// ── Student certificates (BUILD_PLAN 10.3 #4) ──
+//
+// "Certificates: Transfer Certificate (numbered, board-specific wording),
+// bonafide, character, migration, fee-payment certificate, ID cards, admit
+// cards. Small feature, constant demand."
+//
+// TC lives in its own table (issuing one closes the enrollment — a workflow,
+// not just a document). Every other certificate is an immutable, numbered
+// snapshot row: the PDF is rendered from `payload`, stamped at issue, so a
+// later edit of the student record never silently rewrites an already-issued
+// document — the same reason receipts snapshot the payment.
+enum CertificateType {
+  BONAFIDE
+  CHARACTER
+  FEE_CERTIFICATE
+  ID_CARD
+  ADMIT_CARD
+}
+
+model StudentCertificate {
+  id        String          @id @default(cuid())
+  branchId  String
+  studentId String
+  type      CertificateType
+  certNo    String
+  issueDate DateTime        @default(now())
+  // Free-text "for ___" line (e.g. "for passport application").
+  purpose   String?
+  // Issue-time snapshot of every fact the PDF prints.
+  payload   Json
+  issuedBy  String
+  createdAt DateTime        @default(now())
+
+  branch  Branch  @relation("StudentCertificateBranch", fields: [branchId], references: [id])
+  student Student @relation("StudentCertificateStudent", fields: [studentId], references: [id])
+
+  @@unique([branchId, type, certNo])
+  @@index([branchId, studentId])
+  @@map("student_certificates")
 }
 
 model Book {
