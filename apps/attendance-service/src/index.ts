@@ -8,7 +8,7 @@
 // ──────────────────────────────────────────────
 
 import { Router } from 'express';
-import { PrismaClient } from '@school-erp/database';
+import { PrismaClient, Prisma } from '@school-erp/database';
 import { loadServiceEnv } from '@school-erp/config';
 import { rebuildMonthlySummary } from '@school-erp/domain';
 import { createServiceApp, listenWithGracefulShutdown, ctx, requireAssertion } from '@school-erp/auth';
@@ -220,6 +220,136 @@ r.post('/attendance/mark', async (req, res) => {
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 
+// ── Staff SELF-mark (GPS geofenced) ──
+// POST /attendance/staff/self-mark { latitude, longitude }
+// The rules that make this trustworthy rather than decorative:
+//   • TIME comes from the server clock (`markedAt`), never the device — a
+//     phone at 09:00 might believe it is 07:00.
+//   • PLACE is checked against the branch's BOUNDING BOX — two latitudes and
+//     two longitudes entered on the ERP branch form. The mark is accepted
+//     only when the reported position is equal to or between the bounds on
+//     BOTH axes (inclusive corners count as inside). No box configured →
+//     refused (409), not silently accepted.
+//   • MOCK LOCATIONS are refused: the app flags them (geolocator isMocked /
+//     Android isFromMockProvider), and any mock flag arrives as
+//     `mocked: true` — 409 with a message that names the reason.
+r.post('/attendance/staff/self-mark', async (req, res) => {
+  try {
+    const { userId, branchId } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch — cannot self-mark.' }); return; }
+
+    const lat = Number(req.body?.latitude);
+    const lng = Number(req.body?.longitude);
+    const mocked = req.body?.mocked === true;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      res.status(400).json({ detail: 'Valid latitude and longitude are required.' });
+      return;
+    }
+    if (mocked) {
+      res.status(409).json({ detail: 'Mock location detected — turn off developer options / fake GPS and try again.' });
+      return;
+    }
+
+    const staff = await prisma.staff.findFirst({ where: { userId, deletedAt: null } });
+    if (!staff) { res.status(404).json({ detail: 'No staff record for this account.' }); return; }
+
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { name: true, minLatitude: true, maxLatitude: true, minLongitude: true, maxLongitude: true, lateAfterMinutes: true },
+    });
+    if (
+      !branch ||
+      branch.minLatitude == null || branch.maxLatitude == null ||
+      branch.minLongitude == null || branch.maxLongitude == null
+    ) {
+      res.status(409).json({ detail: 'This branch has no attendance area configured. Ask the admin to set the two latitude/longitude bounds on the branch page.' });
+      return;
+    }
+
+    // Inclusive bounding-box test: equal-to counts as inside, so a fix taken
+    // standing exactly on an entered corner is not bounced by float noise.
+    const inside =
+      lat >= Number(branch.minLatitude) && lat <= Number(branch.maxLatitude) &&
+      lng >= Number(branch.minLongitude) && lng <= Number(branch.maxLongitude);
+    if (!inside) {
+      res.status(409).json({ detail: `You appear to be outside ${branch.name}'s attendance area — attendance can be marked only between the latitude/longitude bounds set for the branch.` });
+      return;
+    }
+
+    // Server time is the truth for both the attendance date and the mark.
+    // The FIRST mark of the day is the arrival; a SECOND mark records the
+    // departure (checkoutAt). A third is refused — the pair is complete and
+    // edits go through an admin, not by re-playing the GPS call.
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const existing = await prisma.staffAttendance.findUnique({
+      where: { staffId_date: { staffId: staff.id, date: day } },
+    });
+
+    if (existing?.checkoutAt) {
+      res.status(409).json({
+        detail: `Attendance already complete for today — checked in ${existing.markedAt?.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}, checked out ${existing.checkoutAt.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })}. Ask the office for any correction.`,
+      });
+      return;
+    }
+
+    const isCheckout = Boolean(existing?.markedAt);
+
+    // Late-arrival detection: the cutoff is minutes past midnight in the
+    // branch's local time (Asia/Kolkata — Indian schools; the attendance
+    // DATE bucket is UTC but the working day is not). A check-in after the
+    // cutoff books LATE with the minutes over recorded as remarks. Null
+    // cutoff on the branch = the check is off, everything is PRESENT.
+    let status = 'PRESENT' as 'PRESENT' | 'LATE';
+    let lateBy: number | null = null;
+    if (!isCheckout && branch.lateAfterMinutes != null) {
+      const ist = new Date(now.getTime() + 5.5 * 3600 * 1000); // UTC+5:30
+      const minutesIntoIstDay = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+      if (minutesIntoIstDay > branch.lateAfterMinutes) {
+        status = 'LATE';
+        lateBy = minutesIntoIstDay - branch.lateAfterMinutes;
+      }
+    }
+
+    const row = isCheckout
+      ? await prisma.staffAttendance.update({
+          where: { id: existing!.id },
+          data: { checkoutAt: now },
+        })
+      : await prisma.staffAttendance.upsert({
+          where: { staffId_date: { staffId: staff.id, date: day } },
+          create: {
+            staffId: staff.id, branchId, date: day, status,
+            markedBy: userId, markedAt: now,
+            remarks: lateBy != null ? `Late by ${lateBy} min` : null,
+            lateMinutes: lateBy,
+            latitude: lat.toFixed(7), longitude: lng.toFixed(7),
+          },
+          update: {
+            status, markedBy: userId, markedAt: now,
+            remarks: lateBy != null ? `Late by ${lateBy} min` : null,
+            lateMinutes: lateBy,
+            latitude: lat.toFixed(7), longitude: lng.toFixed(7),
+          },
+        });
+
+    res.json({
+      ok: true,
+      kind: isCheckout ? 'CHECKOUT' : 'CHECKIN',
+      status: row.status,
+      lateBy,
+      markedAt: row.markedAt,
+      checkoutAt: row.checkoutAt,
+      message: isCheckout
+        ? 'Checked out ✓ — see you tomorrow!'
+        : lateBy != null
+          ? `Checked in ✓ — marked LATE by ${lateBy} min.`
+          : 'Checked in ✓',
+    });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
 // ── Mark Staff Attendance ──
 r.post('/attendance/staff/mark', async (req, res) => {
   try {
@@ -241,6 +371,158 @@ r.post('/attendance/staff/mark', async (req, res) => {
     );
 
     res.json({ count: result.length, message: 'Staff attendance marked successfully' });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── My month calendar (staff/teacher app) ──
+// GET /attendance/staff/me?month=9&year=2026 → one row per marked day for the
+// caller's own staff record, plus a per-status tally. The mobile Attendance
+// tab renders this as a month calendar (present/absent/leave/late).
+r.get('/attendance/staff/me', async (req, res) => {
+  try {
+    const prisma: PrismaClient = req.app.get('prisma');
+    const { userId } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+
+    const staff = await prisma.staff.findUnique({ where: { userId }, select: { id: true } });
+    if (!staff) { res.status(404).json({ detail: 'No staff record for this account.' }); return; }
+
+    const now = new Date();
+    const month = req.query.month ? parseInt(String(req.query.month), 10) : now.getMonth() + 1; // 1..12
+    const year = req.query.year ? parseInt(String(req.query.year), 10) : now.getFullYear();
+    if (!(month >= 1 && month <= 12) || !(year >= 2000 && year <= 2100)) {
+      res.status(400).json({ detail: 'month must be 1..12 and year a sane value.' });
+      return;
+    }
+
+    const from = new Date(Date.UTC(year, month - 1, 1));
+    const to = new Date(Date.UTC(year, month, 1));
+    const rows = await prisma.staffAttendance.findMany({
+      where: { staffId: staff.id, date: { gte: from, lt: to } },
+      orderBy: { date: 'asc' },
+      select: { date: true, status: true, remarks: true, markedAt: true, checkoutAt: true, lateMinutes: true },
+    });
+
+    const tally = { PRESENT: 0, ABSENT: 0, ON_LEAVE: 0, LATE: 0, HALF_DAY: 0 } as Record<string, number>;
+    let totalLateMinutes = 0;
+    const days = rows.map((r) => {
+      tally[r.status] = (tally[r.status] ?? 0) + 1;
+      if (r.lateMinutes != null) totalLateMinutes += r.lateMinutes;
+      // Worked minutes when both ends are recorded — computed server-side so
+      // every client agrees on the number.
+      const workedMinutes =
+        r.markedAt && r.checkoutAt
+          ? Math.max(0, Math.round((r.checkoutAt.getTime() - r.markedAt.getTime()) / 60000))
+          : null;
+      return {
+        date: r.date.toISOString().slice(0, 10),
+        status: r.status,
+        remarks: r.remarks,
+        checkInAt: r.markedAt?.toISOString() ?? null,
+        checkOutAt: r.checkoutAt?.toISOString() ?? null,
+        workedMinutes,
+        lateMinutes: r.lateMinutes,
+      };
+    });
+
+    res.json({ month, year, days, tally, lateCount: tally.LATE, totalLateMinutes, markedDays: days.length });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Monthly punctuality report (principal/admin) ──
+// GET /attendance/staff/punctuality?month=&year=
+// One row per ACTIVE staff member of the caller's branch: attendance counts,
+// late count + minutes, average check-in time, and a punctuality rate
+// (on-time check-ins ÷ marking days with a check-in). Role-gated: only
+// PRINCIPAL / SUPER_ADMIN / BRANCH_ADMIN / ACADEMIC_HEAD may read the whole
+// branch; everyone else is refused — a teacher must not see colleagues.
+r.get('/attendance/staff/punctuality', async (req, res) => {
+  try {
+    const { branchId, roles } = ctx(req);
+    const allowed = ['PRINCIPAL', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'ACADEMIC_HEAD'];
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    if (!roles?.some((r: string) => allowed.includes(r))) {
+      res.status(403).json({ detail: 'Only principals and admins can view the branch punctuality report.' });
+      return;
+    }
+
+    const now = new Date();
+    const month = req.query.month ? parseInt(String(req.query.month), 10) : now.getMonth() + 1;
+    const year = req.query.year ? parseInt(String(req.query.year), 10) : now.getFullYear();
+    if (!(month >= 1 && month <= 12) || !(year >= 2000 && year <= 2100)) {
+      res.status(400).json({ detail: 'month must be 1..12 and year a sane value.' });
+      return;
+    }
+
+    const from = new Date(Date.UTC(year, month - 1, 1));
+    const to = new Date(Date.UTC(year, month, 1));
+
+    const staff = await prisma.staff.findMany({
+      where: { branchId, deletedAt: null, isActive: true },
+      select: { id: true, employeeId: true, firstName: true, lastName: true, designation: true, department: true, photo: true },
+      orderBy: { firstName: 'asc' },
+    });
+
+    const rows = await prisma.staffAttendance.findMany({
+      where: { branchId, date: { gte: from, lt: to } },
+      select: { staffId: true, status: true, markedAt: true, checkoutAt: true, lateMinutes: true },
+    });
+
+    const byStaff = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const list = byStaff.get(r.staffId) ?? [];
+      list.push(r);
+      byStaff.set(r.staffId, list);
+    }
+
+    const report = staff.map((s) => {
+      const mine = byStaff.get(s.id) ?? [];
+      const count = (st: string) => mine.filter((r) => r.status === st).length;
+      const lateCount = count('LATE');
+      const totalLateMinutes = mine.reduce((sum, r) => sum + (r.lateMinutes ?? 0), 0);
+
+      const checkIns = mine.map((r) => r.markedAt).filter((t): t is Date => t != null);
+      // Average check-in in IST (the working-day clock), HH:MM.
+      let avgCheckIn: string | null = null;
+      if (checkIns.length > 0) {
+        const totalMin = checkIns.reduce((sum, t) => {
+          const ist = new Date(t.getTime() + 5.5 * 3600 * 1000);
+          return sum + ist.getUTCHours() * 60 + ist.getUTCMinutes();
+        }, 0);
+        const avg = Math.round(totalMin / checkIns.length);
+        avgCheckIn = `${String(Math.floor(avg / 60) % 24).padStart(2, '0')}:${String(avg % 60).padStart(2, '0')}`;
+      }
+
+      const checkOuts = mine.map((r) => r.checkoutAt).filter((t): t is Date => t != null);
+      const markedDays = mine.length;
+      const punctualityRate = checkIns.length > 0
+        ? Math.round(((checkIns.length - lateCount) / checkIns.length) * 100)
+        : null;
+
+      return {
+        staffId: s.id,
+        name: `${s.firstName} ${s.lastName}`.trim(),
+        employeeId: s.employeeId,
+        designation: s.designation,
+        department: s.department,
+        photo: s.photo,
+        markedDays,
+        present: count('PRESENT') + count('LATE'), // LATE still worked the day
+        lateCount,
+        totalLateMinutes,
+        absent: count('ABSENT'),
+        onLeave: count('ON_LEAVE'),
+        halfDays: count('HALF_DAY'),
+        avgCheckIn,
+        checkOutCount: checkOuts.length,
+        punctualityRate,
+      };
+    });
+
+    // Most-late first, then by total minutes — the principal's attention order.
+    report.sort((a, b) => b.lateCount - a.lateCount || b.totalLateMinutes - a.totalLateMinutes);
+
+    res.json({ month, year, staff: report, generatedAt: now.toISOString() });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

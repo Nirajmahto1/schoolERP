@@ -225,7 +225,20 @@ export interface AddBranchInput {
   address?: string;
   phone?: string;
   email?: string;
+  /** Staff self-attendance geofence: bounding-box corners (any order). */
+  minLatitude?: number;
+  maxLatitude?: number;
+  minLongitude?: number;
+  maxLongitude?: number;
+  /** Late-arrival cutoff, minutes past midnight (branch local, IST). */
+  lateAfterMinutes?: number | null;
   withAcademicYear?: boolean;
+}
+
+/** Normalize a coordinate pair to [min, max]; null when either is absent. */
+function normalizeBound(a?: number, b?: number): [number, number] | [null, null] {
+  if (a == null || b == null) return [null, null];
+  return a <= b ? [a, b] : [b, a];
 }
 
 /**
@@ -249,6 +262,11 @@ export async function addBranch(prisma: PrismaClient, input: AddBranchInput): Pr
       address: input.address?.trim() || '—',
       phone: input.phone?.trim() || '0000000000',
       email: input.email?.trim() || `branch-${code.toLowerCase()}@school.local`,
+      minLatitude: normalizeBound(input.minLatitude, input.maxLatitude)[0] ?? null,
+      maxLatitude: normalizeBound(input.minLatitude, input.maxLatitude)[1] ?? null,
+      minLongitude: normalizeBound(input.minLongitude, input.maxLongitude)[0] ?? null,
+      maxLongitude: normalizeBound(input.minLongitude, input.maxLongitude)[1] ?? null,
+      lateAfterMinutes: input.lateAfterMinutes ?? null,
     },
   });
 

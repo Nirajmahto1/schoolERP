@@ -772,9 +772,9 @@ export const setupApi = {
 
 export const branchApi = {
   list: () => apiRequest<any[]>('/branches'),
-  add: (body: { name: string; code: string; address?: string; phone?: string; email?: string }) =>
+  add: (body: { name: string; code: string; address?: string; phone?: string; email?: string; minLatitude?: number; maxLatitude?: number; minLongitude?: number; maxLongitude?: number; lateAfterMinutes?: number }) =>
     apiRequest<{ ok: boolean; branchId: string }>('/branches', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: { name?: string; address?: string; phone?: string; email?: string; isActive?: boolean }) =>
+  update: (id: string, body: { name?: string; address?: string; phone?: string; email?: string; isActive?: boolean; minLatitude?: number | null; maxLatitude?: number | null; minLongitude?: number | null; maxLongitude?: number | null; lateAfterMinutes?: number | null }) =>
     apiRequest<{ ok: boolean }>(`/branches/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   admins: (id: string) =>
     apiRequest<BranchAdmin[]>(`/branches/${id}/admins`),

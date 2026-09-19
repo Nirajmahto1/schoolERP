@@ -434,6 +434,30 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
     } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
   });
 
+  // ── My results (student portal) ──
+  // GET /my-results — every PUBLISHED exam in the caller's branch that has
+  // marks for the caller's student row, one report-card payload each.
+  // Unpublished exams never appear (404 semantics of the per-exam route
+  // would leak existence; here the filter simply excludes them).
+  router.get('/my-results', async (req: Request, res: Response) => {
+    try {
+      const { userId, branchId } = ctx(req);
+      if (!userId) { problem(res, 401, 'authentication-error', 'Unauthorized', 'Sign in first.'); return; }
+      if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+
+      const student = await prisma.student.findFirst({ where: { userId, deletedAt: null }, select: { id: true } });
+      if (!student) { problem(res, 404, 'not-found', 'Not Found', 'No student record for this account.'); return; }
+
+      const exams = await prisma.examination.findMany({
+        where: { branchId, status: 'PUBLISHED', subjects: { some: { results: { some: { studentId: student.id } } } } },
+        orderBy: { startDate: 'desc' },
+        select: { id: true, name: true, startDate: true, endDate: true, publishedAt: true },
+      });
+
+      res.json({ data: exams.map((e) => ({ examinationId: e.id, name: e.name, startDate: e.startDate, endDate: e.endDate, publishedAt: e.publishedAt })) });
+    } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
+  });
+
   // Mark-entry audit trail for an exam subject.
   router.get('/marks/:examSubjectId/audit', async (req: Request, res: Response) => {
     try {

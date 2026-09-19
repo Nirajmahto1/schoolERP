@@ -38,7 +38,9 @@ export default function BranchesPage() {
   const [error, setError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', email: '' });
+  const [form, setForm] = useState({ name: '', code: '', address: '', phone: '', email: '', lat1: '', lat2: '', lng1: '', lng2: '', lateAfter: '' });
+  const [geoBusy, setGeoBusy] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
 
   // Admin management state — one modal at a time, per branch.
@@ -77,9 +79,27 @@ export default function BranchesPage() {
     setError(null);
     setFieldErrors({});
     try {
-      await branchApi.add(form);
+      const { lat1, lat2, lng1, lng2, lateAfter, ...rest } = form;
+      // Two latitudes + two longitudes define the attendance box; corners may
+      // be entered in any order — the server normalizes to min/max.
+      const p1 = parseFloat(lat1), p2 = parseFloat(lat2), g1 = parseFloat(lng1), g2 = parseFloat(lng2);
+      const complete = [p1, p2, g1, g2].every(Number.isFinite);
+      const geo: { minLatitude?: number; maxLatitude?: number; minLongitude?: number; maxLongitude?: number; lateAfterMinutes?: number } = {};
+      if (complete) {
+        geo.minLatitude = Math.min(p1, p2);
+        geo.maxLatitude = Math.max(p1, p2);
+        geo.minLongitude = Math.min(g1, g2);
+        geo.maxLongitude = Math.max(g1, g2);
+      }
+      // "HH:MM" local time → minutes past midnight (the server compares in
+      // IST); blank = the late check is off for this branch.
+      if (/^\d{2}:\d{2}$/.test(lateAfter)) {
+        const [hh, mm] = lateAfter.split(':').map(Number);
+        if (Number.isFinite(hh) && Number.isFinite(mm)) geo.lateAfterMinutes = hh * 60 + mm;
+      }
+      await branchApi.add({ ...rest, ...geo });
       setShowAdd(false);
-      setForm({ name: '', code: '', address: '', phone: '', email: '' });
+      setForm({ name: '', code: '', address: '', phone: '', email: '', lat1: '', lat2: '', lng1: '', lng2: '', lateAfter: '' });
       await load();
     } catch (err: any) {
       setError(err.detail || 'Could not add the branch.');
@@ -87,6 +107,30 @@ export default function BranchesPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Seed the box from where the admin physically is: a ~110 m square around
+  // the current position. Fine-tune either corner afterwards.
+  function useMyLocation() {
+    setGeoError(null);
+    if (!('geolocation' in navigator)) { setGeoError('This browser has no geolocation.'); return; }
+    setGeoBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const dLat = 0.001, dLng = 0.001; // ≈110 m
+        const lat = pos.coords.latitude, lng = pos.coords.longitude;
+        setForm((f) => ({
+          ...f,
+          lat1: (lat - dLat).toFixed(7),
+          lat2: (lat + dLat).toFixed(7),
+          lng1: (lng - dLng).toFixed(7),
+          lng2: (lng + dLng).toFixed(7),
+        }));
+        setGeoBusy(false);
+      },
+      (err) => { setGeoError(err.message || 'Could not read your location.'); setGeoBusy(false); },
+      { enableHighAccuracy: true, timeout: 12000 },
+    );
   }
 
   async function toggleActive(b: BranchRow) {
@@ -227,6 +271,40 @@ export default function BranchesPage() {
               <input type="email" value={form.email} onChange={set('email')} />
               {fieldErrors.email && <em>{fieldErrors.email[0]}</em>}
             </label>
+            <div className={styles.row}>
+              <label>
+                Latitude 1
+                <input value={form.lat1} onChange={set('lat1')} inputMode="decimal" placeholder="e.g. 28.6139391" />
+              </label>
+              <label>
+                Latitude 2
+                <input value={form.lat2} onChange={set('lat2')} inputMode="decimal" placeholder="e.g. 28.6150391" />
+              </label>
+              <label>
+                Longitude 1
+                <input value={form.lng1} onChange={set('lng1')} inputMode="decimal" placeholder="e.g. 77.2090232" />
+              </label>
+              <label>
+                Longitude 2
+                <input value={form.lng2} onChange={set('lng2')} inputMode="decimal" placeholder="e.g. 77.2101232" />
+              </label>
+            </div>
+            <div className={styles.row}>
+              <label>
+                Late after (check-in cutoff)
+                <input type="time" value={form.lateAfter} onChange={set('lateAfter')} />
+              </label>
+            </div>
+            <p className={styles.hint} style={{ marginTop: 0 }}>
+              Staff can mark their own attendance from the mobile app only when their GPS position
+              is equal to or between these two latitudes and two longitudes. Corners in any order.
+              A check-in after “Late after” is booked as LATE; leave it blank to disable.
+              {" "}
+              <button type="button" className={styles.ghostBtn} onClick={useMyLocation} disabled={geoBusy}>
+                {geoBusy ? 'Locating…' : '📍 Use my current location'}
+              </button>
+              {geoError && <em> {geoError}</em>}
+            </p>
             <button className={styles.primaryBtn} disabled={busy}>
               {busy ? 'Adding…' : 'Add branch'}
             </button>

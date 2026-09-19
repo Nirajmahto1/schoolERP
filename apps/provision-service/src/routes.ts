@@ -274,6 +274,15 @@ const addBranchSchema = z.object({
   address: z.string().max(200).optional(),
   phone: z.string().max(15).optional(),
   email: z.string().email().optional(),
+  // Staff self-attendance geofence as a bounding box: two latitudes and two
+  // longitudes (any corner order — normalized on write). All four travel
+  // together; a partial box is rejected rather than half-stored.
+  minLatitude: z.number().min(-90).max(90).optional(),
+  maxLatitude: z.number().min(-90).max(90).optional(),
+  minLongitude: z.number().min(-180).max(180).optional(),
+  maxLongitude: z.number().min(-180).max(180).optional(),
+  // Late-arrival cutoff: minutes past midnight (branch local, IST).
+  lateAfterMinutes: z.number().int().min(0).max(1439).nullable().optional(),
   withAcademicYear: z.boolean().optional().default(true),
 });
 
@@ -520,6 +529,11 @@ const patchBranchSchema = z.object({
   phone: z.string().max(15).optional(),
   email: z.string().email().optional(),
   isActive: z.boolean().optional(),
+  minLatitude: z.number().min(-90).max(90).nullable().optional(),
+  maxLatitude: z.number().min(-90).max(90).nullable().optional(),
+  minLongitude: z.number().min(-180).max(180).nullable().optional(),
+  maxLongitude: z.number().min(-180).max(180).nullable().optional(),
+  lateAfterMinutes: z.number().int().min(0).max(1439).nullable().optional(),
 });
 
 branchRouter.patch('/:id', requireRole('SUPER_ADMIN'), async (req: Request, res: Response) => {
