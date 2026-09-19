@@ -116,6 +116,24 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
   if (res.status === 204) return undefined as T;
 
   return res.json();
+}/**
+ * Fetch bytes from an assertion-gated binary endpoint (profile photos) with
+ * the Authorization header attached. <img> tags cannot send headers, so any
+ * authenticated image must be fetched as a blob and rendered via an object
+ * URL. 401 triggers the same one-shot refresh + retry as apiRequest.
+ */
+export async function fetchAuthBlob(path: string): Promise<string | null> {
+  if (typeof window === 'undefined') return null;
+  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+  const call = (tok: string | null) =>
+    fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
+
+  let res = await call(localStorage.getItem('erp_token'));
+  if (res.status === 401 && (await tryRefresh())) {
+    res = await call(localStorage.getItem('erp_token'));
+  }
+  if (!res.ok) return null;
+  return URL.createObjectURL(await res.blob());
 }
 
 // ── Auth API ──
@@ -427,6 +445,28 @@ export const attendanceApi = {
     if (params.classId) qs.set('classId', params.classId);
     return apiRequest<any>(`/attendance/summary?${qs}`);
   },
+
+  // Office attendance desk (kiosk): the leadership-only day sheet and the
+  // amend actions behind it — the escape hatch when a staff member could not
+  // self-mark (no phone, dead battery, forgot it at home).
+  getStaffDaySheet: (date: string) =>
+    apiRequest<{
+      date: string; marked: number; total: number;
+      staff: Array<{
+        staffId: string; userId: string | null; name: string; employeeId: string | null;
+        designation: string | null; department: string | null; photo: string | null; hasUser: boolean;
+        record: { status: string; remarks: string | null; checkInAt: string | null; checkOutAt: string | null; lateMinutes: number | null; markedBy: string } | null;
+      }>;
+    }>(`/attendance/staff/day-sheet?date=${date}`),
+
+  amendStaffAttendance: (data: {
+    staffId: string; date: string;
+    action: 'CHECK_IN' | 'CHECK_OUT' | 'SET_PRESENT' | 'SET_LATE' | 'SET_ABSENT' | 'SET_ON_LEAVE' | 'SET_HALF_DAY' | 'CLEAR';
+    remarks?: string; lateMinutes?: number;
+  }) => apiRequest<{ ok: true; action: string; message: string; record?: any }>('/attendance/staff/amend', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
 };
 
 export const teacherApi = {

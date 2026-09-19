@@ -132,6 +132,8 @@ export function createAttendanceApp(options: AttendanceAppOptions) {
       },
       '/leaves/{id}/decision': { post: { summary: 'Approve/reject/cancel a leave', tags: ['leaves'], responses: { '200': { description: 'Decided' } } } },
       '/attendance/staff/mark': { post: { summary: 'Mark staff attendance', tags: ['staff'], responses: { '200': { description: 'Marked' } } } },
+      '/attendance/staff/day-sheet': { get: { summary: 'Office kiosk: every staff member with their attendance row for one date (principal/admin)', tags: ['staff'], responses: { '200': { description: 'OK' } } } },
+      '/attendance/staff/amend': { post: { summary: 'Office amendment: check-in/out, status set, or clear for a staff member (principal/admin)', tags: ['staff'], responses: { '200': { description: 'Amended' } } } },
     },
   });
   app.get('/openapi.json', (_req, res) => { res.json(openapi); });
@@ -523,6 +525,215 @@ r.get('/attendance/staff/punctuality', async (req, res) => {
     report.sort((a, b) => b.lateCount - a.lateCount || b.totalLateMinutes - a.totalLateMinutes);
 
     res.json({ month, year, staff: report, generatedAt: now.toISOString() });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// ── Office attendance desk ──
+// The self-mark flow's escape hatch: a staff member who forgot the phone, has
+// it dead at the gate, or came without it gets marked by the office — the
+// row is indistinguishable in shape from a GPS mark except markedBy records
+// WHICH office account wrote it (the audit line), and no coordinates exist.
+// Role-gated to the same leadership set as the punctuality report; a teacher
+// must not be able to write colleagues' rows.
+const OFFICE_DESK_ROLES = ['PRINCIPAL', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'ACADEMIC_HEAD'];
+
+function officeDayFromYmd(ymd: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const d = new Date(`${ymd}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function officeIso(t: Date | null | undefined): string | null {
+  return t ? t.toISOString() : null;
+}
+
+// GET /attendance/staff/day-sheet?date=YYYY-MM-DD
+// Every ACTIVE staff member of the branch with their row for that date (or
+// null when unmarked) — the kiosk renders exactly this, nothing inferred.
+r.get('/attendance/staff/day-sheet', async (req, res) => {
+  try {
+    const { branchId, roles } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    if (!roles?.some((x: string) => OFFICE_DESK_ROLES.includes(x))) {
+      res.status(403).json({ detail: 'Only principals and admins can use the office attendance desk.' });
+      return;
+    }
+
+    const day = officeDayFromYmd(String(req.query.date ?? ''));
+    if (!day) { res.status(400).json({ detail: 'date must be YYYY-MM-DD.' }); return; }
+
+    const staff = await prisma.staff.findMany({
+      where: { branchId, deletedAt: null, isActive: true },
+      select: { id: true, employeeId: true, firstName: true, lastName: true, designation: true, department: true, photo: true, userId: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+    });
+    const rows = await prisma.staffAttendance.findMany({
+      where: { branchId, date: day },
+      select: { staffId: true, status: true, remarks: true, markedAt: true, checkoutAt: true, lateMinutes: true, markedBy: true },
+    });
+    const byStaff = new Map(rows.map((row) => [row.staffId, row]));
+
+    const list = staff.map((s) => {
+      const row = byStaff.get(s.id) ?? null;
+      return {
+        staffId: s.id,
+        userId: s.userId,
+        name: `${s.firstName} ${s.lastName}`.trim(),
+        employeeId: s.employeeId,
+        designation: s.designation,
+        department: s.department,
+        photo: s.photo,
+        hasUser: Boolean(s.userId),
+        record: row && {
+          status: row.status,
+          remarks: row.remarks,
+          checkInAt: officeIso(row.markedAt),
+          checkOutAt: officeIso(row.checkoutAt),
+          lateMinutes: row.lateMinutes,
+          markedBy: row.markedBy,
+        },
+      };
+    });
+
+    const marked = list.filter((s) => s.record).length;
+    res.json({ date: day.toISOString().slice(0, 10), marked, total: list.length, staff: list });
+  } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+});
+
+// POST /attendance/staff/amend
+//   { staffId, date, action, remarks?, lateMinutes? }
+//   action: CHECK_IN | CHECK_OUT | SET_PRESENT | SET_LATE | SET_ABSENT |
+//           SET_ON_LEAVE | SET_HALF_DAY | CLEAR
+// CHECK_IN/CHECK_OUT stamp the SERVER clock. Status sets for ABSENT/ON_LEAVE
+// wipe any GPS times (an absent person has no check-in); CLEAR deletes the
+// row so a mistaken mark can be redone from scratch. The last writer lands
+// in markedBy — the audit trail the punctuality report reads.
+r.post('/attendance/staff/amend', async (req, res) => {
+  try {
+    const { branchId, userId, roles } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    if (!roles?.some((x: string) => OFFICE_DESK_ROLES.includes(x))) {
+      res.status(403).json({ detail: 'Only principals and admins can amend staff attendance.' });
+      return;
+    }
+
+    const { staffId, action, remarks, lateMinutes } = req.body ?? {};
+    const day = officeDayFromYmd(String(req.body?.date ?? ''));
+    if (!staffId || !day) {
+      res.status(400).json({ detail: 'staffId and date (YYYY-MM-DD) are required.' });
+      return;
+    }
+    const ACTIONS = ['CHECK_IN', 'CHECK_OUT', 'SET_PRESENT', 'SET_LATE', 'SET_ABSENT', 'SET_ON_LEAVE', 'SET_HALF_DAY', 'CLEAR'] as const;
+    if (!ACTIONS.includes(action)) {
+      res.status(400).json({ detail: `action must be one of ${ACTIONS.join(', ')}.` });
+      return;
+    }
+
+    const staff = await prisma.staff.findFirst({
+      where: { id: staffId, branchId, deletedAt: null },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    if (!staff) {
+      res.status(404).json({ detail: 'Staff member not found in your branch.' });
+      return;
+    }
+
+    const existing = await prisma.staffAttendance.findUnique({
+      where: { staffId_date: { staffId: staff.id, date: day } },
+    });
+    const name = `${staff.firstName} ${staff.lastName}`.trim();
+    const now = new Date();
+
+    // Branch cutoff re-used for office CHECK_INs so a late office check-in is
+    // booked LATE exactly like a GPS one would be.
+    const branch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { lateAfterMinutes: true },
+    });
+
+    if (action === 'CLEAR') {
+      if (!existing) { res.status(404).json({ detail: 'Nothing recorded for that day.' }); return; }
+      await prisma.staffAttendance.delete({ where: { id: existing.id } });
+      res.json({ ok: true, action, message: `${name}'s ${day.toISOString().slice(0, 10)} record cleared.` });
+      return;
+    }
+
+    if (action === 'CHECK_IN') {
+      if (existing?.checkoutAt) {
+        res.status(409).json({ detail: `${name} already has a complete pair for that day — clear the record first to re-mark.` });
+        return;
+      }
+      let status: 'PRESENT' | 'LATE' = 'PRESENT';
+      let lateBy: number | null = null;
+      if (branch?.lateAfterMinutes != null) {
+        const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);
+        const minutesIntoIstDay = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+        if (minutesIntoIstDay > branch.lateAfterMinutes) {
+          status = 'LATE';
+          lateBy = minutesIntoIstDay - branch.lateAfterMinutes;
+        }
+      }
+      const row = await prisma.staffAttendance.upsert({
+        where: { staffId_date: { staffId: staff.id, date: day } },
+        create: {
+          staffId: staff.id, branchId, date: day, status,
+          markedBy: userId, markedAt: now,
+          remarks: remarks ?? (lateBy != null ? `Office check-in — late by ${lateBy} min` : 'Office check-in'),
+          lateMinutes: lateBy,
+        },
+        update: {
+          status, markedBy: userId, markedAt: now,
+          remarks: remarks ?? (lateBy != null ? `Office check-in — late by ${lateBy} min` : 'Office check-in'),
+          lateMinutes: lateBy,
+        },
+      });
+      res.json({ ok: true, action, record: { status: row.status, checkInAt: officeIso(row.markedAt), checkOutAt: officeIso(row.checkoutAt), lateMinutes: row.lateMinutes }, message: `${name} checked in.` });
+      return;
+    }
+
+    if (action === 'CHECK_OUT') {
+      if (!existing?.markedAt) {
+        res.status(409).json({ detail: `${name} has no check-in for that day — a check-out cannot exist without one.` });
+        return;
+      }
+      if (existing.checkoutAt) {
+        res.status(409).json({ detail: `${name} already checked out at ${existing.checkoutAt.toISOString()}.` });
+        return;
+      }
+      const row = await prisma.staffAttendance.update({
+        where: { id: existing.id },
+        data: { checkoutAt: now, markedBy: userId, ...(remarks ? { remarks } : {}) },
+      });
+      res.json({ ok: true, action, record: { status: row.status, checkInAt: officeIso(row.markedAt), checkOutAt: officeIso(row.checkoutAt), lateMinutes: row.lateMinutes }, message: `${name} checked out.` });
+      return;
+    }
+
+    // SET_* actions. ABSENT / ON_LEAVE wipe GPS times (a person who did not
+    // come has no check-in); PRESENT / LATE / HALF_DAY keep existing times so
+    // an office status-fix never destroys a genuine GPS pair.
+    const statusMap: Record<string, 'PRESENT' | 'LATE' | 'ABSENT' | 'ON_LEAVE' | 'HALF_DAY'> = {
+      SET_PRESENT: 'PRESENT', SET_LATE: 'LATE', SET_ABSENT: 'ABSENT',
+      SET_ON_LEAVE: 'ON_LEAVE', SET_HALF_DAY: 'HALF_DAY',
+    };
+    const status = statusMap[action];
+    const wipeTimes = status === 'ABSENT' || status === 'ON_LEAVE';
+    const row = await prisma.staffAttendance.upsert({
+      where: { staffId_date: { staffId: staff.id, date: day } },
+      create: {
+        staffId: staff.id, branchId, date: day, status,
+        markedBy: userId,
+        remarks: remarks ?? `Office: ${status}`,
+        lateMinutes: status === 'LATE' ? Math.max(0, Number(lateMinutes) || 0) : null,
+      },
+      update: {
+        status, markedBy: userId,
+        remarks: remarks ?? existing?.remarks ?? `Office: ${status}`,
+        lateMinutes: status === 'LATE' ? Math.max(0, Number(lateMinutes) || 0) : null,
+        ...(wipeTimes ? { markedAt: null, checkoutAt: null } : {}),
+      },
+    });
+    res.json({ ok: true, action, record: { status: row.status, checkInAt: officeIso(row.markedAt), checkOutAt: officeIso(row.checkoutAt), lateMinutes: row.lateMinutes }, message: `${name} set to ${status}.` });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

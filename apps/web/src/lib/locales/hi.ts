@@ -18,6 +18,7 @@ export const hi: Partial<Record<keyof typeof en, string>> = {
   'nav.academics': 'शैक्षणिक',
   'nav.timetableBuilder': 'समय-सारिणी निर्माता',
   'nav.attendance': 'उपस्थिति',
+  'nav.attendanceDesk': 'उपस्थिति डेस्क',
   'nav.fees': 'शुल्क',
   'nav.communication': 'संचार',
   'nav.library': 'पुस्तकालय',

@@ -13,6 +13,7 @@ export const en = {
   'nav.academics': 'Academics',
   'nav.timetableBuilder': 'Timetable Builder',
   'nav.attendance': 'Attendance',
+  'nav.attendanceDesk': 'Attendance Desk',
   'nav.fees': 'Fees',
   'nav.communication': 'Communication',
   'nav.library': 'Library',

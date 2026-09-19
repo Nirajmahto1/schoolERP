@@ -75,6 +75,7 @@ const allNavItems: NavItem[] = [
   { labelKey: 'nav.academics', icon: 'menu_book', href: '/dashboard/academics', permission: 'view:academics' },
   { labelKey: 'nav.timetableBuilder', icon: 'grid_view', href: '/dashboard/timetable-builder', permission: 'manage:academics' },
   { labelKey: 'nav.attendance', icon: 'event_available', href: '/dashboard/attendance', permission: 'view:attendance' },
+  { labelKey: 'nav.attendanceDesk', icon: 'meeting_room', href: '/dashboard/attendance-desk', permission: 'view:attendance' },
   { labelKey: 'nav.fees', icon: 'payments', href: '/dashboard/fees', permission: 'view:fees' },
   { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication', permission: 'view:announcements' },
   { labelKey: 'nav.library', icon: 'local_library', href: '/dashboard/library', permission: 'view:library' },
