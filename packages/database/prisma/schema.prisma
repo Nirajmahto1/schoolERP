@@ -50,6 +50,19 @@ model Branch {
   address   String
   phone     String
   email     String
+  // Staff self-attendance geofence as a BOUNDING BOX: the ERP form takes two
+  // latitudes and two longitudes; a mark is accepted only when the reported
+  // position is equal to or between the bounds on both axes. min/max are
+  // normalized on write, so the form may enter the corners in any order.
+  // When any bound is null the branch has no GPS fence and self-marking is
+  // refused with a clear message.
+  minLatitude  Decimal? @db.Decimal(10, 7)
+  maxLatitude  Decimal? @db.Decimal(10, 7)
+  minLongitude Decimal? @db.Decimal(10, 7)
+  maxLongitude Decimal? @db.Decimal(10, 7)
+  // Late-arrival cutoff: minutes past midnight (branch local time,
+  // Asia/Kolkata) after which a self-check-in counts as LATE. Null = off.
+  lateAfterMinutes Int?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -826,7 +839,18 @@ model StaffAttendance {
   status    AttendanceStatus
   remarks   String?
   markedBy  String
-  createdAt DateTime         @default(now())
+  // Self-service GPS marking: server clock (never the device's) + where the
+  // mark was made from, so an admin can audit any mark back to a place+time.
+  // The first self-mark of the day is the arrival (markedAt); a second
+  // self-mark records the departure (checkoutAt). Both are server clock.
+  // lateMinutes = minutes past the branch cutoff when the arrival was LATE;
+  // the monthly tally aggregates it.
+  markedAt    DateTime?
+  checkoutAt  DateTime?
+  lateMinutes Int?
+  latitude    Decimal?         @db.Decimal(10, 7)
+  longitude   Decimal?         @db.Decimal(10, 7)
+  createdAt   DateTime         @default(now())
 
   staff  Staff  @relation(fields: [staffId], references: [id], onDelete: Cascade)
   branch Branch @relation(fields: [branchId], references: [id])

@@ -66,3 +66,4 @@ data/
 
 # local dev stack scratch: boot scripts, probes, runtime logs
 .setuprun/
+educore.apk
