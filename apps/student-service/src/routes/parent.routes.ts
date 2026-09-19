@@ -110,6 +110,16 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
       attendancePct = workingDays > 0 ? Math.round((attended / workingDays) * 100) : 0;
     }
 
+    // Photos are scalar columns — fetched in one shot for the summary rows.
+    const photoMap = new Map(
+      (
+        await prisma.student.findMany({
+          where: { id: { in: students.map((s) => s.id) } },
+          select: { id: true, photo: true },
+        })
+      ).map((p) => [p.id, p.photo]),
+    );
+
     const pendingFees = students.reduce(
       (sum, s) =>
         sum +
@@ -126,6 +136,8 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
         firstName: s.firstName,
         lastName: s.lastName,
         admissionNo: s.admissionNo,
+        // Gateway-relative; the apps resolve it against /api/v1/photos (auth'd).
+        photoUrl: photoMap.get(s.id) ?? null,
         className: s.enrollments[0]?.class.name ?? null,
         sectionName: s.enrollments[0]?.section.name ?? null,
         // Stable ids for the student shell: the fees checkout (studentId) and
@@ -236,8 +248,8 @@ router.get('/:id', async (req: Request, res: Response) => {
       include: {
         students: {
           include: {
-            student: {
-              include: {
+        student: {
+          include: {
                 enrollments: {
                   orderBy: { fromDate: 'desc' },
                   take: 1,

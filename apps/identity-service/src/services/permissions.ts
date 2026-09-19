@@ -17,6 +17,10 @@ export interface ResolvedIdentity {
   roles: string[];
   /** Sorted, deduplicated `module.action` strings across all active roles. */
   permissions: string[];
+  /** Display name + photo for app chrome — resolved from the linked
+   *  Staff/Student row (falls back to null; callers show initials/email). */
+  name: string | null;
+  photo: string | null;
 }
 
 export async function resolveIdentity(
@@ -31,6 +35,8 @@ export async function resolveIdentity(
       isActive: true,
       defaultBranchId: true,
       activeBranchId: true,
+      staff: { select: { firstName: true, lastName: true, photo: true } },
+      student: { select: { firstName: true, lastName: true, photo: true } },
       roleAssignments: {
         where: { isActive: true },
         select: {
@@ -65,6 +71,11 @@ export async function resolveIdentity(
     user.roleAssignments.find((a) => a.branchId)?.branchId ??
     user.defaultBranchId;
 
+  // Chrome identity: the linked Staff or Student row wins over the email
+  // local-part. Guardians keep the email fallback (no profile row of their own).
+  const profile = user.staff ?? user.student ?? null;
+  const name = profile ? `${profile.firstName} ${profile.lastName}`.trim() : null;
+
   return {
     userId: user.id,
     email: user.email,
@@ -72,6 +83,8 @@ export async function resolveIdentity(
     branchId: branchId ?? null,
     roles,
     permissions: [...permissionSet].sort(),
+    name,
+    photo: profile?.photo ?? null,
   };
 }
 

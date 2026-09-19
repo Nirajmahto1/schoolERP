@@ -92,6 +92,9 @@ accountRouter.get('/me', async (req: Request, res: Response) => {
       id: identity.userId,
       email: identity.email,
       branchId: identity.branchId,
+      // Chrome identity for the app topbars (avatar + greeting).
+      name: identity.name,
+      photo: identity.photo,
       // `permissions` reflects the assignment at read time; the assertion's
       // snapshot is available too (may be minutes stale after a role change).
       assertionPermissions: context.permissions,

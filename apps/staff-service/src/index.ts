@@ -345,6 +345,99 @@ r.get('/documents/file/:name', async (req, res) => {
   }
 });
 
+// ── Self-service photo upload (any logged-in user) ──
+// POST /photos/me — multipart 'photo'. Works for staff AND student accounts:
+// the caller's own Staff or Student row is found through the verified userId,
+// so nobody can write someone else's photo. Students reach this from the
+// mobile app without needing a staff-only route.
+import multer from 'multer';
+const photoSelfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
+r.post('/photos/me', photoSelfUpload.single('photo'), async (req, res) => {
+  try {
+    const { userId } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!req.file) { res.status(400).json({ detail: 'Attach the photo as multipart field "photo".' }); return; }
+
+    const { savePhoto, deletePhotoByUrl, PhotoError } = await import('./photos');
+    const staff = await prisma.staff.findFirst({ where: { userId, deletedAt: null } });
+    const student = await prisma.student.findFirst({ where: { userId, deletedAt: null } });
+    if (!staff && !student) { res.status(404).json({ detail: 'No staff or student record for this account.' }); return; }
+
+    const saved = await savePhoto(req.file.buffer);
+    const row = staff ?? student!;
+    const photoUrl = saved.url;
+    const updated = staff
+      ? await prisma.staff.update({ where: { id: staff.id }, data: { photo: photoUrl }, select: { photo: true } })
+      : await prisma.student.update({ where: { id: student!.id }, data: { photo: photoUrl }, select: { photo: true } });
+    await deletePhotoByUrl(row.photo);
+    res.json({ photoUrl: updated.photo, ...saved });
+  } catch (e: unknown) {
+    if (e instanceof (await import('./photos')).PhotoError) { res.status(e.status).json({ detail: e.message }); return; }
+    if ((e as any)?.code === 'LIMIT_FILE_SIZE') { res.status(413).json({ detail: 'Photo must be 5 MB or smaller.' }); return; }
+    res.status(500).json({ detail: (e as Error).message });
+  }
+});
+
+/** POST /photos/children/:studentId — a logged-in GUARDIAN sets the photo of
+ *  one of their OWN linked children. Verified through the guardian→user
+ *  link; staff/Admins use the /teacher/students/:id/photo route instead. */
+r.post('/photos/children/:studentId', photoSelfUpload.single('photo'), async (req, res) => {
+  try {
+    const { userId } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!req.file) { res.status(400).json({ detail: 'Attach the photo as multipart field "photo".' }); return; }
+
+    const { savePhoto, deletePhotoByUrl, PhotoError } = await import('./photos');
+    const link = await prisma.studentGuardian.findFirst({
+      where: {
+        guardian: { userId, deletedAt: null },
+        student: { id: req.params.studentId, deletedAt: null },
+      },
+    });
+    if (!link) { res.status(404).json({ detail: 'No such child linked to this account.' }); return; }
+    const child = await prisma.student.findUnique({ where: { id: link.studentId }, select: { id: true, photo: true } });
+    if (!child) { res.status(404).json({ detail: 'No such child linked to this account.' }); return; }
+
+    const saved = await savePhoto(req.file.buffer);
+    const updated = await prisma.student.update({
+      where: { id: child.id },
+      data: { photo: saved.url },
+      select: { photo: true },
+    });
+    await deletePhotoByUrl(child.photo);
+    res.json({ photoUrl: updated.photo, ...saved });
+  } catch (e: unknown) {
+    if (e instanceof (await import('./photos')).PhotoError) { res.status(e.status).json({ detail: e.message }); return; }
+    if ((e as any)?.code === 'LIMIT_FILE_SIZE') { res.status(413).json({ detail: 'Photo must be 5 MB or smaller.' }); return; }
+    res.status(500).json({ detail: (e as Error).message });
+  }
+});
+
+// ── Photo download ──
+// Authenticated (assertion-gated like every route here): bytes for staff /
+// student profile photos. The filename is allowlisted inside readPhotoByName,
+// so traversal input dies before a path is built.
+r.get('/photos/file/:name', async (req, res) => {
+  try {
+    const { readPhotoByName, PhotoError } = await import('./photos');
+    const { buf, mimeType } = await readPhotoByName(req.params.name);
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `inline; filename="${req.params.name}"`);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(buf);
+  } catch (e: unknown) {
+    if (e instanceof (await import('./photos')).PhotoError) {
+      res.status(e.status).json({ detail: e.message });
+      return;
+    }
+    res.status(500).json({ detail: (e as Error).message });
+  }
+});
+
 finalize();
 
 // Only bind a port when run directly. Imported by the e2e suite, the module

@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
 import { PrismaClient } from '@school-erp/database';
 import { ctx } from '@school-erp/auth';
 import { notifyStaffUser } from '@school-erp/notify';
+import { MAX_PHOTO_BYTES, PhotoError, deletePhotoByUrl, readPhotoByName, savePhoto } from '../photos';
 
 // Peer-notification endpoints, injected by the entrypoint (app.set) so the
 // route file stays free of env plumbing. Undefined = peer call skipped.
@@ -28,6 +30,8 @@ export function configureTeacherNotifications(cfg: {
 }
 
 export const teacherRoutes = Router();
+
+const prismaOf = (req: Request): PrismaClient => req.app.get('prisma') as PrismaClient;
 
 // GET /my-classes
 teacherRoutes.get('/my-classes', async (req: Request, res: Response) => {
@@ -64,14 +68,15 @@ teacherRoutes.get('/my-classes', async (req: Request, res: Response) => {
 });
 
 // GET /students?className=&sectionName=&search=
+// className/sectionName are OPTIONAL now — the teacher mobile directory opens
+// with a whole-branch search and no picker, so requiring them 400s the first
+// load ("className and sectionName required"). Both, when given, narrow the
+// CURRENT enrollment; `search` matches name or admission number.
 teacherRoutes.get('/students', async (req: Request, res: Response) => {
   try {
     const prisma = req.app.get('prisma');
     const { className, sectionName, search } = req.query;
-    if (!className || !sectionName) { return res.status(400).json({ detail: 'className and sectionName required' }); }
 
-    // Class/section live on the CURRENT enrollment (Phase 2). `search` is an
-    // optional teacher convenience: name or admission number substring.
     const students = await prisma.student.findMany({
       where: {
         deletedAt: null,
@@ -87,16 +92,105 @@ teacherRoutes.get('/students', async (req: Request, res: Response) => {
         enrollments: {
           some: {
             status: 'ENROLLED',
-            class: { name: { contains: className as string, mode: 'insensitive' } },
-            section: { name: sectionName as string },
+            ...(className
+              ? { class: { name: { contains: className as string, mode: 'insensitive' } } }
+              : {}),
+            ...(sectionName ? { section: { name: sectionName as string } } : {}),
           },
         },
       },
       orderBy: { firstName: 'asc' },
+      take: 300,
+      include: {
+        enrollments: {
+          where: { status: 'ENROLLED' },
+          take: 1,
+          select: { rollNo: true, class: { select: { name: true } }, section: { select: { name: true } } },
+        },
+      },
     });
 
-    res.json({ data: students });
+    // Flatten the current enrollment onto the row so the mobile directory
+    // can show "ADM-01 · LKG-A" without extra round-trips.
+    res.json({
+      data: students.map((s: (typeof students)[number]) => {
+        const e = s.enrollments[0];
+        return {
+          id: s.id,
+          admissionNo: s.admissionNo,
+          firstName: s.firstName,
+          lastName: s.lastName,
+          name: `${s.firstName} ${s.lastName}`.trim(),
+          className: e?.class?.name ?? null,
+          sectionName: e?.section?.name ?? null,
+          rollNo: e?.rollNo ?? null,
+          photoUrl: s.photo ?? null,
+        };
+      }),
+    });
   } catch (err: any) { res.status(500).json({ detail: err.message }); }
+});
+
+// ── Profile photos ──
+// Multipart 'photo' (JPG/PNG ≤ 5MB). Bytes are sniffed, not trusted; the old
+// file is unlinked only after the DB row is safely on the new one.
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PHOTO_BYTES, files: 1 },
+});
+
+/** POST /teacher/me/photo — a staff member sets their OWN photo. */
+teacherRoutes.post('/me/photo', photoUpload.single('photo'), async (req: Request, res: Response) => {
+  try {
+    const { userId, branchId } = ctx(req);
+    if (!userId) { res.status(401).json({ detail: 'Unauthorized' }); return; }
+    if (!req.file) { res.status(400).json({ detail: 'Attach the photo as multipart field "photo".' }); return; }
+
+    const staff = await prismaOf(req).staff.findFirst({ where: { userId, deletedAt: null } });
+    if (!staff) { res.status(404).json({ detail: 'No staff record for this account.' }); return; }
+
+    const saved = await savePhoto(req.file.buffer);
+    const updated = await prismaOf(req).staff.update({
+      where: { id: staff.id },
+      data: { photo: saved.url },
+      select: { photo: true },
+    });
+    await deletePhotoByUrl(staff.photo); // old bytes out, row already moved
+    res.json({ photoUrl: updated.photo, ...saved });
+  } catch (e) {
+    if (e instanceof PhotoError) { res.status(e.status).json({ detail: e.message }); return; }
+    if ((e as any)?.code === 'LIMIT_FILE_SIZE') { res.status(413).json({ detail: 'Photo must be 5 MB or smaller.' }); return; }
+    res.status(500).json({ detail: (e as Error).message });
+  }
+});
+
+/** POST /teacher/students/:id/photo — staff sets a student's photo.
+ *  Branch-checked: only students with an ENROLLED enrollment in the caller's
+ *  branch can be touched. */
+teacherRoutes.post('/students/:id/photo', photoUpload.single('photo'), async (req: Request, res: Response) => {
+  try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    if (!req.file) { res.status(400).json({ detail: 'Attach the photo as multipart field "photo".' }); return; }
+
+    const student = await prismaOf(req).student.findFirst({
+      where: { id: req.params.id, deletedAt: null, enrollments: { some: { status: 'ENROLLED', branchId } } },
+    });
+    if (!student) { res.status(404).json({ detail: 'Student not found in your branch.' }); return; }
+
+    const saved = await savePhoto(req.file.buffer);
+    const updated = await prismaOf(req).student.update({
+      where: { id: student.id },
+      data: { photo: saved.url },
+      select: { photo: true },
+    });
+    await deletePhotoByUrl(student.photo);
+    res.json({ photoUrl: updated.photo, ...saved });
+  } catch (e) {
+    if (e instanceof PhotoError) { res.status(e.status).json({ detail: e.message }); return; }
+    if ((e as any)?.code === 'LIMIT_FILE_SIZE') { res.status(413).json({ detail: 'Photo must be 5 MB or smaller.' }); return; }
+    res.status(500).json({ detail: (e as Error).message });
+  }
 });
 
 // GET /leave-requests

@@ -83,6 +83,15 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       rewriteTo: '/teacher',
     },
     {
+      // Staff/student profile photos (authenticated bytes; the DB row stores
+      // the relative /photos/file/... URL the apps resolve through here).
+      path: '/api/v1/photos',
+      service: 'staff-service',
+      host,
+      port: env.PORT_STAFF_SERVICE,
+      rewriteTo: '/photos',
+    },
+    {
       path: '/api/v1/staff',
       service: 'staff-service',
       host,
