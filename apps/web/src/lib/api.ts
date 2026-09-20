@@ -324,6 +324,47 @@ export const complianceApi = {
     ),
 };
 
+// ── Certificates API (BUILD_PLAN 10.3) — issue, list, PDF download ──
+export type CertType = 'BONAFIDE' | 'CHARACTER' | 'FEE_CERTIFICATE' | 'ID_CARD' | 'ADMIT_CARD';
+
+export interface Certificate {
+  id: string;
+  studentId: string;
+  type: CertType;
+  title: string;
+  certNo: string;
+  issueDate: string;
+  purpose: string | null;
+  downloadUrl: string;
+}
+
+export const certificateApi = {
+  list: (studentId: string) =>
+    apiRequest<{ data: Certificate[] }>(`/students/${studentId}/certificates`),
+
+  issue: (
+    studentId: string,
+    body: {
+      type: CertType;
+      purpose?: string;
+      examName?: string;
+      category?: string;
+      firstAdmission?: string;
+      lastExam?: string;
+      conduct?: string;
+      remarks?: string;
+    },
+  ) =>
+    apiRequest<{ id: string; certNo: string; downloadUrl: string }>(
+      `/students/${studentId}/certificates`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** The PDF bytes ride the Authorization header, like photos/exports. */
+  downloadPdf: (studentId: string, certId: string) =>
+    fetchAuthBlob(`/students/${studentId}/certificates/${certId}/pdf`),
+};
+
 // ── Staff API ──
 export const staffApi = {
   // Staff-service /staff list: no search/department filters server-side (the

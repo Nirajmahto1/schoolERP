@@ -3,6 +3,7 @@ import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { studentApi, parentApi, aiApi } from '@/lib/api';
+import CertificatesCard from './CertificatesCard';
 import { useLoading } from '@/context/LoadingContext';
 
 export default function StudentProfilePage() {
@@ -204,6 +205,7 @@ export default function StudentProfilePage() {
           </div>
 
           <div className="flex-1" style={{ minWidth: 300, display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <CertificatesCard studentId={id as string} studentName={`${student.firstName} ${student.lastName}`} />
             <div className="card">
               <div className="card-body">
                 <h3 className="mb-4">Attendance Rate</h3>
