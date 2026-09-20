@@ -67,3 +67,6 @@ data/
 # local dev stack scratch: boot scripts, probes, runtime logs
 .setuprun/
 educore.apk
+
+# Nightly backup artifacts (pg_dump + upload archives) — never in git
+backups/
