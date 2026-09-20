@@ -282,6 +282,48 @@ export const parentApi = {
     apiRequest<any>('/parents/me/children-summary'),
 };
 
+// ── Compliance API (DPDP Act 2023 — BUILD_PLAN 10.1) ──
+// Verifiable parental consent, the §10.1(3) access right (data export), and
+// erasure requests. Ownership is enforced server-side: staff see their
+// branch, a parent only their own children. The erasure inbox additionally
+// requires SUPER_ADMIN / BRANCH_ADMIN / PRINCIPAL.
+export const complianceApi = {
+  /** The named grievance officer + SLA surfaced for lawyers and parents. */
+  grievanceOfficer: () =>
+    apiRequest<{ officer: string; contact: string | null; slaDays: number }>('/dpdp/grievance-officer'),
+
+  listConsents: (studentId: string) =>
+    apiRequest<{ data: Array<{ id: string; purpose: string; status: string; method: string; grantedAt: string | null; withdrawnAt: string | null; purposes: string[] }> }>(
+      `/dpdp/${studentId}/consent`,
+    ),
+
+  grantConsent: (
+    studentId: string,
+    body: { purpose: string; method: 'PORTAL' | 'PHYSICAL_FORM' | 'ONBOARDING'; evidence?: string },
+  ) => apiRequest<{ id: string; status: string }>(`/dpdp/${studentId}/consent`, { method: 'POST', body: JSON.stringify(body) }),
+
+  withdrawConsent: (studentId: string, purpose: string) =>
+    apiRequest<{ id: string; status: string }>(`/dpdp/${studentId}/consent/${encodeURIComponent(purpose)}/withdraw`, { method: 'POST' }),
+
+  /** §10.1(3) access right — one JSON file holding everything held on the child. */
+  exportData: (studentId: string) => fetchAuthBlob(`/dpdp/${studentId}/data-export`),
+
+  fileErasure: (studentId: string, reason?: string) =>
+    apiRequest<{ id: string; status: string }>(`/dpdp/${studentId}/erasure-requests`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  listErasure: (status?: 'PENDING' | 'COMPLETED' | 'REJECTED') =>
+    apiRequest<{ data: any[] }>(`/dpdp/erasure-requests${status ? `?status=${status}` : ''}`),
+
+  processErasure: (id: string, action: 'COMPLETE' | 'REJECT', note?: string) =>
+    apiRequest<{ id: string; status: string; processedAt: string; resolutionNote: string | null }>(
+      `/dpdp/erasure-requests/${id}/process`,
+      { method: 'POST', body: JSON.stringify({ action, note }) },
+    ),
+};
+
 // ── Staff API ──
 export const staffApi = {
   // Staff-service /staff list: no search/department filters server-side (the

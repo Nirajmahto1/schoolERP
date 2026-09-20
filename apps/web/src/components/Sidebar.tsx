@@ -81,6 +81,7 @@ const allNavItems: NavItem[] = [
   { labelKey: 'nav.library', icon: 'local_library', href: '/dashboard/library', permission: 'view:library' },
   { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport', permission: 'view:transport' },
   { labelKey: 'nav.exams', icon: 'analytics', href: '/dashboard/exams', permission: 'view:results' },
+  { labelKey: 'nav.compliance', icon: 'privacy_tip', href: '/dashboard/compliance', permission: 'view:students' },
   { labelKey: 'nav.settings', icon: 'settings', href: '/dashboard/settings', permission: 'manage:settings' },
 ];
 
@@ -109,6 +110,7 @@ const parentNavItems: NavItem[] = [
   { labelKey: 'nav.communication', icon: 'campaign', href: '/dashboard/communication' },
   { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport' },
   { labelKey: 'nav.ptm', icon: 'event', href: '/dashboard/ptm' },
+  { labelKey: 'nav.compliance', icon: 'privacy_tip', href: '/dashboard/compliance' },
 ];
 
 // Teacher-specific nav items
