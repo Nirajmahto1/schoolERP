@@ -118,6 +118,7 @@ export const hi: Partial<Record<keyof typeof en, string>> = {
 
   // ── Compliance (DPDP Act 2023) ──
   'nav.compliance': 'अनुपालन (DPDP)',
+  'nav.government': 'सरकारी रिपोर्ट',
   'compliance.title': 'अनुपालन — DPDP अधिनियम 2023',
   'compliance.subtitle': 'हर बच्चे के लिए अभिभावक सहमति, डेटा पहुँच और मिटाने का अधिकार — पूरे ऑडिट ट्रेल के साथ।',
   'compliance.grievanceTitle': 'शिकायत निवारण',
@@ -197,4 +198,18 @@ export const hi: Partial<Record<keyof typeof en, string>> = {
   'certificates.errorLoad': 'प्रमाणपत्र लोड नहीं हो सके।',
   'certificates.errorIssue': 'प्रमाणपत्र जारी नहीं हो सका।',
   'certificates.errorDownload': 'PDF डाउनलोड नहीं हो सका।',
+  'govt.title': 'सरकारी रिपोर्ट',
+  'govt.subtitle': 'लाइव डेटा से UDISE+, RTE और CBSE रिपोर्टिंग',
+  'govt.udiseTitle': 'UDISE+ वार्षिक रिटर्न',
+  'govt.udiseBlurb': 'कक्षा-वार नामांकन, लिंग और स्टाफ आंकड़े लाइव डेटा से भरे जाते हैं। UDISE+ पोर्टल पर दर्ज करें; सामाजिक श्रेणी व सुविधा विभाग वहीं भरने होंगे।',
+  'govt.rteTitle': 'RTE 25% रिपोर्ट',
+  'govt.locTitle': 'CBSE LOC निर्यात',
+  'govt.locBlurb': 'परीक्षा के विषयों के अनुसार परीक्षार्थी सूची — नाम, जन्मतिथि, लिंग, APAAR ID, अंक। अपलोड से पहले CBSE पोर्टल के विषय-कोड मिलान कर लें।',
+  'govt.apaarTitle': 'APAAR / ABC ID व RTE फ़्लैग',
+  'govt.apaarBlurb': 'छात्र की 12-अंकों की APAAR ID सहेजें (जांची गई, प्रति शाखा अद्वितीय)। RTE सीट फ़्लैग प्रवेश फ़ॉर्म से लगता है।',
+  'govt.apaarStudentPlaceholder': 'छात्र ID (छात्र प्रोफ़ाइल URL से)',
+  'govt.current': 'वर्तमान',
+  'govt.downloadCsv': 'CSV डाउनलोड करें',
+  'govt.noExams': 'अभी कोई परीक्षा निर्धारित नहीं है — पहले Exams में बनाएं।',
+  'govt.save': 'सहेजें',
 };

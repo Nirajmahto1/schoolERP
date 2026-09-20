@@ -113,6 +113,7 @@ export const en = {
 
   // ── Compliance (DPDP Act 2023) ──
   'nav.compliance': 'Compliance (DPDP)',
+  'nav.government': 'Government Exports',
   'compliance.title': 'Compliance — DPDP Act 2023',
   'compliance.subtitle': 'Parental consent, data access and erasure for every child — with a full audit trail.',
   'compliance.grievanceTitle': 'Grievance redressal',
@@ -192,4 +193,18 @@ export const en = {
   'certificates.errorLoad': 'Could not load certificates.',
   'certificates.errorIssue': 'Could not issue the certificate.',
   'certificates.errorDownload': 'Could not download the PDF.',
+  'govt.title': 'Government Exports',
+  'govt.subtitle': 'UDISE+, RTE and CBSE reporting from live data',
+  'govt.udiseTitle': 'UDISE+ Annual Return',
+  'govt.udiseBlurb': 'Pre-fills the enrolment-by-class, gender and staff sections from live data. Transcribe into the UDISE+ portal; social-category and facility sections need manual entry there.',
+  'govt.rteTitle': 'RTE 25% Report',
+  'govt.locTitle': 'CBSE LOC Export',
+  'govt.locBlurb': 'List of Candidates keyed to an exam\'s subject columns — name, DOB, gender, APAAR ID, subject marks. Verify subject codes against the CBSE portal mapping before upload.',
+  'govt.apaarTitle': 'APAAR / ABC ID & RTE flag',
+  'govt.apaarBlurb': 'Store a student\'s 12-digit APAAR ID (validated, unique per branch). The RTE seat flag is set from the admission form; the report above uses it.',
+  'govt.apaarStudentPlaceholder': 'Student ID (from the student profile URL)',
+  'govt.current': 'current',
+  'govt.downloadCsv': 'Download CSV',
+  'govt.noExams': 'No exams scheduled yet — create one under Exams first.',
+  'govt.save': 'Save',
 };

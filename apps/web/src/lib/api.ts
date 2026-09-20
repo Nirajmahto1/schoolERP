@@ -365,6 +365,29 @@ export const certificateApi = {
     fetchAuthBlob(`/students/${studentId}/certificates/${certId}/pdf`),
 };
 
+// ── Government reporting API (BUILD_PLAN 10.2) — CSV exports ride the
+// auth-gated blob fetch like every other download. ──
+export const governmentApi = {
+  /** Annual UDISE+ return, pre-filled from enrolment + staff data. */
+  udiseExport: (academicYearId?: string) =>
+    fetchAuthBlob(`/students/government/udise-export${academicYearId ? `?academicYearId=${academicYearId}` : ''}`),
+
+  /** RTE 12(1)(c) 25% quota report. */
+  rteReport: (academicYearId?: string) =>
+    fetchAuthBlob(`/students/government/rte-report${academicYearId ? `?academicYearId=${academicYearId}` : ''}`),
+
+  /** CBSE LOC — needs an exam so subject columns match the registration. */
+  locExport: (examinationId: string) =>
+    fetchAuthBlob(`/students/government/loc-export?examinationId=${examinationId}`),
+
+  /** APAAR / RTE flags on a student. */
+  setGovtIds: (studentId: string, body: { apaarId?: string | null; rteQuota?: boolean }) =>
+    apiRequest<{ data: { id: string; apaarId: string | null; rteQuota: boolean } }>(
+      `/students/${studentId}/govt-ids`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+};
+
 // ── Staff API ──
 export const staffApi = {
   // Staff-service /staff list: no search/department filters server-side (the

@@ -20,6 +20,7 @@ import { parentRoutes } from './routes/parent.routes';
 import { admissionRoutes } from './routes/admission.routes';
 import { certificateRoutes } from './routes/certificate.routes';
 import { dpdpRoutes } from './routes/dpdp.routes';
+import { governmentRoutes } from './routes/government.routes';
 import { importRoutes } from './routes/import.routes';
 import { logger } from './utils/logger';
 
@@ -162,6 +163,10 @@ export function createStudentApp({ env, prisma }: StudentAppOptions): Express {
   //    Phase-3.2 backend. Mounted last: only requests the specific routers
   //    above did not handle fall through to the assertion + import routes.
   const assertion = requireAssertion(env.INTERNAL_ASSERTION_PUBLIC_KEY, SERVICE_NAME);
+  // Government routes BEFORE studentRoutes: /students/government/* would
+  // otherwise be swallowed by studentRoutes' GET /:id ("government" parsed
+  // as an id → CastError → 500).
+  app.use('/students', assertion, governmentRoutes);
   app.use('/students', assertion, studentRoutes);
   app.use('/students', assertion, certificateRoutes);
   app.use('/parents', assertion, parentRoutes);

@@ -82,6 +82,7 @@ const allNavItems: NavItem[] = [
   { labelKey: 'nav.transport', icon: 'directions_bus', href: '/dashboard/transport', permission: 'view:transport' },
   { labelKey: 'nav.exams', icon: 'analytics', href: '/dashboard/exams', permission: 'view:results' },
   { labelKey: 'nav.compliance', icon: 'privacy_tip', href: '/dashboard/compliance', permission: 'view:students' },
+  { labelKey: 'nav.government', icon: 'account_balance', href: '/dashboard/government', permission: 'view:students' },
   { labelKey: 'nav.settings', icon: 'settings', href: '/dashboard/settings', permission: 'manage:settings' },
 ];
 

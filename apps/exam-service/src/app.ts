@@ -17,6 +17,7 @@ import { requireAssertion, stripSpoofableHeaders, ctx } from '@school-erp/auth';
 import type { ServiceEnv } from '@school-erp/config';
 import { buildOpenApiDocument } from '@school-erp/http';
 import { notifyStaffUsers } from '@school-erp/notify';
+import { renderReportCardPdf } from './report-card-pdf';
 
 /** MUST equal the gateway route-table audience for this service. */
 export const SERVICE_NAME = 'exam-service';
@@ -375,7 +376,11 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
 
       const student = await prisma.student.findFirst({
         where: { id: req.params.studentId, branchId },
-        include: { enrollments: { orderBy: { fromDate: 'desc' }, take: 1, include: { class: { select: { name: true } }, section: { select: { name: true } } } } },
+        select: {
+          id: true, admissionNo: true, firstName: true, lastName: true,
+          dateOfBirth: true, gender: true, apaarId: true, deletedAt: true,
+          enrollments: { orderBy: { fromDate: 'desc' }, take: 1, include: { class: { select: { name: true } }, section: { select: { name: true } } } },
+        },
       });
       if (!student) { problem(res, 404, 'not-found', 'Not Found', 'Student not found.'); return; }
 
@@ -417,6 +422,27 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
         ? scheme.bands.find((b) => overallPercent >= Number(b.minPercent) && overallPercent <= Number(b.maxPercent))
         : undefined;
 
+      // CBSE CGPA (10.3): mean of per-subject grade points, rounded to 2dp.
+      // null until every scored subject has a points value in the scheme.
+      const scoredGrades = subjects.filter((s) => s.grade != null);
+      const points = scoredGrades
+        .map((s) => {
+          const band = scheme?.bands.find((b) => b.grade === s.grade);
+          return band?.points != null ? Number(band.points) : null;
+        })
+        .filter((p): p is number => p != null);
+      const cgpa = scoredGrades.length > 0 && points.length === scoredGrades.length
+        ? Math.round((points.reduce((a, p) => a + p, 0) / points.length) * 100) / 100
+        : null;
+
+      // Co-scholastic areas (10.3 #1): current academic year's grades for
+      // this student.
+      const coScholastics = await prisma.studentCoScholastic.findMany({
+        where: { studentId: student.id, academicYearId: exam.academicYearId },
+        include: { area: { select: { name: true } } },
+        orderBy: { area: { name: 'asc' } },
+      });
+
       res.json({
         data: {
           examination: { id: exam.id, name: exam.name, publishedAt: exam.publishedAt },
@@ -424,13 +450,118 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
             id: student.id,
             name: `${student.firstName} ${student.lastName}`,
             admissionNo: student.admissionNo,
+            apaarId: student.apaarId,
             class: student.enrollments[0]?.class.name ?? null,
             section: student.enrollments[0]?.section.name ?? null,
           },
           subjects,
-          total: { marks: totalMarks, maxMarks: totalMax, percent: overallPercent, grade: overallBand?.grade ?? null },
+          coScholastics: coScholastics.map((cs) => ({ area: cs.area.name, grade: cs.grade, remarks: cs.remarks })),
+          total: { marks: totalMarks, maxMarks: totalMax, percent: overallPercent, grade: overallBand?.grade ?? null, cgpa },
         },
       });
+    } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
+  });
+
+  // ── Report card PDF (BUILD_PLAN 10.3 #1) ──
+  // Same payload as the JSON route, rendered to the CBSE-style layout.
+  // Ownership: staff may fetch any report card in the branch; students and
+  // parents only their own children's (IDOR gate — the JSON route above
+  // predates this check and gets the same rule).
+  router.get('/report-card/:examinationId/:studentId/pdf', async (req: Request, res: Response) => {
+    try {
+      const { branchId, userId, roles } = ctx(req);
+      if (!branchId) { problem(res, 403, 'authorization-error', 'Forbidden', 'Account has no branch.'); return; }
+
+      const exam = await prisma.examination.findFirst({
+        where: { id: req.params.examinationId, branchId },
+        include: { subjects: { include: { subject: { select: { name: true, code: true } } } } },
+      });
+      if (!exam) { problem(res, 404, 'not-found', 'Not Found', 'Examination not found.'); return; }
+      if (exam.status !== 'PUBLISHED') { problem(res, 404, 'not-found', 'Not Found', 'Report card is not available.'); return; }
+
+      const student = await prisma.student.findFirst({
+        where: { id: req.params.studentId, branchId },
+        include: { enrollments: { orderBy: { fromDate: 'desc' }, take: 1, include: { class: { select: { name: true } }, section: { select: { name: true } } } } },
+      });
+      if (!student) { problem(res, 404, 'not-found', 'Not Found', 'Student not found.'); return; }
+
+      const isStaff = roles.some((r) => ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'TEACHER', 'HOD', 'ACADEMIC_HEAD'].includes(r));
+      if (!isStaff) {
+        const own = await prisma.student.findFirst({ where: { userId, branchId }, select: { id: true } });
+        const children = await prisma.studentGuardian.findMany({ where: { guardian: { userId }, student: { branchId } }, select: { studentId: true } });
+        const allowed = [own?.id, ...children.map((c) => c.studentId)].filter((x): x is string => Boolean(x));
+        if (!allowed.includes(student.id)) { problem(res, 403, 'authorization-error', 'Forbidden', 'Not your report card.'); return; }
+      }
+
+      const results = await prisma.examResult.findMany({
+        where: { studentId: student.id, examSubject: { examinationId: exam.id } },
+        include: { examSubject: { include: { subject: { select: { name: true, code: true } } } } },
+      });
+      const scheme = await prisma.gradingScheme.findFirst({
+        where: { branchId, academicYearId: exam.academicYearId, isActive: true, isDefault: true },
+        include: { bands: { orderBy: { minPercent: 'desc' } } },
+      });
+
+      let totalMarks = 0, totalMax = 0;
+      const subjects = exam.subjects.map((es) => {
+        const result = results.find((r) => r.examSubjectId === es.id);
+        const max = es.maxMarks;
+        const obtained = result && !result.isAbsent && !result.isExempt ? Number(result.marksObtained) : null;
+        if (obtained != null) { totalMarks += obtained; totalMax += max; }
+        const percent = obtained != null && max > 0 ? (obtained / max) * 100 : null;
+        const band = percent != null && scheme
+          ? scheme.bands.find((b) => percent >= Number(b.minPercent) && percent <= Number(b.maxPercent))
+          : undefined;
+        return { subject: es.subject.name, maxMarks: max, marksObtained: obtained, grade: band?.grade ?? null };
+      });
+
+      const overallPercent = totalMax > 0 ? Math.round((totalMarks / totalMax) * 10000) / 100 : null;
+      const overallBand = overallPercent != null && scheme
+        ? scheme.bands.find((b) => overallPercent >= Number(b.minPercent) && overallPercent <= Number(b.maxPercent))
+        : undefined;
+      const scoredGrades = subjects.filter((s) => s.grade != null);
+      const points = scoredGrades
+        .map((s) => {
+          const band = scheme?.bands.find((b) => b.grade === s.grade);
+          return band?.points != null ? Number(band.points) : null;
+        })
+        .filter((p): p is number => p != null);
+      const cgpa = scoredGrades.length > 0 && points.length === scoredGrades.length
+        ? Math.round((points.reduce((a, p) => a + p, 0) / points.length) * 100) / 100
+        : null;
+
+      const coScholastics = await prisma.studentCoScholastic.findMany({
+        where: { studentId: student.id, academicYearId: exam.academicYearId },
+        include: { area: { select: { name: true } } },
+        orderBy: { area: { name: 'asc' } },
+      });
+
+      const school = await prisma.school.findFirst();
+      const allPass = subjects.every((s) => s.marksObtained == null || (scheme
+        ? Number(scheme.bands.find((b) => b.grade === s.grade)?.minPercent ?? 0) >= 33
+        : true));
+
+      const pdf = renderReportCardPdf({
+        schoolName: school?.name ?? 'School',
+        schoolLines: [school ? `${school.address}, ${school.city}, ${school.state} - ${school.pincode}` : '', school?.udiseCode ? `UDISE+ Code: ${school.udiseCode}` : '', school?.board ? `Board: ${school.board}` : ''].filter(Boolean),
+        examinationName: exam.name,
+        student: {
+          name: `${student.firstName} ${student.lastName}`,
+          admissionNo: student.admissionNo,
+          className: student.enrollments[0]?.class.name ?? '-',
+          section: student.enrollments[0]?.section.name ?? '-',
+          apaarId: student.apaarId,
+          dob: student.dateOfBirth.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+        },
+        subjects,
+        total: { marks: totalMarks, maxMarks: totalMax, percent: overallPercent, grade: overallBand?.grade ?? null, cgpa },
+        coScholastics: coScholastics.map((cs) => ({ area: cs.area.name, grade: cs.grade })),
+        result: { remarks: null, pass: subjects.some((s) => s.marksObtained != null) ? allPass : null },
+      });
+
+      res.status(200).type('application/pdf')
+        .set('content-disposition', `inline; filename="report-card-${student.admissionNo.replace(/[^\w-]/g, '')}.pdf"`)
+        .send(pdf);
     } catch (e) { problem(res, 500, 'internal-error', 'Server Error', (e as Error).message); }
   });
 

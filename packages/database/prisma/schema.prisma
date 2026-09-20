@@ -24,7 +24,7 @@ datasource db {
 
 model School {
   id        String   @id @default(cuid())
-  name      String
+  name      String   @unique
   code      String   @unique
   address   String
   city      String
@@ -34,6 +34,12 @@ model School {
   email     String   @unique
   website   String?
   logo      String?
+  // UDISE+ school code (11 digits, the government's primary school key) and
+  // the board the school is affiliated to (CBSE / ICSE / state). Both feed
+  // the annual UDISE+ return and the LOC export (BUILD_PLAN 10.2). Unique
+  // when present — two schools cannot share one UDISE+ code.
+  udiseCode String?
+  board     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -372,6 +378,12 @@ model Student {
   photo          String?
   previousSchool String?
   admissionDate  DateTime
+  // APAAR / ABC ID (BUILD_PLAN 10.2 #2) — the government's unique student
+  // identifier, stored and format-validated on write (12 digits).
+  apaarId        String?
+  // RTE 25% quota seat (BUILD_PLAN 10.2 #4) — drives the section-25% check
+  // and the RTE reimbursement report.
+  rteQuota       Boolean   @default(false)
   isActive       Boolean   @default(true)
   branchId       String
   deletedAt      DateTime?
@@ -402,6 +414,8 @@ model Student {
   admissionApplications AdmissionApplication[]     @relation("AdmissionApplicationStudent")
 
   @@unique([branchId, admissionNo])
+  // One APAAR ID cannot belong to two students in the same branch.
+  @@unique([branchId, apaarId])
   @@index([branchId])
   @@index([branchId, firstName])
   @@index([branchId, lastName])
