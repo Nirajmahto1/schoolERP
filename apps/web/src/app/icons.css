@@ -16,7 +16,7 @@
   font-display: swap;
   /* Subsetted at build time to the ~119 glyphs the app actually uses —
      151KB full → 8KB subset, the single largest asset on first load. */
-  src: url('/fonts/material-icons-outlined.subset.woff2') format('woff2');
+  src: url('/fonts/material-icons-outlined.subset.woff2?v=2') format('woff2');
 }
 
 .material-icons-outlined {
