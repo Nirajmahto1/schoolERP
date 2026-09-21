@@ -229,6 +229,18 @@ async def at_risk(
     return await queries.at_risk_students(branch, limit, threshold_mode=thresholdMode)
 
 
+@app.get("/analytics/parent-app-adoption")
+async def parent_app_adoption(
+    branchId: Optional[str] = None,
+    user: Identity = Depends(require_identity),
+) -> dict[str, Any]:
+    """§14.2: parent-app adoption rate for the branch — the metric that says
+    whether a pilot is visibly working. A family counts as adopted when a
+    guardian has an active push-device registration."""
+    branch = resolve_branch(user, branchId)
+    return await queries.parent_app_adoption(branch)
+
+
 @app.get("/analytics/at-risk/thresholds")
 async def at_risk_thresholds(
     branchId: Optional[str] = None,

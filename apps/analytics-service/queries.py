@@ -429,3 +429,56 @@ def _r1(v: Any) -> Optional[float]:
 
 
 
+
+
+async def parent_app_adoption(branch_id: str) -> dict[str, Any]:
+    """§14.2: parent-app adoption — "this is where pilots visibly succeed or
+    fail. Aim for >70% of parents installed within 30 days, and measure it."
+
+    A parent counts as adopted when at least one of their children's guardians
+    has an ACTIVE push device registered (a registered FCM token is the
+    closest proxy for "installed and opened"; the registry upserts on every
+    app start). Per-guardian, not per-user: a family shares one phone.
+    """
+    row = await db.fetchrow(
+        """
+        WITH enrolled AS (
+          SELECT se."studentId"
+            FROM student_enrollments se
+           WHERE se."branchId" = $1 AND se.status = 'ENROLLED'
+             AND se."toDate" IS NULL
+             AND se."academicYearId" IN (
+               SELECT id FROM academic_years
+                WHERE "branchId" = $1 AND "isCurrent")
+        ),
+        families AS (
+          SELECT DISTINCT sg."guardianId"
+            FROM enrolled e
+            JOIN student_guardians sg ON sg."studentId" = e."studentId"
+           WHERE sg."receivesComms"
+        ),
+        adopted AS (
+          SELECT DISTINCT dt."userId"
+            FROM device_tokens dt
+            JOIN users u ON u.id = dt."userId"
+           WHERE dt."isActive" AND u."deletedAt" IS NULL
+             AND u.email NOT LIKE '%@parent.school-erp.local'
+        )
+        SELECT
+          (SELECT count(*) FROM families)::int AS total_families,
+          (SELECT count(*) FROM families f
+            WHERE f."guardianId" IN (
+              SELECT g."userId" FROM guardians g
+               WHERE g."userId" IS NOT NULL
+                 AND g."userId" IN (SELECT "userId" FROM adopted)))::int AS adopted_families
+        """,
+        branch_id,
+    )
+    total = row["total_families"] if row else 0
+    adopted = row["adopted_families"] if row else 0
+    return {
+        "totalFamilies": total,
+        "adoptedFamilies": adopted,
+        "rate": round(100.0 * adopted / total, 1) if total else None,
+        "target": 70.0,
+    }

@@ -180,6 +180,31 @@ async function validateRows(
   return reports;
 }
 
+// ── GET /students/import-template (§13.3.1) ──
+// The Excel template the onboarding machine hands to schools: exactly the
+// canonical headers the importer expects, one example row, CRLF + UTF-8 BOM
+// so Excel on Windows opens it without an import wizard. Generated, never a
+// checked-in binary — the header list cannot drift from the schema above.
+router.get('/students/import-template', async (_req: Request, res: Response) => {
+  const headers = [
+    'admissionNo', 'firstName', 'lastName', 'dateOfBirth', 'gender',
+    'class', 'section', 'guardianName', 'guardianPhone', 'rollNo',
+    'bloodGroup', 'address', 'phone', 'previousSchool', 'guardianEmail',
+  ];
+  const example = [
+    '2026/0451', 'Aarav', 'Sharma', '2015-06-14', 'MALE',
+    'Class 3', 'A', 'Rahul Sharma', '9876500451', '12',
+    'O+', '14 Civil Lines, Rudrapur', '9876500451', 'St. Mary’s Primary', 'rahul.sharma@example.com',
+  ];
+  const csv = [headers, example].map((r) => r.join(',')).join('\r\n');
+  res
+    .status(200)
+    .type('text/csv; charset=utf-8')
+    // BOM first so Excel auto-detects UTF-8; attachment forces download.
+    .set('content-disposition', 'attachment; filename="student-import-template.csv"')
+    .send('\ufeff' + csv);
+});
+
 router.post('/students/import', async (req: Request, res: Response) => {
   try {
     const { branchId, userId } = ctx(req);
