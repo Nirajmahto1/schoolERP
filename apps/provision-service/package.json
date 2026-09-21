@@ -11,11 +11,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@school-erp/database": "*",
-    "@school-erp/control-plane": "*",
-    "@school-erp/tenant": "*",
     "@school-erp/auth": "*",
     "@school-erp/config": "*",
+    "@school-erp/control-plane": "*",
+    "@school-erp/database": "*",
+    "@school-erp/http": "*",
+    "@school-erp/tenant": "*",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.0",
     "multer": "^1.4.5-lts.2",
