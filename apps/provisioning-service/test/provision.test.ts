@@ -61,8 +61,10 @@ describe('provisionTenant', () => {
 
   // Runs a real `prisma migrate deploy` subprocess plus full India-default
   // seeding, so it needs far more than vitest's 5s default (matches the
-  // explicit-timeout convention in roles-backup.test.ts).
-  it('provisions a tenant end-to-end with India defaults and a setup link', async () => {
+  // explicit-timeout convention in roles-backup.test.ts). 180s: under
+  // parallel turbo runs the subprocess competes for disk/CPU with 40 other
+  // tasks and the 60s default has proven flaky on dev machines.
+  it('provisions a tenant end-to-end with India defaults and a setup link', { timeout: 180_000 }, async () => {
     const result = await provisionTenant(
       { slug: 'dps-noida', legalName: 'DPS Noida', trialDays: 30 },
       makeDeps(),

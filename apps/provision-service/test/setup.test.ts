@@ -74,12 +74,14 @@ describe('provision service — setup wizard', () => {
     // A throwaway temp dir — never the repo's real data/logos.
     testLogoDir = path.join(tmpdir(), `provision-test-logos-${Date.now()}`);
     setLogoStorageDir(testLogoDir);
-  });
+  }, 60_000); // shared-DB contention under parallel turbo tasks can exceed the 10s default
 
   afterAll(async () => {
-    await prisma.$disconnect();
-    await db.teardown();
-    await rm(testLogoDir, { recursive: true, force: true });
+    // If beforeAll timed out mid-setup, teardown must not crash the report —
+    // the hook failure itself is the signal; afterAll only cleans what exists.
+    await prisma?.$disconnect?.();
+    await db?.teardown?.();
+    if (testLogoDir) await rm(testLogoDir, { recursive: true, force: true });
   });
 
   /** Wipe, then re-bootstrap the base tenant (no logo) via the public API. */
