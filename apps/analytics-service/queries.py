@@ -461,7 +461,7 @@ async def parent_app_adoption(branch_id: str) -> dict[str, Any]:
           SELECT DISTINCT dt."userId"
             FROM device_tokens dt
             JOIN users u ON u.id = dt."userId"
-           WHERE dt."isActive" AND u."deletedAt" IS NULL
+           WHERE dt."isActive" AND u."isActive"
              AND u.email NOT LIKE '%@parent.school-erp.local'
         )
         SELECT
