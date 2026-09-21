@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PrismaClient } from '@school-erp/database';
+import { quoteIdent } from './roles';
 
 export interface BackupResult {
   /** Absolute path of the pg_dump custom-format archive. */
@@ -103,8 +104,8 @@ export async function rehearseRestore(
 
   const admin = new PrismaClient({ datasourceUrl: adminUrl });
   try {
-    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${scratch}" WITH (FORCE)`);
-    await admin.$executeRawUnsafe(`CREATE DATABASE "${scratch}"`);
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(scratch)} WITH (FORCE)`);
+    await admin.$executeRawUnsafe(`CREATE DATABASE ${quoteIdent(scratch)}`);
   } finally {
     await admin.$disconnect();
   }
@@ -153,7 +154,7 @@ export async function rehearseRestore(
     if (!opts.keepScratch) {
       const cleanup = new PrismaClient({ datasourceUrl: adminUrl });
       try {
-        await cleanup.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${scratch}" WITH (FORCE)`);
+        await cleanup.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(scratch)} WITH (FORCE)`);
       } catch {
         // Cleanup failure must not mask the drill result.
       } finally {

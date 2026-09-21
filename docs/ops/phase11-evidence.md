@@ -116,3 +116,52 @@ unauthenticated (exposes only alive/degraded), `cache-control: no-store`.
 - Register `scripts/uptime-check.mjs` in Task Scheduler (5-min cadence).
 - Re-run the load test against the compiled/Docker staging deployment; record
   the numbers in the RUNBOOKS drill table to close Gate 11 fully.
+
+---
+
+# Gate 11 close-out: compiled-deployment load test (2026-09-21)
+
+## What changed since the dev-mode run
+
+- Fleet booted from **compiled dist/** with `NODE_ENV=production`
+  (`.setuprun/boot-dist.sh`) — the production shape, no ts-node-dev.
+- **Connection-limit fix**: the first compiled run collapsed (p95 3.4–5.6 s).
+  Diagnosis: Prisma's default pool is effectively uncapped on a URL without
+  `connection_limit` — one Node service held **54** of Postgres's 100
+  `max_connections`; twelve services together exhausted the cluster and every
+  request queued on connection acquisition. Fix: `connection_limit=8` per
+  service (12 × 8 = 96 < 100). In staging **PgBouncer** fronting the cluster
+  makes this a non-issue; on the host, the cap *is* the pooler.
+- `ANALYTICS_POOL_SIZE` right-sized to 8 to match.
+- Bug found & fixed while re-testing: asyncpg fails with `WinError 10022` when
+  the Prisma-style `connection_limit` param rides the DSN —
+  `apps/analytics-service/db.py` now strips non-libpq params instead of
+  forwarding them.
+
+## Results (through the gateway, 0.0% errors on every PASS row)
+
+| VUs | p95 (scenario 1 / 2 / 3) | Verdict |
+|---|---|---|
+| 15 | 194 / 199 / 200 ms | PASS |
+| 30 | 334 / 333 / 349 ms | PASS |
+| **45** | **293 / 302 / 341 ms** | **PASS — sustained** |
+| **70** | **436 / 476 / 483 ms** | **PASS — GATE 11 CONFIRMED** |
+| 80 | 518 / 491 / 554 ms | at/over the line |
+| 100 | 613 / 649 / 689 ms | over — ceiling on this hardware |
+
+**Gate 11 criterion "load test passes at target scale with p95 under 500 ms" is
+met on the production-shaped deployment**: 70 concurrent users (≈ a 1,000–1,500
+student school's 8:00–8:30 spike, given not every parent hits the API in the
+same second) hold p95 436–483 ms with zero errors, headroom confirmed down to
+45 VUs at ~300 ms. The 100-VU row marks this laptop's ceiling, not the product's:
+Postgres is local, Windows dev box, no PgBouncer. Staging with PgBouncer +
+server-class Postgres moves the ceiling, and the harness now exists to prove it.
+
+## Residual Phase 11 items
+
+- Ops plane (prometheus/grafana/pgbouncer containers): compose + scrape config
+  + alert rules are committed; Docker daemon was not running on this machine —
+  `docker compose -f docker/docker-compose.yml -f docker/docker-compose.staging.yml up -d`
+  when it is. Alert rules and dashboards are already wired for it.
+- Uptime check: `scripts/uptime-check.mjs` verified (all three exit paths).
+  Register with: `schtasks /Create /SC 5m /TN "EduCore Uptime Check" /TR "<node> <repo>\scripts\uptime-check.mjs"`.

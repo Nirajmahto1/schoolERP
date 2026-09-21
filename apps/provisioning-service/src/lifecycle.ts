@@ -173,7 +173,11 @@ export async function exportTenant(
       tables: [],
     };
     for (const { table_name } of tables) {
-      const rows = await client.$queryRawUnsafe<unknown[]>(`SELECT * FROM "${table_name}"`);
+      // Identifier comes from information_schema, not user input — quoted
+      // anyway so a crafted table name can never break out (ASVS V5.3).
+      const rows = await client.$queryRawUnsafe<unknown[]>(
+        `SELECT * FROM "${table_name.replace(/"/g, '""')}"`,
+      );
       dump.tables.push({ table: table_name, rows: rows.length, data: rows });
     }
     await audit(controlPlane, actor, 'tenant.export', tenantId, { tables: dump.tables.length });

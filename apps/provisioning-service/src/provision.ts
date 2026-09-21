@@ -20,6 +20,7 @@ import { tenantConnectionRef, tenantDatabaseName } from './config';
 import {
   createTenantRole,
   dropTenantRole,
+  quoteIdent,
   tenantRoleConnRef,
   type TenantRole,
 } from './roles';
@@ -97,7 +98,7 @@ export async function createDatabase(adminUrl: string, dbName: string): Promise<
   const admin = new PrismaClient({ datasourceUrl: adminUrl });
   try {
     if (!(await databaseExists(adminUrl, dbName))) {
-      await admin.$executeRawUnsafe(`CREATE DATABASE "${dbName}"`);
+      await admin.$executeRawUnsafe(`CREATE DATABASE ${quoteIdent(dbName)}`);
     }
     return tenantConnectionRef(adminUrl, dbName);
   } finally {
@@ -109,7 +110,7 @@ export async function dropDatabase(adminUrl: string, dbName: string): Promise<vo
   const admin = new PrismaClient({ datasourceUrl: adminUrl });
   try {
     // WITH (FORCE) terminates lingering connections (Postgres 13+).
-    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+    await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(dbName)} WITH (FORCE)`);
   } finally {
     await admin.$disconnect();
   }

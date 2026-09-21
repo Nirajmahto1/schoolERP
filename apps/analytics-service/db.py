@@ -20,13 +20,20 @@ def database_url() -> str:
     url = os.getenv("DATABASE_URL", "")
     if not url:
         raise RuntimeError("DATABASE_URL is not set — analytics has nothing to read from.")
-    # Prisma-style URLs carry `?schema=public`; asyncpg speaks search_path.
-    if "schema=" in url:
+    # Prisma-style URLs carry `?schema=public` (→ search_path) and pool params
+    # like `connection_limit` that asyncpg must never see as a libpq option —
+    # an unknown query param reaches the socket layer and dies with
+    # WinError 10022. Strip everything except the params we translate.
+    if "?" in url:
         base, _, params = url.partition("?")
+        kept = []
         for kv in params.split("&"):
             k, _, v = kv.partition("=")
             if k == "schema":
-                url = f"{base}?search_path={v}"
+                kept.append(f"search_path={v}")
+            # connection_limit / pool_timeout etc. are Prisma-pool settings:
+            # intentionally dropped here (the asyncpg pool is sized separately).
+        url = f"{base}?{'&'.join(kept)}" if kept else base
     return url
 
 

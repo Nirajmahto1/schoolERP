@@ -25,8 +25,10 @@ export function safeRoleName(slug: string): string {
   return `tenant_${slug.replace(/-/g, '_')}_app`.slice(0, IDENT_MAX);
 }
 
-/** Quote a Postgres identifier safely (doubles embedded quotes). */
-function quoteIdent(name: string): string {
+/** Quote a Postgres identifier safely (doubles embedded quotes).
+ *  Shared with provision.ts/backup.ts so every raw identifier goes through
+ *  one escape hatch (Phase 12 ASVS: SQL injection — V5.3). */
+export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
