@@ -21,6 +21,7 @@ import { jsonRequestLogger, metricsMiddleware } from '@school-erp/http';
 import type { IdentityEnv } from '@school-erp/config';
 import { authRoutes } from './routes/auth.routes';
 import { accountRoutes, publicAccountRoutes } from './routes/account.routes';
+import { supportRoutes } from './routes/support.routes';
 import { logger } from './utils/logger';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -82,6 +83,9 @@ export function createIdentityApp({ env, prisma, controlPlane }: IdentityAppOpti
   //    their own one-time credentials.
   app.use('/auth', authRoutes);
   app.use('/auth', publicAccountRoutes);
+  // §13.4.2: support-grant activation — public; the one-time code IS the
+  // credential (hashed at rest, single-use, revoked from the console).
+  app.use('/auth', supportRoutes);
 
   // ── Everything else requires a gateway-signed, audience-bound assertion.
   //    A request arriving directly on the service port without one gets 401.

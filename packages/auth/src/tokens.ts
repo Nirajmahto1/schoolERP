@@ -43,6 +43,8 @@ export interface AccessTokenClaims {
   schoolId: string | null;
   branchId: string | null;
   roles: string[];
+  /** Attribution: impersonation admin or support-grant reference (null for normal sessions). */
+  impersonatedBy?: string | null;
   jti: string;
   iat: number;
   exp: number;
@@ -57,6 +59,10 @@ const accessClaimsSchema = z.object({
   schoolId: z.string().min(1).nullable().default(null),
   branchId: z.string().nullable(),
   roles: z.array(z.string()).min(1),
+  // Attribution chain: impersonation and support-grant sessions carry who is
+  // really acting ("support-grant:<id>" or the admin's user id). Optional so
+  // normal sessions verify unchanged.
+  impersonatedBy: z.string().min(1).nullable().optional(),
   jti: z.string().min(1),
   iat: z.number(),
   exp: z.number(),
@@ -82,6 +88,8 @@ export interface LiveUser {
   schoolId?: string | null;
   branchId: string | null;
   roles: string[];
+  /** Who is really acting: impersonation admin or support-grant reference. */
+  impersonatedBy?: string | null;
 }
 
 export interface TokenPair {
@@ -123,6 +131,9 @@ interface RefreshRecord {
   /** Set once the token has been exchanged. A second use is an attack signal. */
   usedAt: number | null;
   createdAt: number;
+  /** Attribution chain — carried across rotations so the whole session stays
+   *  attributable (impersonation admin or support-grant reference). */
+  impersonatedBy?: string | null;
 }
 
 function hashToken(raw: string): string {
@@ -181,6 +192,7 @@ export async function issueTokenPair(
       schoolId: user.schoolId ?? null,
       branchId: user.branchId,
       roles: user.roles,
+      impersonatedBy: user.impersonatedBy ?? null,
     },
     config.accessSecret,
     accessOptions,
@@ -201,6 +213,7 @@ export async function issueTokenPair(
     tokenHash: hashToken(refreshToken),
     usedAt: null,
     createdAt: Date.now(),
+    impersonatedBy: user.impersonatedBy ?? null,
   };
   await store.set(refreshKey(user.id, familyId, tokenId), JSON.stringify(record), refreshTtl);
 
@@ -310,9 +323,11 @@ export async function rotateRefreshToken(
     throw new TokenError('User account is inactive.', 'user-inactive');
   }
 
-  // Consume the presented token, then mint the next one in the same family.
+  // Consume the presented token, then mint the next one in the same family —
+  // keeping the attribution chain from the original grant, not just the
+  // reloaded user (a support/impersonation session never becomes anonymous).
   await store.del(key);
-  return issueTokenPair(user, config, store, familyId);
+  return issueTokenPair({ ...user, impersonatedBy: record.impersonatedBy ?? user.impersonatedBy ?? null }, config, store, familyId);
 }
 
 /** Revoke one session: burn its family and denylist the live access token. */

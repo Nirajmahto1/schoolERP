@@ -29,6 +29,8 @@ export interface GatewayIdentity {
   schoolId: string | null;
   branchId: string | null;
   roles: string[];
+  /** Attribution: who is really acting (impersonation / support grant). */
+  impersonatedBy: string | null;
 }
 
 declare global {
@@ -89,6 +91,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
         schoolId: claims.schoolId ?? null,
         branchId: claims.branchId,
         roles: claims.roles,
+        impersonatedBy: claims.impersonatedBy ?? null,
       };
       req.identity = identity;
 
@@ -103,6 +106,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
             schoolId: identity.schoolId,
             branchId: identity.branchId,
             roles: identity.roles,
+            impersonatedBy: identity.impersonatedBy,
             audience,
           },
           deps.signer,
@@ -160,6 +164,7 @@ export function createOptionalAuthMiddleware(deps: AuthMiddlewareDeps): RequestH
         schoolId: claims.schoolId ?? null,
         branchId: claims.branchId,
         roles: claims.roles,
+        impersonatedBy: claims.impersonatedBy ?? null,
       };
       req.identity = identity;
       req.mintFor = (audience: string) =>
@@ -171,6 +176,7 @@ export function createOptionalAuthMiddleware(deps: AuthMiddlewareDeps): RequestH
             schoolId: identity.schoolId,
             branchId: identity.branchId,
             roles: identity.roles,
+            impersonatedBy: identity.impersonatedBy,
             audience,
           },
           deps.signer,

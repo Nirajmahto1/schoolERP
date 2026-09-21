@@ -8,6 +8,7 @@ import InvoicePaidButton from "./invoice-paid-button";
 import UsageCard from "./usage-card";
 import CreditsCard from "./credits-card";
 import GrantForm from "./grant-form";
+import RevokeButton from "./revoke-grant-button";
 
 export const dynamic = "force-dynamic";
 
@@ -42,9 +43,9 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
       invoices: { orderBy: { createdAt: "desc" }, take: 10 },
       migrationRuns: { orderBy: { createdAt: "desc" }, take: 20 },
       supportGrants: {
-        where: { expiresAt: { gte: new Date() } },
-        include: { admin: true },
         orderBy: { expiresAt: "desc" },
+        take: 10,
+        include: { admin: true },
       },
       auditEvents: { orderBy: { at: "desc" }, take: 25 },
     },
@@ -362,17 +363,33 @@ export default async function TenantPage({ params }: { params: Promise<{ id: str
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <h2 className="font-medium mb-3">Support grants (time-boxed, audited)</h2>
         <ul className="space-y-2 text-sm mb-4">
-          {tenant.supportGrants.map((g) => (
-            <li key={g.id} className="flex items-baseline justify-between gap-4">
-              <span className="text-slate-300">
-                {g.reason}
-                <span className="block text-xs text-slate-500">
-                  granted by {g.admin.email}
+          {tenant.supportGrants.map((g) => {
+            const state = g.revokedAt
+              ? { label: "revoked", cls: "text-red-400" }
+              : g.usedAt
+                ? { label: "activated", cls: "text-emerald-400" }
+                : g.expiresAt.getTime() <= Date.now()
+                  ? { label: "expired", cls: "text-slate-500" }
+                  : { label: "pending activation", cls: "text-amber-400" };
+            return (
+              <li key={g.id} className="flex items-baseline justify-between gap-4">
+                <span className="text-slate-300">
+                  {g.reason}
+                  <span className="block text-xs text-slate-500">
+                    granted by {g.admin.email}
+                    {g.usedAt ? ` · activated ${new Date(g.usedAt).toLocaleString()}` : ""}
+                  </span>
                 </span>
-              </span>
-              <span className="text-xs text-amber-400">until {new Date(g.expiresAt).toLocaleString()}</span>
-            </li>
-          ))}
+                <span className="flex items-center gap-3 whitespace-nowrap">
+                  <span className={`text-xs ${state.cls}`}>{state.label}</span>
+                  <span className="text-xs text-amber-400">until {new Date(g.expiresAt).toLocaleString()}</span>
+                  {!g.revokedAt && g.expiresAt.getTime() > Date.now() && (
+                    <RevokeButton tenantId={tenant.id} grantId={g.id} />
+                  )}
+                </span>
+              </li>
+            );
+          })}
           {tenant.supportGrants.length === 0 && (
             <li className="text-slate-500">None active. No standing access — grants expire.</li>
           )}

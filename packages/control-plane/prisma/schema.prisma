@@ -318,13 +318,48 @@ model ProvisionAudit {
   @@map("provision_audit")
 }
 
+// §13.2.5: the public request-demo form writes here. Leads are the top of
+// the funnel — the console home surfaces them so follow-up is a workflow,
+// not luck. No tenant relation: a lead is not yet a school.
+model DemoLead {
+  id        String   @id @default(cuid())
+  school    String
+  name      String
+  email     String
+  phone     String
+  city      String?
+  band      String?
+  notes     String?
+  status    LeadStatus @default(NEW)
+  createdAt DateTime @default(now())
+
+  @@map("demo_leads")
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  DEMO_SCHEDULED
+  PILOT
+  WON
+  LOST
+}
+
 model SupportGrant {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   tenantId        String
   platformAdminId String
   reason          String
   expiresAt       DateTime
-  createdAt       DateTime @default(now())
+  // §13.4.2 activation: the console mints a one-time code (shown once); the
+  // platform engineer redeems it at identity-service /auth/support/activate
+  // to receive a time-boxed token pair. Code stored ONLY as a hash — the
+  // plaintext never persists. usedAt/revokedAt keep the grant single-use and
+  // revocable mid-window.
+  codeHash        String?   @unique
+  usedAt          DateTime?
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
 
   tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   admin  PlatformAdmin @relation(fields: [platformAdminId], references: [id])
