@@ -149,4 +149,20 @@ log "retention  pruned $PRUNED file(s) older than $RETENTION_DAYS days"
 
 SECS=$(( $(date +%s) - STARTED ))
 log "──── run done in ${SECS}s  failed=$FAILED ────"
+
+# ── 5. Observability hook (Phase 11.2): push the outcome so the BackupFailed
+# alert fires on failure. Prometheus Pushgateway is optional — a missing
+# gateway must never fail an otherwise-good backup run.
+PUSHGATEWAY="${BACKUP_PUSHGATEWAY:-}"
+if [ -n "$PUSHGATEWAY" ] && command -v curl >/dev/null 2>&1; then
+  JOB="educore_backup"
+  INSTANCE="$(hostname)"
+  printf 'educore_backup_success %d\neducore_backup_duration_seconds %d\n' \
+    "$((1 - FAILED))" "$SECS" \
+  | curl -fsS --max-time 10 --data-binary @- \
+      "${PUSHGATEWAY}/metrics/job/${JOB}/instance/${INSTANCE}" \
+    >>"$LOG" 2>&1 \
+    || log "WARN pushgateway unreachable — metric not pushed"
+fi
+
 exit $FAILED

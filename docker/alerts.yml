@@ -1,0 +1,121 @@
+# ──────────────────────────────────────────────
+# Alert rules (Phase 11.2) — every alert carries a runbook link (GATE 11).
+#
+# Loaded by prometheus.yml. Severity contract:
+#   page    — wake a human now (data loss / total outage / money at risk)
+#   warn    — fix within the day
+#
+# Thresholds are deliberately conservative for a small fleet: better one
+# false page than the first silent failure discovered by a school.
+# ──────────────────────────────────────────────
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} is not answering /metrics"
+          runbook: docs/ops/RUNBOOKS.md#service-down
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} 5xx rate above 5% for 5 minutes"
+          runbook: docs/ops/RUNBOOKS.md#high-error-rate
+
+      - alert: HighP99Latency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.job }} p99 latency above 500ms"
+          runbook: docs/ops/RUNBOOKS.md#high-p99-latency
+
+  - name: saturation
+    rules:
+      - alert: MemoryPressure
+        expr: process_resident_memory_bytes > 1.5e9
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.job }} resident memory above 1.5GB"
+          runbook: docs/ops/RUNBOOKS.md#memory-pressure
+
+      - alert: EventLoopLag
+        expr: nodejs_eventloop_lag_seconds > 0.5
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.job }} event loop lag above 500ms (Node services)"
+          runbook: docs/ops/RUNBOOKS.md#high-p99-latency
+
+      - alert: DiskNearlyFull
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "Root filesystem below 15% free"
+          runbook: docs/ops/RUNBOOKS.md#disk-nearly-full
+
+  - name: money-and-messages
+    rules:
+      - alert: FailedPayments
+        # fee-service 5xx on capture/verify routes — a failed payment path is
+        # revenue at risk, never a silent warn.
+        expr: |
+          sum by (job) (rate(http_requests_total{job="fee-service",status=~"5.."}[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "fee-service error rate above 2% — payment capture may be failing"
+          runbook: docs/ops/RUNBOOKS.md#payment-reconciliation-mismatch
+
+      - alert: FailedNotifications
+        expr: |
+          sum by (job) (rate(http_requests_total{job=~"communication-service|notification-engine",status=~"5.."}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total{job=~"communication-service|notification-engine"}[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.job }} error rate above 5% — parent messages may not be going out"
+          runbook: docs/ops/RUNBOOKS.md#failed-notifications
+
+  - name: platform-jobs
+    rules:
+      - alert: BackupFailed
+        # scripts/backup.sh exits non-zero on any failed dump/verify and the
+        # push-gateway metric makes the failure visible here.
+        expr: educore_backup_success == 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "Nightly backup failed — see backups/backup.log"
+          runbook: docs/ops/RUNBOOKS.md#backup-failed
+
+      - alert: MigrationDrift
+        # provisioning-service drift-check detects schema drift across the
+        # tenant fleet; exposed as a gauge by its /metrics.
+        expr: tenant_migration_drift > 0
+        for: 0m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $value }} tenant database(s) drifted from the baseline schema"
+          runbook: docs/ops/RUNBOOKS.md#migration-failure-mid-fleet

@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────
+# Staging compose overlay (Phase 11.4/11.6)
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.staging.yml up -d
+#
+# Adds the operational plane on top of the infra compose:
+#   • pgbouncer  — ADR-2's connection pooler in front of Postgres (12 services
+#                  × pool=10 would exhaust max_connections=100 fast)
+#   • prometheus — scrapes every service's /metrics every 15s
+#   • grafana    — dashboards + the alert rules from docs/ops/RUNBOOKS.md
+#
+# The app fleet itself (gateway + services) runs on the host in this phase
+# (npm run dev / PM2) and is added to containers via extra_hosts host-gateway.
+# Containerising the fleet is a next step once images are proven in CI.
+# ──────────────────────────────────────────────
+
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: school-erp-pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+      MIN_POOL_SIZE: "5"
+      RESERVE_POOL_SIZE: "5"
+      SERVER_RESET_QUERY: "DISCARD ALL"
+      AUTH_TYPE: scram-sha-256
+    ports:
+      - "6432:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: school-erp-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: school-erp-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

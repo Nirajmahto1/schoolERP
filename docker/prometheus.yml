@@ -1,0 +1,79 @@
+# ──────────────────────────────────────────────
+# Prometheus scrape config (Phase 11.1)
+#
+# Every service publishes /metrics on its own port. On the compose network the
+# container name is the host; the app fleet running on the host machine is
+# reached through host.docker.internal (mapped by extra_hosts in the staging
+# overlay). 15s interval is ample for RED dashboards and the alert rules in
+# docs/ops/RUNBOOKS.md.
+# ──────────────────────────────────────────────
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["host.docker.internal:4000"]
+
+  - job_name: identity-service
+    static_configs:
+      - targets: ["host.docker.internal:4010"]
+
+  - job_name: student-service
+    static_configs:
+      - targets: ["host.docker.internal:4001"]
+
+  - job_name: staff-service
+    static_configs:
+      - targets: ["host.docker.internal:4002"]
+
+  - job_name: academic-service
+    static_configs:
+      - targets: ["host.docker.internal:4003"]
+
+  - job_name: fee-service
+    static_configs:
+      - targets: ["host.docker.internal:4004"]
+
+  - job_name: communication-service
+    static_configs:
+      - targets: ["host.docker.internal:4005"]
+
+  - job_name: attendance-service
+    static_configs:
+      - targets: ["host.docker.internal:4006"]
+
+  - job_name: exam-service
+    static_configs:
+      - targets: ["host.docker.internal:4007"]
+
+  - job_name: analytics-service
+    static_configs:
+      - targets: ["host.docker.internal:5001"]
+
+  - job_name: notification-engine
+    static_configs:
+      - targets: ["host.docker.internal:6001"]
+
+  - job_name: bulk-processor
+    static_configs:
+      - targets: ["host.docker.internal:6002"]
+
+  - job_name: timetable-engine
+    static_configs:
+      - targets: ["host.docker.internal:6003"]
+
+  - job_name: provision-service
+    static_configs:
+      - targets: ["host.docker.internal:4009"]
+
+  # Windows host jobs via windows_exporter (optional but recommended):
+  # disk, CPU, connections — feeds the DiskNearlyFull alert.
+  - job_name: host
+    static_configs:
+      - targets: ["host.docker.internal:9182"]

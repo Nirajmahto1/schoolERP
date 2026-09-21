@@ -1,0 +1,56 @@
+# ──────────────────────────────────────────────
+# Node service image — one Dockerfile, every Node app (Phase 11.4)
+#
+# Build from the REPO ROOT:
+#   docker build -f docker/Dockerfile.service \
+#     --build-arg SERVICE=student-service -t educore/student-service .
+#
+# Multi-stage: the full toolchain (dev deps, turborepo, prisma engines) exists
+# only in the builder; the runtime stage ships node + dist + prod deps. The
+# workspace `node_modules` layout is preserved (hoisted root + workspace
+# links) because the compiled dist imports sibling packages by name.
+#
+# Runs as a non-root user. Reads config from env only — no secrets baked in.
+# ──────────────────────────────────────────────
+
+# ---------- builder ----------
+FROM node:22-bookworm-slim AS builder
+WORKDIR /repo
+ARG SERVICE
+ENV NODE_ENV=development
+
+# Lease the manifest layer first: dependency install re-runs only when a
+# package.json actually changes.
+COPY package.json package-lock.json turbo.json ./
+COPY apps/*/package.json apps/
+COPY packages/*/package.json packages/
+RUN npm ci
+
+# Source last — it changes on every commit and only invalidates the build.
+COPY . .
+RUN npx turbo run build --filter=@school-erp/${SERVICE} && \
+    # Prune to production deps for the runtime stage.
+    npm prune --omit=dev
+
+# ---------- runtime ----------
+FROM node:22-bookworm-slim AS runtime
+WORKDIR /repo
+ARG SERVICE
+ENV NODE_ENV=production
+
+# Non-root: the image never needs to write outside /repo/.uploads, which is
+# a mounted volume.
+RUN useradd --system --uid 10001 educore
+
+COPY --from=builder --chown=educore:educore /repo/node_modules ./node_modules
+COPY --from=builder --chown=educore:educore /repo/apps ./apps
+COPY --from=builder --chown=educore:educore /repo/packages ./packages
+
+USER educore
+
+# /health is used by the load balancer; /metrics by Prometheus.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||process.env.PORT_STUDENT_SERVICE||'4000')+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+WORKDIR /repo/apps/${SERVICE}
+CMD ["node", "dist/index.js"]

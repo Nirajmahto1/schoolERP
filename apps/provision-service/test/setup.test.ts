@@ -42,10 +42,19 @@ let testLogoDir: string;
 describe('provision service — setup wizard', () => {
   /**
    * Reset the tenant side between scenarios, in FK-dependency order
-   * (academic_years RESTRICTs branch deletion). Role/permission catalog
-   * rows are kept.
+   * (academic_years and staff RESTRICT branch deletion; students/enrollments
+   * RESTRICT classes). The extra tables make the wipe safe even when this
+   * suite runs against a shared dev database that already holds data.
+   * Role/permission catalog rows are kept.
    */
   async function wipeTenant(): Promise<void> {
+    await prisma.attendanceRecord?.deleteMany?.();
+    await prisma.studentEnrollment.deleteMany();
+    await prisma.student.deleteMany();
+    await prisma.invoice?.deleteMany?.();
+    await prisma.feePayment?.deleteMany?.();
+    await prisma.staff.deleteMany();
+    await prisma.teacherSubject?.deleteMany?.();
     await prisma.class.deleteMany();
     await prisma.academicYear.deleteMany();
     await prisma.school.deleteMany();

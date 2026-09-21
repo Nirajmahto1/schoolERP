@@ -49,8 +49,32 @@ describe('tenant roles + backup drill (real cluster)', () => {
     // removed every dependent. If it hasn't (or a database from an interrupted
     // run lingers), DROP ROLE fails and leaves a role that poisons every later
     // run. Removing the database first removes its dependents with it.
-    await dropDatabase(adminUrl(), dbName);
-    await dropTenantRole(adminUrl(), dbName, slug);
+    //
+    // Leftover databases from interrupted runs OWN the role too (a crashed
+    // earlier run never reached its afterAll), so sweep every `t_roles_*`
+    // database before dropping the role — otherwise this suite fails forever
+    // after one Ctrl-C. Each drop is individual: a concurrent CI run owning
+    // one of them must not block our cleanup of the rest.
+    const client = new PrismaClient({ datasourceUrl: adminUrl() });
+    try {
+      const rows = await client.$queryRawUnsafe<Array<{ datname: string }>>(
+        "SELECT datname FROM pg_database WHERE datname LIKE 't_roles_%'",
+      );
+      for (const { datname } of rows) {
+        try {
+          await dropDatabase(adminUrl(), datname);
+        } catch {
+          /* owned by a concurrent run — leave it */
+        }
+      }
+    } finally {
+      await client.$disconnect();
+    }
+    try {
+      await dropTenantRole(adminUrl(), dbName, slug);
+    } catch {
+      /* already gone with its last owning database */
+    }
     if (dumpFile && existsSync(dumpFile)) unlinkSync(dumpFile);
   });
 
