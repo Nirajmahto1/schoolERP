@@ -142,8 +142,12 @@ r.post('/staff/payroll/generate', generatePayrollsHandler);
 
 r.get('/staff/:id', async (req, res) => {
   try {
-    const staff = await prisma.staff.findUnique({
-      where: { id: req.params.id },
+    // Isolation (Phase 12): staff records are branch-scoped — an id from
+    // another branch 404s exactly like a missing one (IDOR gate).
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const staff = await prisma.staff.findFirst({
+      where: { id: req.params.id, branchId },
       include: {
         user: {
           select: {

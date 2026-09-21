@@ -800,8 +800,18 @@ r.get('/attendance/daily', async (req, res) => {
 });
 
 // ── Get Student Attendance History ──
+// Isolation (Phase 12): the student must belong to the caller's branch — the
+// studentId in the URL is untrusted object reference (the IDOR classic). A
+// student from another branch 404s exactly as if absent.
 r.get('/attendance/student/:studentId', async (req, res) => {
   try {
+    const { branchId } = ctx(req);
+    if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+    const student = await prisma.student.findFirst({
+      where: { id: req.params.studentId, branchId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!student) { res.status(404).json({ detail: 'Student not found.' }); return; }
     const { startDate, endDate } = req.query;
     const where: any = {
       studentId: req.params.studentId,
