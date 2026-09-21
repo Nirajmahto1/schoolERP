@@ -23,6 +23,7 @@
 // ──────────────────────────────────────────────
 
 import type { PrismaClient } from '@school-erp/database';
+import { decryptField } from '@school-erp/auth';
 
 export const ABSENCE_TEMPLATE = 'absence_alert';
 
@@ -115,10 +116,11 @@ export async function scanAbsencesForDate(
       continue;
     }
 
-    const guardians = await prisma.guardian.findMany({
+    // Guardian phones are encrypted at rest (Phase 12.5); delivery needs plaintext.
+    const guardians = (await prisma.guardian.findMany({
       where: { id: { in: student.guardians.map((g) => g.guardianId) } },
       select: { id: true, userId: true, fullName: true, phone: true, email: true },
-    });
+    })).map((g) => ({ ...g, phone: decryptField(g.phone) }));
     const contactable = guardians.filter((g) => g.phone || g.email || g.userId);
     if (contactable.length === 0) {
       result.skippedNoGuardian++;

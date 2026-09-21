@@ -18,6 +18,7 @@
 // ──────────────────────────────────────────────
 
 import type { PrismaClient } from '@school-erp/database';
+import { decryptField } from '@school-erp/auth';
 
 export const FEE_REMINDER_DUE_SOON = 'fee_reminder:DUE_SOON';
 export const FEE_REMINDER_OVERDUE = 'fee_reminder:OVERDUE';
@@ -115,10 +116,11 @@ export async function scanFeeRemindersForDate(
   const studentById = new Map(students.map((s) => [s.id, s]));
 
   const guardianIds = [...new Set(students.flatMap((s) => s.guardians.map((g) => g.guardianId)))];
-  const guardians = await prisma.guardian.findMany({
+  // Guardian phones are encrypted at rest (Phase 12.5); delivery needs plaintext.
+  const guardians = (await prisma.guardian.findMany({
     where: { id: { in: guardianIds } },
     select: { id: true, userId: true, fullName: true, phone: true, email: true },
-  });
+  })).map((g) => ({ ...g, phone: decryptField(g.phone) }));
   const guardianById = new Map(guardians.map((g) => [g.id, g]));
 
   const fmt = (d: Date) => d.toISOString().slice(0, 10);

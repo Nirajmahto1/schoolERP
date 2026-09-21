@@ -21,7 +21,7 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import * as XLSX from 'xlsx';
 import type { PrismaClient } from '@school-erp/database';
-import { ctx } from '@school-erp/auth';
+import { ctx, encryptField, decryptField } from '@school-erp/auth';
 import { mintStudentEmail } from '../student-email';
 
 const router = Router();
@@ -307,7 +307,12 @@ router.post('/students/import', async (req: Request, res: Response) => {
                   relation: 'FATHER' as never,
                   isPrimary: true,
                   guardian: {
-                    create: { fullName: row.guardianName, phone: row.guardianPhone, email: row.guardianEmail ?? undefined },
+                    create: {
+                      fullName: row.guardianName,
+                      // Encrypted at rest (Phase 12.5).
+                      phone: encryptField(row.guardianPhone) ?? row.guardianPhone,
+                      email: row.guardianEmail ?? undefined,
+                    },
                   },
                 },
               },

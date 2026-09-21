@@ -30,6 +30,8 @@ export {
   stripSpoofableHeaders,
 } from './middleware';
 
+export { encryptField, decryptField, isEncryptedField } from './field-crypto';
+
 export {
   TokenError,
   issueTokenPair,

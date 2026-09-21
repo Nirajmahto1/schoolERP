@@ -18,7 +18,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '@school-erp/database';
-import { ctx, requireRole } from '@school-erp/auth';
+import { ctx, requireRole, decryptField } from '@school-erp/auth';
 
 const router = Router();
 
@@ -242,6 +242,9 @@ router.get('/:studentId/data-export', async (req: Request, res: Response) => {
       },
     });
     if (!student) { problem(res, 404, 'not-found', 'Not Found', 'Student not found.'); return; }
+    // Guardian phones are encrypted at rest (Phase 12.5) — the export must
+    // return the plaintext the data principal is entitled to.
+    for (const g of student.guardians) (g.guardian as { phone: string | null }).phone = decryptField(g.guardian.phone);
 
     // The identity account travels with the export — the data principal is
     // the person, and the account IS personal data.

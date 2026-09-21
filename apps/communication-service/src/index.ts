@@ -7,7 +7,7 @@ import { createServer } from 'http';
 import { Prisma, PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { loadServiceEnv } from '@school-erp/config';
-import { createServiceApp, listenWithGracefulShutdown, ctx } from '@school-erp/auth';
+import { createServiceApp, listenWithGracefulShutdown, ctx, decryptField } from '@school-erp/auth';
 import { buildOpenApiDocument } from '@school-erp/http';
 import { WhatsAppClient, parseDeliveryStatuses } from './whatsapp';
 import { SmsClient } from './sms';
@@ -555,13 +555,15 @@ r.post('/dispatch', async (req, res) => {
         });
     const audienceStudentIds: string[] = enrollments.map((e) => e.studentId);
 
-    const guardians = audienceStudentIds.length
+    const guardiansRaw = audienceStudentIds.length
       ? await prisma.studentGuardian.findMany({
           where: { studentId: { in: audienceStudentIds }, receivesComms: true, guardian: { userId: { not: null } } },
           include: { guardian: { select: { fullName: true, phone: true, email: true, userId: true } } },
           distinct: ['guardianId'],
         })
       : [];
+    // Guardian phones are encrypted at rest (Phase 12.5); delivery needs plaintext.
+    const guardians = guardiansRaw.map((sg) => ({ ...sg, guardian: { ...sg.guardian, phone: decryptField(sg.guardian.phone) } }));
 
     // Staff are resolved BY ROLE, not merely because some roles were named: a
     // report scheduled to BRANCH_ADMIN must not land on all 31 teachers' phones.

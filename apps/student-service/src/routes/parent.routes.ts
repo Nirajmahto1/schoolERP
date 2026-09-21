@@ -11,7 +11,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@school-erp/database';
 import type { InvoiceStatus } from '@prisma/client';
-import { ctx } from '@school-erp/auth';
+import { ctx, encryptField, decryptField, isEncryptedField } from '@school-erp/auth';
 
 const OPEN_INVOICE_STATUSES: InvoiceStatus[] = ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'];
 
@@ -205,6 +205,10 @@ router.get('/', async (req: Request, res: Response) => {
       },
       orderBy: { createdAt: 'desc' },
     });
+    // Decrypt phone for the response (encrypted at rest since Phase 12.5).
+    for (const g of guardians) {
+      (g as typeof g & { phone: string | null }).phone = decryptField(g.phone);
+    }
 
     const hasMore = guardians.length > take;
     const data = hasMore ? guardians.slice(0, take) : guardians;
@@ -228,8 +232,15 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const data = createGuardianSchema.parse(req.body);
     const prisma: PrismaClient = req.app.get('prisma');
-    const guardian = await prisma.guardian.create({ data });
-    res.status(201).json(guardian);
+    const guardian = await prisma.guardian.create({
+      data: {
+        ...data,
+        // Column-level encryption (Phase 12.5): guardian phone is children's
+        // contact data — stored as an AES-256-GCM envelope, decrypted on read.
+        phone: encryptField(data.phone) ?? '',
+      },
+    });
+    res.status(201).json({ ...guardian, phone: decryptField(guardian.phone) });
   } catch (error) {
     if (error instanceof z.ZodError) {
       res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, errors: error.flatten().fieldErrors });
@@ -276,8 +287,12 @@ router.put('/:id', async (req: Request, res: Response) => {
     // (StudentGuardian) is managed by student admission flows.
     const { student, students, userId, id, createdAt, ...data } = req.body ?? {};
     void student; void students; void userId; void id; void createdAt;
+    // phone rides the same pass-through shape; encrypt if the caller sent one.
+    if (typeof data.phone === 'string' && !isEncryptedField(data.phone)) {
+      data.phone = encryptField(data.phone) ?? data.phone;
+    }
     const guardian = await prisma.guardian.update({ where: { id: req.params.id }, data });
-    res.json(guardian);
+    res.json({ ...guardian, phone: decryptField(guardian.phone) });
   } catch (error) {
     res.status(500).json({ type: 'internal-error', title: 'Server Error', status: 500, detail: (error as Error).message });
   }

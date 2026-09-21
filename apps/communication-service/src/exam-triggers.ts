@@ -16,6 +16,7 @@
 // ──────────────────────────────────────────────
 
 import type { PrismaClient } from '@school-erp/database';
+import { decryptField } from '@school-erp/auth';
 
 export interface ExamTriggerScanResult {
   examsFound: number;
@@ -45,10 +46,11 @@ async function branchGuardians(prisma: PrismaClient, branchId: string): Promise<
     ),
   ];
   if (guardianIds.length === 0) return [];
-  const guardians = await prisma.guardian.findMany({
+  // Guardian phones are encrypted at rest (Phase 12.5); delivery needs plaintext.
+  const guardians = (await prisma.guardian.findMany({
     where: { id: { in: guardianIds } },
     select: { id: true, userId: true, phone: true, email: true },
-  });
+  })).map((g) => ({ ...g, phone: decryptField(g.phone) }));
   return guardians.filter((g) => g.phone || g.email || g.userId);
 }
 

@@ -11,7 +11,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '@school-erp/database';
-import { ctx } from '@school-erp/auth';
+import { ctx, encryptField } from '@school-erp/auth';
 import { nextSequenceValueIn } from '@school-erp/domain';
 import { mintStudentEmail } from '../student-email';
 
@@ -290,7 +290,8 @@ router.post('/applications/:id/admit', async (req: Request, res: Response) => {
               guardian: {
                 create: {
                   fullName: app.guardianName,
-                  phone: app.guardianPhone,
+                  // Encrypted at rest (Phase 12.5).
+                  phone: encryptField(app.guardianPhone) ?? app.guardianPhone,
                   email: app.guardianEmail,
                 },
               },

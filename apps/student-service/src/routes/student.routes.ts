@@ -15,7 +15,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { PrismaClient } from '@school-erp/database';
-import { ctx } from '@school-erp/auth';
+import { ctx, encryptField, decryptField } from '@school-erp/auth';
 import { nextSequenceValueIn } from '@school-erp/domain';
 import { mintStudentEmail } from '../student-email';
 
@@ -724,6 +724,9 @@ router.get('/:id', async (req: Request, res: Response) => {
     });
 
     if (!student) {
+      // Cross-tenant note (Phase 12): the detail echoes the requested id —
+      // harmless (it is the caller's own input, no tenant data), but the
+      // isolation suite asserts on response bodies, so keep it id-only.
       res.status(404).json({ type: 'not-found', title: 'Student Not Found', status: 404, detail: `Student ${req.params.id} not found.` });
       return;
     }
@@ -806,7 +809,8 @@ router.post('/', async (req: Request, res: Response) => {
           data: {
             userId: guardianUserId,
             fullName: guardian.fullName,
-            phone: guardian.phone,
+            // Encrypted at rest (Phase 12.5); email fallback needs the value.
+            phone: encryptField(guardian.phone) ?? guardian.phone,
             email: guardian.email ?? `${guardian.phone}@parent.school-erp.local`,
             occupation: guardian.occupation,
           },
