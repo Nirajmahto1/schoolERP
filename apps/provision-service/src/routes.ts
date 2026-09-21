@@ -36,6 +36,60 @@ import { logger } from './utils/logger';
 export const setupRouter = Router();
 export const branchRouter = Router();
 
+// ──────────────────────────────────────────────
+// §13.2.5: public demo-lead capture. Mounted on setupRouter (the public
+// prefix) but NOT behind the setup lock — it must accept leads after the
+// first school exists. Validation is strict, size is bounded, and the write
+// goes to the control plane (a lead is platform data, not school data).
+// ──────────────────────────────────────────────
+const leadSchema = z.object({
+  school: z.string().trim().min(2).max(160),
+  name: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(160),
+  phone: z.string().trim().min(6).max(20),
+  city: z.string().trim().max(80).optional().or(z.literal('')),
+  students: z.string().trim().max(20).optional().or(z.literal('')),
+  notes: z.string().trim().max(1000).optional().or(z.literal('')),
+});
+
+setupRouter.post('/demo-lead', async (req: Request, res: Response) => {
+  const parsed = leadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).type('application/problem+json').json({
+      type: 'validation-error',
+      title: 'Invalid Input',
+      status: 400,
+      detail: 'School, name, a valid email and phone are required.',
+    });
+    return;
+  }
+  try {
+    const cp = req.app.get('controlPlane') as ControlPlaneClient | undefined;
+    if (!cp) throw new Error('control plane not wired');
+    const d = parsed.data;
+    const lead = await cp.demoLead.create({
+      data: {
+        school: d.school,
+        name: d.name,
+        email: d.email.toLowerCase(),
+        phone: d.phone,
+        city: d.city || null,
+        band: d.students || null,
+        notes: d.notes || null,
+      },
+    });
+    res.status(201).json({ ok: true, id: lead.id });
+  } catch (err) {
+    logger.error(`demo-lead capture failed: ${(err as Error).message}`);
+    res.status(503).type('application/problem+json').json({
+      type: 'unavailable',
+      title: 'Not Available',
+      status: 503,
+      detail: 'Could not record the request right now. Please try again shortly.',
+    });
+  }
+});
+
 function prismaOf(req: Request): PrismaClient {
   return req.app.get('prisma') as PrismaClient;
 }

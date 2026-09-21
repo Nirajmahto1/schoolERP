@@ -27,7 +27,7 @@ export default async function DashboardPage() {
   if (!admin) redirect("/login");
 
   const cp = controlPlane();
-  const [tenants, targetVersion, recentAudit, grants] = await Promise.all([
+  const [tenants, targetVersion, recentAudit, grants, newLeads] = await Promise.all([
     cp.tenant.findMany({
       include: { datastore: true, plan: true },
       orderBy: { createdAt: "desc" },
@@ -39,6 +39,12 @@ export default async function DashboardPage() {
       where: { expiresAt: { gte: new Date() } },
       include: { admin: true, tenant: true },
       orderBy: { expiresAt: "desc" },
+    }),
+    // §13.2.5: demo leads from the public form — NEW ones are today's work.
+    cp.demoLead.findMany({
+      where: { status: "NEW" },
+      orderBy: { createdAt: "desc" },
+      take: 8,
     }),
   ]);
 
@@ -79,6 +85,32 @@ export default async function DashboardPage() {
           </div>
         ))}
       </section>
+
+      {newLeads.length > 0 && (
+        <section className="rounded-xl border border-sky-900 bg-sky-950/40 p-4">
+          <h2 className="font-medium mb-3 text-sky-300">
+            New demo requests <span className="text-slate-500 text-sm">({newLeads.length})</span>
+          </h2>
+          <ul className="space-y-2 text-sm">
+            {newLeads.map((l) => (
+              <li key={l.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-slate-200">
+                  {l.school}
+                  <span className="block text-xs text-slate-500">
+                    {l.name} · {l.city ?? "—"} · {l.band ?? "size?"}
+                  </span>
+                </span>
+                <span className="text-xs text-slate-400">
+                  {l.email} · {l.phone} · {new Date(l.createdAt).toLocaleDateString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-slate-500 mt-3">
+            Follow up within one business day — the demo-script page in docs/go-to-market has the 20-minute flow.
+          </p>
+        </section>
+      )}
 
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <div className="flex items-center justify-between mb-3">
