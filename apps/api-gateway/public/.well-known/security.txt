@@ -1,0 +1,6 @@
+# security.txt — RFC 9116 (Phase 12.7)
+Contact: mailto:security@educore.app
+Expires: 2027-09-21T00:00:00.000Z
+Preferred-Languages: en, hi
+Canonical: https://app.educore.app/.well-known/security.txt
+Policy: https://github.com/OWNER/schoolERP/blob/master/SECURITY.md

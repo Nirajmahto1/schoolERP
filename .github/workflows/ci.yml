@@ -141,3 +141,36 @@ jobs:
       # cleanup, before any paying tenant connects.
       - name: npm audit (advisory report)
         run: npm audit --omit=dev --audit-level=high || true
+      # Phase 12.6: Go vulnerability scanning for the three engines
+      # (notification, timetable, bulk-processor).
+      - name: govulncheck (Go engines)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          for d in apps/notification-engine apps/timetable-engine apps/bulk-processor; do
+            (cd "$d" && govulncheck ./...)
+          done
+      # Phase 12.6: SBOM for the deployable backend — CycloneDX JSON from the
+      # npm lockfile (services) plus go.mod files (engines). Uploaded as an
+      # artifact; the release pipeline attaches the latest one to each ship.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: SBOM (CycloneDX)
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm --output-file sbom-node.json --omit dev
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.8.0
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          mkdir -p sbom-go
+          for d in apps/notification-engine apps/timetable-engine apps/bulk-processor; do
+            (cd "$d" && cyclonedx-gomod mod -output "../../sbom-go/$(basename "$d").json")
+          done
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom-node.json
+            sbom-go/
+          if-no-files-found: ignore

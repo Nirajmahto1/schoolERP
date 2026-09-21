@@ -5,6 +5,7 @@
 // ──────────────────────────────────────────────
 
 import { randomUUID } from 'crypto';
+import { resolve } from 'node:path';
 import express, { type Express, type RequestHandler } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -111,6 +112,12 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', service: 'api-gateway', timestamp: new Date().toISOString() });
+  });
+
+  // Phase 12.7: RFC 9116 security.txt — the responsible-disclosure contact
+  // lives at the standard path on the public edge. Content type per spec.
+  app.get('/.well-known/security.txt', (_req, res) => {
+    res.type('text/plain; charset=utf-8').sendFile(resolve(__dirname, '../public/.well-known/security.txt'));
   });
 
   app.get('/ready', (_req, res) => {
