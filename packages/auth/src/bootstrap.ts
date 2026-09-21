@@ -9,6 +9,7 @@
 
 import express, { type Express, type RequestHandler, type Request } from 'express';
 import type { Server as HttpServer } from 'http';
+import { jsonRequestLogger, metricsMiddleware } from '@school-erp/http';
 import { requireAssertion, stripSpoofableHeaders } from './middleware';
 
 /**
@@ -72,6 +73,12 @@ export function createServiceApp(options: ServiceAppOptions): ServiceApp {
 
   // First, always: a client must never be able to assert its own identity.
   app.use(stripSpoofableHeaders);
+
+  // Phase 11 observability: Prometheus RED metrics + one structured JSON log
+  // line per request. Identity fields are read at response-finish time, so
+  // they reflect the verified assertion, never raw client headers.
+  app.use(metricsMiddleware()[0]);
+  app.use(jsonRequestLogger({ service: serviceName }));
 
   // Raw-body paths get a scoped parser whose verify hook stashes the exact
   // bytes for HMAC verification. Mounted BEFORE the global parser: body-parser

@@ -22,10 +22,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -46,6 +48,7 @@ type SendRequest struct {
 }
 
 func main() {
+	startedAt := time.Now() // Phase 11 metrics
 	port := os.Getenv("PORT_NOTIFICATION_ENGINE")
 	if port == "" {
 		port = "6001"
@@ -108,6 +111,22 @@ func main() {
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	})
+
+	// Phase 11: Prometheus runtime metrics (stdlib only).
+	r.GET("/metrics", func(c *gin.Context) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		body := fmt.Sprintf(
+			"# TYPE uptime_seconds gauge\nuptime_seconds %.3f\n"+
+				"# TYPE process_resident_memory_bytes gauge\nprocess_resident_memory_bytes %d\n"+
+			"# TYPE go_goroutines gauge\ngo_goroutines %d\n"+
+			"# TYPE ws_sockets_connected gauge\nws_sockets_connected %d\n",
+		time.Since(startedAt).Seconds(), ms.Sys, runtime.NumGoroutine(), hub.count(),
+	)
+		c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(body))
+	})
+
+	// WebSocket — same auth, header or ?assertion= ticket.
 
 	// WebSocket — same auth, header or ?assertion= ticket.
 	sess := &session{hub: hub, auth: auth}

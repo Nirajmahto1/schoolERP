@@ -17,6 +17,7 @@ import {
   type TokenStore,
 } from '@school-erp/auth';
 import type { GatewayEnv } from '@school-erp/config';
+import { metricsMiddleware } from '@school-erp/http';
 import { createAuthMiddleware, createOptionalAuthMiddleware } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
 import { authLimiter, ipAuthLimiter, methodAwareLimiter } from './middleware/rateLimit';
@@ -92,9 +93,13 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
   app.use(
     morgan('combined', {
       stream: { write: (msg: string) => logger.info(msg.trim()) },
-      skip: (req) => req.path === '/health',
+      skip: (req) => req.path === '/health' || req.path === '/metrics',
     }),
   );
+
+  // Phase 11: Prometheus RED metrics — mounted before the proxy so proxied
+  // requests are counted here too (the gateway is where p95 is judged).
+  app.use(metricsMiddleware()[0]);
 
   // Tenant hint: resolve subdomain / mobile slug header BEFORE the proxy so
   // every downstream hop (public /auth included) knows which school this is.
@@ -110,6 +115,55 @@ export function buildApp({ env, store }: BuildAppOptions): Express {
 
   app.get('/ready', (_req, res) => {
     res.json({ status: 'ready', service: 'api-gateway' });
+  });
+
+  // ── Status aggregation (Phase 11.9) ──
+  // One public endpoint that probes every upstream's /health in parallel and
+  // reports per-service status. The web status page, the uptime cron and the
+  // incident-comms flow all read this — one place, no scraper sprawl.
+  // Deliberately unauthenticated (no data beyond alive/degraded) and
+  // cache-disabled so the checker sees truth, not an edge cache.
+  const statusTargets: Array<{ name: string; port: number }> = [
+    { name: 'identity-service', port: env.PORT_IDENTITY_SERVICE },
+    { name: 'provision-service', port: env.PORT_PROVISION_SERVICE },
+    { name: 'student-service', port: env.PORT_STUDENT_SERVICE },
+    { name: 'staff-service', port: env.PORT_STAFF_SERVICE },
+    { name: 'academic-service', port: env.PORT_ACADEMIC_SERVICE },
+    { name: 'fee-service', port: env.PORT_FEE_SERVICE },
+    { name: 'communication-service', port: env.PORT_COMMUNICATION_SERVICE },
+    { name: 'attendance-service', port: env.PORT_ATTENDANCE_SERVICE },
+    { name: 'exam-service', port: env.PORT_EXAM_SERVICE },
+    { name: 'analytics-service', port: env.PORT_ANALYTICS_SERVICE },
+    { name: 'notification-engine', port: env.PORT_NOTIFICATION_ENGINE },
+    { name: 'bulk-processor', port: env.PORT_BULK_PROCESSOR },
+    { name: 'timetable-engine', port: env.PORT_TIMETABLE_ENGINE },
+  ];
+
+  app.get('/status', async (_req, res) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_500);
+    const probes = await Promise.all(
+      statusTargets.map(async (t) => {
+        const started = Date.now();
+        try {
+          const r = await fetch(`http://${env.UPSTREAM_HOST}:${t.port}/health`, {
+            signal: controller.signal,
+          });
+          return { service: t.name, status: r.ok ? 'up' : 'degraded', latency_ms: Date.now() - started };
+        } catch {
+          return { service: t.name, status: 'down', latency_ms: Date.now() - started };
+        }
+      }),
+    ).finally(() => clearTimeout(timer));
+    const down = probes.filter((p) => p.status !== 'up').length;
+    res
+      .status(down === 0 ? 200 : 503)
+      .set('cache-control', 'no-store')
+      .json({
+        status: down === 0 ? 'operational' : down === probes.length ? 'major-outage' : 'partial-outage',
+        checkedAt: new Date().toISOString(),
+        services: probes,
+      });
   });
 
   const authenticate = createAuthMiddleware({ tokens, store: tokenStore, signer });

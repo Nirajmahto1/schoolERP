@@ -15,7 +15,7 @@ import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders, ctx } from '@school-erp/auth';
 import type { ServiceEnv } from '@school-erp/config';
-import { buildOpenApiDocument } from '@school-erp/http';
+import { buildOpenApiDocument, jsonRequestLogger, metricsMiddleware } from '@school-erp/http';
 import { notifyStaffUsers } from '@school-erp/notify';
 import { renderReportCardPdf } from './report-card-pdf';
 
@@ -88,6 +88,11 @@ export function createExamApp({ env, prisma }: ExamAppOptions): Express {
 
   app.disable('x-powered-by');
   app.use(stripSpoofableHeaders);
+
+  // Phase 11 observability: Prometheus metrics + structured JSON request log.
+  app.use(metricsMiddleware()[0]);
+  app.use(jsonRequestLogger({ service: SERVICE_NAME }));
+
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/health', (_req, res) => {

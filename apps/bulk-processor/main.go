@@ -15,11 +15,14 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
+	"time"
 )
 
 func main() {
@@ -76,6 +79,19 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Phase 11: Prometheus runtime metrics (stdlib only).
+	startedAt := time.Now()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = fmt.Fprintf(w,
+			"# TYPE uptime_seconds gauge\nuptime_seconds %.3f\n"+
+				"# TYPE process_resident_memory_bytes gauge\nprocess_resident_memory_bytes %d\n"+
+				"# TYPE go_goroutines gauge\ngo_goroutines %d\n",
+			time.Since(startedAt).Seconds(), ms.Sys, runtime.NumGoroutine())
 	})
 
 	addr := ":" + envOr("PORT_BULK_PROCESSOR", "6002")

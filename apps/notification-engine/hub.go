@@ -108,6 +108,13 @@ func newHub() *Hub {
 	}
 }
 
+// count returns the number of currently-connected sockets (Phase 11 metrics).
+func (h *Hub) count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 func (h *Hub) run() {
 	for {
 		select {

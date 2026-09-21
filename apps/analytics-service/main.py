@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import time
 import traceback
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -98,6 +99,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Phase 11: Prometheus text metrics (zero extra deps — stdlib only).
+_START_TIME = time.time()
+
+
+@app.get("/metrics")
+async def metrics():
+    from fastapi import Response
+
+    lines = [
+        "# HELP uptime_seconds Process uptime in seconds.",
+        "# TYPE uptime_seconds gauge",
+        f"uptime_seconds {time.time() - _START_TIME:.3f}",
+        "# HELP process_resident_memory_bytes Resident set size in bytes (Unix only).",
+        "# TYPE process_resident_memory_bytes gauge",
+    ]
+    try:
+        import resource
+
+        lines.append(f"process_resident_memory_bytes {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024}")
+    except ImportError:  # Windows: no /proc, no resource module
+        lines.append("process_resident_memory_bytes 0")
+    lines.extend(
+        [
+            "# HELP db_pool_connections_active Active pooled DB connections.",
+            "# TYPE db_pool_connections_active gauge",
+            f"db_pool_connections_active {db.active_count() if hasattr(db, 'active_count') else 0}",
+        ]
+    )
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/health")

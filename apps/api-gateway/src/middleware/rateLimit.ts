@@ -77,11 +77,20 @@ export function ipAuthLimiter(maxAttempts: number, windowMinutes: number): RateL
   });
 }
 
+/**
+ * Per-minute budgets. Env-tunable (Phase 11.7): capacity/load testing raises
+ * them without a code change; production keeps the safe defaults.
+ *   RATE_LIMIT_WRITE_PER_MIN  default 60  — bulk data entry by a clerk
+ *   RATE_LIMIT_READ_PER_MIN   default 300 — a dashboard legitimately fans out
+ */
+const writePerMin = Number(process.env.RATE_LIMIT_WRITE_PER_MIN ?? 60);
+const readPerMin = Number(process.env.RATE_LIMIT_READ_PER_MIN ?? 300);
+
 /** Writes: enough for bulk data entry by a front-office clerk, not for scraping. */
 export function writeLimiter(): RateLimitRequestHandler {
   return rateLimit({
     windowMs: 60 * 1000,
-    max: 60,
+    max: writePerMin,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: identityKey,
@@ -93,7 +102,7 @@ export function writeLimiter(): RateLimitRequestHandler {
 export function readLimiter(): RateLimitRequestHandler {
   return rateLimit({
     windowMs: 60 * 1000,
-    max: 300,
+    max: readPerMin,
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: identityKey,

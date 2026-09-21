@@ -17,10 +17,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -39,6 +41,9 @@ type AssertionClaims struct {
 	Roles    []string `json:"roles"`
 	jwt.RegisteredClaims
 }
+
+// startTime feeds the /metrics uptime gauge.
+var startTime = time.Now()
 
 func main() {
 	port := os.Getenv("PORT_TIMETABLE_ENGINE")
@@ -80,6 +85,19 @@ func main() {
 			"service":   "timetable-engine",
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
+	})
+
+	// Phase 11: Prometheus runtime metrics (stdlib only).
+	r.GET("/metrics", func(c *gin.Context) {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		body := fmt.Sprintf(
+			"# TYPE uptime_seconds gauge\nuptime_seconds %.3f\n"+
+				"# TYPE process_resident_memory_bytes gauge\nprocess_resident_memory_bytes %d\n"+
+				"# TYPE go_goroutines gauge\ngo_goroutines %d\n",
+			time.Since(startTime).Seconds(), ms.Sys, runtime.NumGoroutine(),
+		)
+		c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(body))
 	})
 
 	// Validate an externally-produced (hand-edited, imported, legacy)

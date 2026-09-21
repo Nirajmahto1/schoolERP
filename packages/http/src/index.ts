@@ -33,3 +33,14 @@ export {
   type OpenApiOperation,
   type OpenApiPath,
 } from './openapi';
+
+export {
+  metricsMiddleware,
+  renderMetrics,
+} from './metrics';
+
+export {
+  jsonLog,
+  jsonRequestLogger,
+  type JsonLoggerOptions,
+} from './json-logger';

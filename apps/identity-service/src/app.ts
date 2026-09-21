@@ -17,6 +17,7 @@ import express, { type Express } from 'express';
 import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders } from '@school-erp/auth';
+import { jsonRequestLogger, metricsMiddleware } from '@school-erp/http';
 import type { IdentityEnv } from '@school-erp/config';
 import { authRoutes } from './routes/auth.routes';
 import { accountRoutes, publicAccountRoutes } from './routes/account.routes';
@@ -42,6 +43,10 @@ export function createIdentityApp({ env, prisma, controlPlane }: IdentityAppOpti
 
   // Never trust a client-supplied identity header, even on public routes.
   app.use(stripSpoofableHeaders);
+
+  // Phase 11 observability: Prometheus metrics + structured JSON request log.
+  app.use(metricsMiddleware()[0]);
+  app.use(jsonRequestLogger({ service: SERVICE_NAME }));
 
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => {

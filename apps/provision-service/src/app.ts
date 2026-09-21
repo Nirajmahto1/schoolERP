@@ -13,6 +13,7 @@ import express, { type Express } from 'express';
 import type { PrismaClient } from '@school-erp/database';
 import { PrismaClient as ControlPlaneClient } from '@school-erp/control-plane';
 import { requireAssertion, stripSpoofableHeaders } from '@school-erp/auth';
+import { jsonRequestLogger, metricsMiddleware } from '@school-erp/http';
 import type { ProvisionEnv } from '@school-erp/config';
 import { setupRouter, branchRouter } from './routes';
 import { logger } from './utils/logger';
@@ -32,6 +33,11 @@ export function createProvisionApp({ env, prisma, controlPlane }: ProvisionAppOp
 
   app.disable('x-powered-by');
   app.use(stripSpoofableHeaders);
+
+  // Phase 11 observability: Prometheus metrics + structured JSON request log.
+  app.use(metricsMiddleware()[0]);
+  app.use(jsonRequestLogger({ service: SERVICE_NAME }));
+
   app.use(express.json({ limit: '1mb' }));
   app.use((req, _res, next) => {
     if (req.path !== '/health') logger.info(`${req.method} ${req.path}`);

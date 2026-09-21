@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@school-erp/config": "*",
+    "@school-erp/http": "*",
     "jsonwebtoken": "^9.0.2",
     "zod": "^3.23.0"
   },
