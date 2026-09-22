@@ -19,6 +19,7 @@ import '../../core/api.dart';
 import '../../core/models.dart';
 import '../../core/brand.dart';
 import '../screens/checkout_screen.dart';
+import '../screens/receipt_viewer_screen.dart';
 import '../widgets/common.dart';
 
 class ChildFeesScreen extends StatefulWidget {
@@ -93,6 +94,11 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
                   ? 'Payment captured — receipt ${payment['receiptNo']}'
                   : 'Payment captured ✓'),
             ));
+          // Open the numbered receipt right from the capture result.
+          final payId = payment['id']?.toString();
+          if (payId != null) {
+            await ReceiptViewerScreen.openForPayment(context, payId, receiptNo: payment['receiptNo']?.toString());
+          }
         }
       }
       await _load();
@@ -147,7 +153,15 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
                               ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : Text('Pay ${fmt.format(f.due)}'),
                         )
-                      : Chip(label: const Text('Paid'), backgroundColor: Colors.green.shade50),
+                      : Row(mainAxisSize: MainAxisSize.min, children: [
+                          Chip(label: const Text('Paid'), backgroundColor: Colors.green.shade50),
+                          IconButton(
+                            tooltip: 'View receipt',
+                            icon: const Icon(Icons.picture_as_pdf_outlined),
+                            onPressed: () => ReceiptViewerScreen.openForInvoice(context, f.id),
+                          ),
+                        ]),
+                  onTap: !isDue ? () => ReceiptViewerScreen.openForInvoice(context, f.id) : null,
                 ),
               );
             }),

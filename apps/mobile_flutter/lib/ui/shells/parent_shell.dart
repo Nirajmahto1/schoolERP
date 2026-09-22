@@ -14,6 +14,7 @@ import '../../core/models.dart';
 import '../../core/photo.dart';
 import '../screens/child_fees_screen.dart';
 import '../screens/checkout_screen.dart';
+import '../screens/receipt_viewer_screen.dart';
 import '../widgets/common.dart';
 import 'package:intl/intl.dart';
 
@@ -239,6 +240,12 @@ class _FeesTabState extends State<FeesTab> {
                   : 'Payment captured ✓'),
             ));
         }
+        // The number the accountant reconciles against is now one tap away:
+        // open the numbered receipt straight from the capture result.
+        final payId = payment['id']?.toString();
+        if (payId != null && mounted) {
+          await ReceiptViewerScreen.openForPayment(context, payId, receiptNo: payment['receiptNo']?.toString());
+        }
       }
       await _load();
     } on ApiError catch (e) {
@@ -291,10 +298,21 @@ class _FeesTabState extends State<FeesTab> {
                               ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : Text('Pay ${fmt.format(outstanding)}'),
                         )
-                      : Chip(
-                          label: Text(status == 'PAID' ? 'Paid' : status),
-                          backgroundColor: status == 'PAID' ? Colors.green.shade50 : Colors.orange.shade50,
-                        ),
+                      : Row(mainAxisSize: MainAxisSize.min, children: [
+                          Chip(
+                            label: Text(status == 'PAID' ? 'Paid' : status),
+                            backgroundColor: status == 'PAID' ? Colors.green.shade50 : Colors.orange.shade50,
+                          ),
+                          IconButton(
+                            tooltip: 'View receipt',
+                            icon: const Icon(Icons.picture_as_pdf_outlined),
+                            onPressed: () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString()),
+                          ),
+                        ]),
+                  // Any settled row opens its numbered receipt directly.
+                  onTap: !isDue
+                      ? () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString())
+                      : null,
                 ),
               );
             }),
