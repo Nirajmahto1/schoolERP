@@ -14,6 +14,7 @@ import '../../core/models.dart';
 import '../../core/photo.dart';
 import '../screens/child_fees_screen.dart';
 import '../screens/checkout_screen.dart';
+import '../screens/payment_history_screen.dart';
 import '../screens/receipt_viewer_screen.dart';
 import '../widgets/common.dart';
 import 'package:intl/intl.dart';
@@ -105,9 +106,17 @@ class _ChildrenTabState extends State<ChildrenTab> {
             title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
             subtitle: Text('${c.className ?? '-'} ${c.section ?? ''} · ${c.admissionNo}\nAttendance ${c.attendancePct.toStringAsFixed(0)}%  ·  Due ₹${c.dueAmount.toStringAsFixed(0)}'),
             isThreeLine: true,
-            trailing: c.dueAmount > 0.5
-                ? FilledButton.tonal(onPressed: () => _openFees(c), child: Text('Pay ₹${c.dueAmount.toStringAsFixed(0)}'))
-                : const Icon(Icons.chevron_right),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                tooltip: 'Payment history',
+                icon: const Icon(Icons.receipt_long_outlined),
+                onPressed: () => _openHistory(c),
+              ),
+              if (c.dueAmount > 0.5)
+                FilledButton.tonal(onPressed: () => _openFees(c), child: Text('Pay ₹${c.dueAmount.toStringAsFixed(0)}'))
+              else
+                const Icon(Icons.chevron_right),
+            ]),
             onTap: () => _openFees(c),
           ),
         )).toList(),
@@ -120,6 +129,16 @@ class _ChildrenTabState extends State<ChildrenTab> {
   void _openFees(Child c) {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => ChildFeesScreen(child: c)),
+    );
+  }
+
+  /// Every settled receipt for this child, newest first — the parent's
+  /// payment ledger. Server-scoped to the caller's own children.
+  void _openHistory(Child c) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PaymentHistoryScreen(studentId: c.id, childName: c.name),
+      ),
     );
   }
 
@@ -321,6 +340,23 @@ class _FeesTabState extends State<FeesTab> {
                 padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: Text('No open invoices — nothing to pay 🎉', style: TextStyle(color: Colors.green)),
               ),
+            // Per-child receipt history — one tap from the section header.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                leading: const Icon(Icons.receipt_long_outlined),
+                title: Text('All receipts for $name', style: const TextStyle(fontWeight: FontWeight.w600)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => PaymentHistoryScreen(
+                    studentId: child['id']?.toString(),
+                    childName: name,
+                  ),
+                )),
+              ),
+            ),
             const SizedBox(height: 8),
           ];
         }).toList(),

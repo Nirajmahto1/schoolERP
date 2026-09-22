@@ -10,6 +10,7 @@ import 'dart:async';
 import '../../core/api.dart';
 import '../../core/models.dart';
 import '../../core/sockets.dart';
+import '../screens/payment_history_screen.dart';
 import '../widgets/common.dart';
 import 'parent_shell.dart' show FeesTab;
 
@@ -96,6 +97,8 @@ class _StudentHomeTabState extends State<StudentHomeTab> {
                     _Stat(label: 'Admission No', value: student['admissionNo']?.toString() ?? '-'),
                     _Stat(label: 'House', value: student['house']?.toString() ?? '-'),
                   ]),
+                  const SizedBox(height: 8),
+                  const StudentHistoryTile(),
                 ],
               ),
       ),
@@ -387,6 +390,25 @@ class FeesTabStudent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const FeesTab();
+}
+
+// The student's own receipt history, self-scoped server-side. Reached from
+// the Home tab's action row.
+class StudentHistoryTile extends StatelessWidget {
+  const StudentHistoryTile({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: const Icon(Icons.receipt_long_outlined),
+      title: const Text('My payment history', style: TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: const Text('All fee receipts, newest first'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const PaymentHistoryScreen()),
+      ),
+    );
+  }
 }
 
 // ── My Results ──

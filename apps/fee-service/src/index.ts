@@ -20,6 +20,7 @@ import {
   createSettlementsRoute,
 } from './gateway.routes';
 import { createMethodsRoutes } from './methods.routes';
+import { createHistoryRoute } from './history.routes';
 import { RazorpayClient } from './razorpay';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -614,6 +615,8 @@ r.post('/write-offs', async (req, res) => {
   mount('/checkout', createGatewayRoutes(gatewayOptions));
   mount('/reconcile', createReconcileRoute(gatewayOptions));
   mount('/refunds', createGatewayRefundRoute(gatewayOptions));
+  // Ownership-scoped payment history — the parent/student apps' receipt list.
+  mount('/history', createHistoryRoute({ prisma }));
   mount('/settlements', createSettlementsRoute(gatewayOptions));
   // Payment methods: cheques + deposits + virtual accounts + carry-forward + receipts.
   mount('/', createMethodsRoutes(prisma));
