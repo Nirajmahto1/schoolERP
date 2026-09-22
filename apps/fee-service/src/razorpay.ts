@@ -51,23 +51,50 @@ export class RazorpayClient {
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const base = this.config.apiBase ?? 'https://api.razorpay.com/v1';
-    const res = await this.fetchImpl(`${base}${path}`, {
-      method,
-      headers: {
-        Authorization: this.authHeader(),
-        'Content-Type': 'application/json',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const detail =
-        typeof payload === 'object' && payload && 'error' in payload
-          ? JSON.stringify((payload as { error: unknown }).error)
-          : `HTTP ${res.status}`;
-      throw new Error(`Razorpay ${method} ${path} failed: ${detail}`);
+    // One retry on TRANSPORT failure. Long-lived processes occasionally hit a
+    // poisoned pooled socket (observed: undici's 10s connect timeout —
+    // "fetch failed" with no detail) while a fresh connection succeeds. A
+    // second attempt on a new connection turns that into a blip instead of a
+    // failed checkout. HTTP errors (4xx/5xx) are NOT retried — the gateway
+    // answered, retrying would be wrong.
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await this.fetchImpl(`${base}${path}`, {
+          method,
+          headers: {
+            Authorization: this.authHeader(),
+            'Content-Type': 'application/json',
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail =
+            typeof payload === 'object' && payload && 'error' in payload
+              ? JSON.stringify((payload as { error: unknown }).error)
+              : `HTTP ${res.status}`;
+          throw new Error(`Razorpay ${method} ${path} failed: ${detail}`);
+        }
+        return payload as T;
+      } catch (e) {
+        // A thrown HTTP-detail error above is final; only transport errors retry.
+        if (e instanceof Error && e.message.startsWith('Razorpay ')) throw e;
+        lastErr = e;
+        if (attempt === 1) {
+          const cause = (e as Error & { cause?: { code?: string; message?: string } }).cause;
+          console.warn(
+            `[razorpay] transport failure on ${method} ${path} ` +
+              `(attempt 1/2): ${cause?.code ?? cause?.message ?? (e as Error).message} — retrying`,
+          );
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
     }
-    return payload as T;
+    const cause = (lastErr as Error & { cause?: { code?: string; message?: string } } | undefined)?.cause;
+    throw new Error(
+      `Razorpay ${method} ${path} transport failed: ${cause?.code ?? cause?.message ?? (lastErr as Error | undefined)?.message ?? 'unknown'}`,
+    );
   }
 
   /** Create an order for a fee intent. `receipt` echoes our payment id. */
