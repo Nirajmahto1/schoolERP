@@ -224,9 +224,27 @@ r.get('/payments', async (req, res) => {
       select: {
         id: true, receiptNo: true, amount: true, method: true, status: true,
         paidAt: true, createdAt: true, studentId: true,
+        // Gateway fields (4.1): the collection feed distinguishes Razorpay
+        // online payments from counter collections and shows the reference.
+        gatewayProvider: true, gatewayPaymentId: true,
       },
     });
-    res.json({ data: rows });
+    // Payment carries a bare studentId (no relation) — resolve names in one
+    // extra query so the console feed can show who paid.
+    const studentIds = [...new Set(rows.map((r) => r.studentId))];
+    const students = studentIds.length
+      ? await prisma.student.findMany({
+          where: { id: { in: studentIds } },
+          select: { id: true, firstName: true, lastName: true, admissionNo: true },
+        })
+      : [];
+    const byId = new Map(students.map((s) => [s.id, s]));
+    res.json({
+      data: rows.map((r) => ({
+        ...r,
+        student: byId.get(r.studentId) ?? null,
+      })),
+    });
   } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
 });
 

@@ -640,6 +640,15 @@ export const feeApi = {
   recordPayment: (data: { studentId: string; academicYearId: string; amount: number; method: string; invoiceIds?: string[]; idempotencyKey?: string }) =>
     apiRequest<any>('/fees/payments', { method: 'POST', body: JSON.stringify(data) }),
 
+  /** Payment history for the collection feed (BUILD_PLAN 4.1). */
+  getPayments: (params?: { studentId?: string; status?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.studentId) qs.set('studentId', params.studentId);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    return apiRequest<{ data: any[] }>(`/fees/payments?${qs}`);
+  },
+
   getDefaulters: () =>
     apiRequest<{ data: any[] }>('/fees/defaulters'),
 
@@ -647,7 +656,9 @@ export const feeApi = {
     apiRequest<any>('/fees/reports'),
 
   // ── Razorpay checkout (BUILD_PLAN 4.1) ──
-  createCheckoutOrder: (data: { studentId: string; academicYearId: string; invoiceIds?: string[] }) =>
+  // academicYearId is optional — the server resolves the branch's current
+  // year when omitted (mobile clients cannot know the year id).
+  createCheckoutOrder: (data: { studentId: string; academicYearId?: string; invoiceIds?: string[] }) =>
     apiRequest<{ paymentId: string; orderId: string; amount: number; currency: string; keyId: string | null; invoices: Array<{ id: string; invoiceNo: string; dueDate: string; outstanding: number }> }>(
       '/fees/checkout/orders',
       { method: 'POST', body: JSON.stringify(data) },
