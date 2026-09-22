@@ -1,6 +1,6 @@
 'use client';
 import Topbar from '@/components/Topbar';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import { feeApi, API_BASE } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
 
@@ -26,6 +26,16 @@ export default function FeePaymentsPage() {
   const [onlineBusy, setOnlineBusy] = useState(false);
   const [onlineResult, setOnlineResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
+  // ── Razorpay settlements (§4.1.6) ──
+  const [tab, setTab] = useState<'collections' | 'settlements'>('collections');
+  const [settleFrom, setSettleFrom] = useState(() => { const d = new Date(); d.setDate(1); return d.toISOString().split('T')[0]; });
+  const [settleTo, setSettleTo] = useState(() => new Date().toISOString().split('T')[0]);
+  const [settleDays, setSettleDays] = useState<any[]>([]);
+  const [settleTotals, setSettleTotals] = useState<{ count: number; gross: number; netCredited: number } | null>(null);
+  const [settleLoading, setSettleLoading] = useState(false);
+  const [settleError, setSettleError] = useState<string | null>(null);
+  const [openDay, setOpenDay] = useState<string | null>(null);
+
   const fetchInvoices = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -48,6 +58,23 @@ export default function FeePaymentsPage() {
       setPayments(data ?? []);
     } catch { /* the table below hides itself when empty */ }
   }, []);
+
+  // Day-by-day Razorpay settlement report (§4.1.6): the accountant ticks
+  // each IST day off against the payout shown in the Razorpay dashboard.
+  const fetchSettlements = useCallback(async (from?: string, to?: string) => {
+    setSettleLoading(true);
+    setSettleError(null);
+    try {
+      const res = await feeApi.getSettlements({ from: from ?? settleFrom, to: to ?? settleTo });
+      setSettleDays(res.days ?? []);
+      setSettleTotals(res.totals ?? null);
+      setOpenDay(null);
+    } catch (err: any) {
+      setSettleError(err?.detail || 'Failed to load the settlements report.');
+      setSettleDays([]);
+    }
+    setSettleLoading(false);
+  }, [settleFrom, settleTo]);
 
   useEffect(() => { fetchInvoices(); fetchPayments(); }, [fetchInvoices, fetchPayments]);
 
@@ -135,6 +162,32 @@ export default function FeePaymentsPage() {
     } finally { stopLoading(); }
   };
 
+  const reconcileNow = async () => {
+    startLoading('Running reconciliation...');
+    try {
+      const res = await feeApi.runReconcile();
+      alert(`Reconcile: checked ${res.checked} pending intent(s) — ${res.captured?.length ?? 0} captured, ${res.mismatches?.length ?? 0} mismatched.`);
+      await fetchSettlements();
+    } catch (err: any) { alert(err?.detail || 'Reconcile failed.'); }
+    stopLoading();
+  };
+
+  const exportSettlementsCsv = () => {
+    const rows: string[] = ['Date (IST),Payments,Gross INR,Receipts'];
+    for (const d of settleDays) {
+      const receipts = d.payments.map((p: any) => p.receiptNo ?? '').join(' ');
+      rows.push(`${d.date},${d.count},${d.gross},"${receipts}"`);
+    }
+    rows.push(`TOTAL,${settleTotals?.count ?? 0},${settleTotals?.gross ?? 0},`);
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `razorpay-settlements-${settleFrom}-to-${settleTo}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  };
+
   const totalPending = invoices.reduce((s, i) => s + (Number(i.totalAmount) - Number(i.paidAmount || 0)), 0);
   const onlineToday = payments.filter((p) => p.gatewayProvider === 'RAZORPAY' && p.paidAt && new Date(p.paidAt).toDateString() === new Date().toDateString());
   const onlineCollectedToday = onlineToday.reduce((s, p) => s + Number(p.amount), 0);
@@ -200,6 +253,18 @@ export default function FeePaymentsPage() {
           </div>
         ) : !error && (
           <>
+            <div className="flex gap-2 mb-4" style={{ flexWrap: 'wrap' }}>
+              {([
+                ['collections', 'receipt', 'Collections'],
+                ['settlements', 'account_balance', 'Razorpay Settlements'],
+              ] as const).map(([key, icon, label]) => (
+                <button key={key} className={`btn ${tab === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setTab(key); if (key === 'settlements' && !settleDays.length) fetchSettlements(); }}>
+                  <span className="icon icon-sm">{icon}</span>{label}
+                </button>
+              ))}
+            </div>
+
+            {tab === 'collections' && (<>
             <div className="card">
               <div style={{ padding: '16px 20px 0' }}><h3>Pending Invoices</h3></div>
               <div className="table-wrapper"><table className="table"><thead><tr><th>Invoice</th><th>Student</th><th>Fee Type</th><th>Total</th><th>Paid</th><th>Balance</th><th>Due Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
@@ -258,6 +323,68 @@ export default function FeePaymentsPage() {
                 {payments.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: '#9CA3AF' }}>No payments recorded yet</td></tr>}
               </tbody></table></div>
             </div>
+            </>)}
+
+            {tab === 'settlements' && (
+              <div className="card">
+                <div style={{ padding: '16px 20px 0' }} className="flex items-center gap-3">
+                  <h3>Razorpay Settlements</h3>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, color: '#6B7280' }}>Captured online payments grouped by IST day — tick each day off against the payout in the Razorpay dashboard.</span>
+                </div>
+                <div className="card-body">
+                  <div className="flex gap-3 items-end" style={{ flexWrap: 'wrap' }}>
+                    <div className="input-group"><label className="input-label">From</label><input className="input" type="date" value={settleFrom} onChange={(e) => setSettleFrom(e.target.value)} /></div>
+                    <div className="input-group"><label className="input-label">To</label><input className="input" type="date" value={settleTo} onChange={(e) => setSettleTo(e.target.value)} /></div>
+                    <button className="btn btn-primary" disabled={settleLoading} onClick={() => fetchSettlements(settleFrom, settleTo)}>
+                      <span className="icon icon-sm">{settleLoading ? 'hourglass_empty' : 'search'}</span>{settleLoading ? 'Loading…' : 'Apply'}
+                    </button>
+                    <button className="btn btn-secondary" onClick={reconcileNow}><span className="icon icon-sm">sync</span>Run reconcile</button>
+                    <button className="btn btn-secondary" disabled={!settleDays.length} onClick={exportSettlementsCsv}><span className="icon icon-sm">download</span>Export CSV</button>
+                  </div>
+
+                  {settleTotals && (
+                    <div className="grid grid-3 gap-4 mt-4">
+                      <div className="stat-card" style={{ borderLeftColor: '#5048E5' }}><div className="stat-icon" style={{ background: '#5048E515', color: '#5048E5' }}><span className="icon">receipt_long</span></div><div><div className="stat-value">{settleTotals.count}</div><div className="stat-label">Captured Payments</div></div></div>
+                      <div className="stat-card" style={{ borderLeftColor: '#10B981' }}><div className="stat-icon" style={{ background: '#10B98115', color: '#10B981' }}><span className="icon">currency_rupee</span></div><div><div className="stat-value">₹{settleTotals.gross.toLocaleString('en-IN')}</div><div className="stat-label">Gross Captured</div></div></div>
+                      <div className="stat-card" style={{ borderLeftColor: '#F59E0B' }} title="Razorpay nets its charges at payout — import the payout report to reconcile to the bank credit."><div className="stat-icon" style={{ background: '#F59E0B15', color: '#F59E0B' }}><span className="icon">account_balance</span></div><div><div className="stat-value">₹{settleTotals.netCredited.toLocaleString('en-IN')}</div><div className="stat-label">To Reconcile (pre-charges)</div></div></div>
+                    </div>
+                  )}
+
+                  {settleError && <div style={{ padding: 12, borderRadius: 8, background: '#FEF2F2', border: '1px solid #FECACA', color: '#B91C1C', marginTop: 12 }}>{settleError}</div>}
+
+                  <div className="table-wrapper mt-4"><table className="table"><thead><tr><th></th><th>Date (IST)</th><th>Payments</th><th>Gross</th><th>Receipts</th></tr></thead><tbody>
+                    {settleDays.map((d) => (
+                      <Fragment key={d.date}>
+                        <tr style={{ cursor: 'pointer' }} onClick={() => setOpenDay(openDay === d.date ? null : d.date)}>
+                          <td><span className="icon icon-sm">{openDay === d.date ? 'expand_more' : 'chevron_right'}</span></td>
+                          <td className="font-semibold">{new Date(d.date + 'T00:00:00+05:30').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+                          <td>{d.count}</td>
+                          <td className="font-semibold">₹{d.gross.toLocaleString('en-IN')}</td>
+                          <td className="text-sm" style={{ color: '#6B7280' }}>{d.payments.map((p: any) => p.receiptNo ?? '—').join(', ')}</td>
+                        </tr>
+                        {openDay === d.date && (
+                          <tr>
+                            <td></td>
+                            <td colSpan={4} style={{ background: '#F9FAFB', padding: '12px 16px' }}>
+                              {d.payments.map((p: any) => (
+                                <div key={p.id} className="flex items-center gap-3" style={{ padding: '6px 0', borderBottom: '1px solid #F3F4F6' }}>
+                                  <span className="badge badge-success">{p.receiptNo ?? 'no receipt'}</span>
+                                  <span className="text-sm" style={{ fontFamily: 'monospace' }}>{p.gatewayPaymentId ?? '—'}</span>
+                                  <span className="text-sm">{p.method}</span>
+                                  <span className="text-sm" style={{ marginLeft: 'auto', color: '#6B7280' }}>{p.paidAt ? new Date(p.paidAt).toLocaleTimeString('en-IN') : ''}</span>
+                                  <span className="font-semibold" style={{ marginLeft: 12 }}>₹{Number(p.amount).toLocaleString('en-IN')}</span>
+                                </div>
+                              ))}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                    {settleDays.length === 0 && !settleLoading && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24, color: '#9CA3AF' }}>No online payments captured in this range</td></tr>}
+                  </tbody></table></div>
+                </div>
+              </div>
+            )}
           </>
         )}
 

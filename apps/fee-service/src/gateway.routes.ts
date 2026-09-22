@@ -365,6 +365,14 @@ export function createSettlementsRoute(options: GatewayRoutesOptions): Router {
       const { branchId } = ctx(req);
       if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
       const { from, to } = req.query;
+      // A bare `to` date (YYYY-MM-DD) means "that whole day" — JS would read
+      // it as midnight, silently excluding the day being reconciled (today)
+      // from its own report. Treat it as end-of-day IST.
+      const toBound = to
+        ? /^\d{4}-\d{2}-\d{2}$/.test(String(to).trim())
+          ? new Date(`${to}T23:59:59.999+05:30`)
+          : new Date(to as string)
+        : new Date();
       const payments = await prisma.payment.findMany({
         where: {
           branchId,
@@ -372,14 +380,38 @@ export function createSettlementsRoute(options: GatewayRoutesOptions): Router {
           gatewayProvider: 'RAZORPAY',
           paidAt: {
             gte: from ? new Date(from as string) : new Date(Date.now() - 30 * 86400_000),
-            lte: to ? new Date(to as string) : new Date(),
+            lte: toBound,
           },
         },
         orderBy: { paidAt: 'asc' },
       });
       const gross = payments.reduce((s, p) => s + Number(p.amount), 0);
+      // Day-by-day grouping (§4.1.6): the accountant reconciles Razorpay's
+      // payout report against one day at a time, so the report is grouped by
+      // the IST calendar day the payment was captured.
+      const istDay = (d: Date) =>
+        new Date(d.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+      const dayMap = new Map<string, { date: string; count: number; gross: number; payments: typeof flat }>();
+      const flat = payments.map((p) => ({
+        id: p.id,
+        receiptNo: p.receiptNo,
+        amount: Number(p.amount),
+        method: p.method,
+        paidAt: p.paidAt,
+        gatewayPaymentId: p.gatewayPaymentId,
+      }));
+      for (const p of flat) {
+        const date = istDay(new Date(p.paidAt as Date));
+        const bucket = dayMap.get(date) ?? { date, count: 0, gross: 0, payments: [] };
+        bucket.count += 1;
+        bucket.gross += p.amount;
+        bucket.payments.push(p);
+        dayMap.set(date, bucket);
+      }
+      const days = [...dayMap.values()].sort((a, b) => b.date.localeCompare(a.date));
       res.json({
-        data: payments.map((p) => ({ id: p.id, receiptNo: p.receiptNo, amount: Number(p.amount), method: p.method, paidAt: p.paidAt, gatewayPaymentId: p.gatewayPaymentId })),
+        data: flat,
+        days,
         totals: { count: payments.length, gross, netCredited: gross }, // gateway charges arrive with settlement reports; net = gross − fees
       });
     } catch (e) { res.status(500).json({ detail: (e as Error).message }); }

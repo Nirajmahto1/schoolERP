@@ -676,6 +676,18 @@ export const feeApi = {
       { method: 'POST' },
     ),
 
+  /** Day-by-day Razorpay settlement report (§4.1.6) — reconcile payouts. */
+  getSettlements: (params?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    return apiRequest<{
+      data: Array<{ id: string; receiptNo: string | null; amount: number; method: string; paidAt: string | null; gatewayPaymentId: string | null }>;
+      days: Array<{ date: string; count: number; gross: number; payments: Array<{ id: string; receiptNo: string | null; amount: number; method: string; paidAt: string | null; gatewayPaymentId: string | null }> }>;
+      totals: { count: number; gross: number; netCredited: number };
+    }>(`/fees/settlements?${qs}`);
+  },
+
   // ── Receipts (BUILD_PLAN 4.1.4) ──
   /** Latest receipt for an invoice (payments are linked by allocations). */
   getInvoiceReceipt: (invoiceId: string) =>
