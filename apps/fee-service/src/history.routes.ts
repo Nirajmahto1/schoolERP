@@ -54,10 +54,34 @@ export function createHistoryRoute(options: { prisma: PrismaClient }) {
       }
 
       // No linked children → an honest empty history (200), not an error.
+      // Month/year filters carve the window out of paidAt. Boundaries are
+      // computed as ISO strings on IST midnights — no Date arithmetic, no
+      // local-timezone overflow (a setMonth on Aug 31 rolls to Oct 1).
+      const month = req.query.month ? Number(req.query.month) : null;
+      const year = req.query.year ? Number(req.query.year) : null;
+      let paidAt: Record<string, Date> | undefined;
+      if (month != null || year != null) {
+        // Month without year → the most recent occurrence of that month.
+        const y = year ?? (() => {
+          const now = new Date();
+          const nowM = now.getUTCMonth() + 1; // today's month in IST ≈ UTC+5:30, same calendar day
+          const nowY = now.getUTCFullYear();
+          return nowM < month! ? nowY - 1 : nowY;
+        })();
+        const startM = (month ?? 1);
+        const endY = month == null ? y + 1 : startM === 12 ? y + 1 : y;
+        const endM = month == null ? 1 : startM === 12 ? 1 : startM + 1;
+        const pad = (n: number) => String(n).padStart(2, '0');
+        paidAt = {
+          gte: new Date(`${y}-${pad(startM)}-01T00:00:00+05:30`),
+          lte: new Date(`${endY}-${pad(endM)}-01T00:00:00+05:30`),
+        };
+      }
       const where = {
         branchId,
         status: 'SUCCESS' as const,
         ...(studentIds.length ? { studentId: { in: studentIds } } : (isStaff && requested ? { studentId: requested } : {})),
+        ...(paidAt ? { paidAt } : {}),
       };
 
       const rows = await prisma.payment.findMany({

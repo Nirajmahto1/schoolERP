@@ -31,16 +31,28 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
   List<Map<String, dynamic>>? _groups;
   Map<String, dynamic>? _totals;
   String? _error;
+  // Filter model: null year = all time; null month = the whole selected year.
+  int? _month;
+  int? _year = DateTime.now().year;
+  // Years are not known up-front; the visible span grows to cover the oldest
+  // receipt once the unfiltered load arrives.
+  int? _earliestYear;
 
   @override
   void initState() { super.initState(); _load(); }
 
+  String get _filterQuery {
+    final params = <String>[
+      if (widget.studentId != null) 'studentId=${widget.studentId}',
+      if (_year != null) 'year=$_year',
+      if (_month != null && _year != null) 'month=$_month',
+    ];
+    return params.isEmpty ? '' : '?${params.join('&')}';
+  }
+
   Future<void> _load() async {
     try {
-      final path = widget.studentId != null
-          ? '/fees/history?studentId=${widget.studentId}'
-          : '/fees/history';
-      final data = await ApiClient.instance.get(path);
+      final data = await ApiClient.instance.get('/fees/history$_filterQuery');
       final groups = (data is Map ? data['groups'] : null) as List<dynamic>? ?? const [];
       if (!mounted) return;
       setState(() {
@@ -55,20 +67,88 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
     }
   }
 
+  /// First unfiltered load discovers the oldest receipt so the year picker
+  /// spans the child's actual payment history.
+  Future<void> _discoverEarliestYear() async {
+    try {
+      final all = await ApiClient.instance.get('/fees/history${widget.studentId != null ? '?studentId=${widget.studentId}' : ''}');
+      final rows = (all is Map ? all['data'] : null) as List<dynamic>? ?? const [];
+      for (final r in rows) {
+        final paidAt = DateTime.tryParse(Map<String, dynamic>.from(r as Map)['paidAt']?.toString() ?? '');
+        if (paidAt != null) {
+          final y = paidAt.year;
+          if (_earliestYear == null || y < _earliestYear!) _earliestYear = y;
+        }
+      }
+      if (mounted) setState(() {});
+    } catch (_) { /* cosmetic only — the picker falls back to the current year */ }
+  }
+
+  static const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0);
     final title = widget.childName != null ? '${widget.childName} — Receipts' : 'Payment History';
+    final years = [for (int y = DateTime.now().year; y >= (_earliestYear ?? DateTime.now().year); y--) y];
     return Scaffold(
       body: RefreshIndicator(
-        onRefresh: _load,
+        onRefresh: () async { await _load(); await _discoverEarliestYear(); },
         child: ListViewScreen(
           title: title,
           error: _error,
           empty: _groups != null && _groups!.isEmpty,
-          emptyText: 'No payments recorded yet — receipts appear here the moment a fee is settled.',
-          onRetry: _load,
+          emptyText: 'No payments in this period — clear a filter or pick another month.',
+          onRetry: () async { await _load(); await _discoverEarliestYear(); },
           children: [
+            // ── Filters: All · year · 12 month chips ──
+            Card(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    Text('Period', style: Theme.of(context).textTheme.labelSmall),
+                    const Spacer(),
+                    // Year selector — null year renders as "All time".
+                    DropdownButton<int?>(
+                      value: _year,
+                      underline: const SizedBox.shrink(),
+                      isDense: true,
+                      items: <DropdownMenuItem<int?>>[
+                        const DropdownMenuItem(value: null, child: Text('All time')),
+                        ...years.map((y) => DropdownMenuItem(value: y, child: Text('$y'))),
+                      ],
+                      onChanged: (y) { setState(() { _year = y; if (y == null) _month = null; }); _load(); },
+                    ),
+                  ]),
+                  if (_year != null)
+                    SizedBox(
+                      height: 40,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          ChoiceChip(
+                            label: const Text('Whole year'),
+                            selected: _month == null,
+                            onSelected: (_) { setState(() => _month = null); _load(); },
+                          ),
+                          for (var m = 1; m <= 12; m++)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: ChoiceChip(
+                                label: Text(_months[m - 1]),
+                                selected: _month == m,
+                                onSelected: (_) { setState(() => _month = m); _load(); },
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                ]),
+              ),
+            ),
+            // ── Period total — the answer to "how much this year/month?" ──
             if (_totals != null && (_totals!['count'] ?? 0) > 0)
               Card(
                 margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -78,8 +158,12 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                   child: Row(children: [
                     const Icon(Icons.receipt_long_outlined),
                     const SizedBox(width: 10),
-                    Expanded(child: Text('${_totals!['count']} receipt(s) · ${fmt.format(((_totals!['amount'] ?? 0) as num).toDouble())} total paid',
-                        style: const TextStyle(fontWeight: FontWeight.w700))),
+                    Expanded(
+                      child: Text(
+                        '${_year == null ? "All time" : _month == null ? "$_year" : "${_months[_month! - 1]} $_year"}: ${_totals!['count']} receipt(s) · ${fmt.format(((_totals!['amount'] ?? 0) as num).toDouble())}',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
                   ]),
                 ),
               ),
