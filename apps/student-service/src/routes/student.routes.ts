@@ -494,13 +494,23 @@ router.get('/my-fees', async (req: Request, res: Response) => {
       orderBy: { dueDate: 'desc' },
     });
 
+    // NUMERIC amounts (not formatted strings) — the mobile fee screens parse
+    // these to render dues and to drive /fees/checkout/orders, which computes
+    // the payable amount from the DB itself.
     const formattedInvoices = invoices.map(inv => ({
       id: inv.id,
-      inv: inv.invoiceNo,
+      invoiceNo: inv.invoiceNo,
+      title: inv.lines.length > 0 ? inv.lines[0].feeHead.name : 'General Fee',
       type: inv.lines.length > 0 ? inv.lines[0].feeHead.name : 'General Fee',
+      totalAmount: Number(inv.totalAmount),
+      paidAmount: Number(inv.paidAmount),
+      outstanding: Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount)),
+      dueDate: inv.dueDate,
+      status: inv.status,
+      // Legacy display fields kept for older clients.
       amt: `₹${Number(inv.totalAmount).toLocaleString()}`,
       due: inv.dueDate.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      status:
+      statusLabel:
         inv.status === 'PAID' ? 'Paid'
         : inv.status === 'ISSUED' || inv.status === 'DRAFT' ? 'Pending'
         : inv.status === 'OVERDUE' ? 'Overdue'

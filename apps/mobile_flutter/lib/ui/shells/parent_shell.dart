@@ -9,8 +9,11 @@ import 'package:provider/provider.dart';
 
 import '../../core/api.dart';
 import '../../core/auth_state.dart';
+import '../../core/brand.dart';
 import '../../core/models.dart';
 import '../../core/photo.dart';
+import '../screens/child_fees_screen.dart';
+import '../screens/checkout_screen.dart';
 import '../widgets/common.dart';
 import 'package:intl/intl.dart';
 
@@ -101,10 +104,21 @@ class _ChildrenTabState extends State<ChildrenTab> {
             title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
             subtitle: Text('${c.className ?? '-'} ${c.section ?? ''} · ${c.admissionNo}\nAttendance ${c.attendancePct.toStringAsFixed(0)}%  ·  Due ₹${c.dueAmount.toStringAsFixed(0)}'),
             isThreeLine: true,
-            trailing: const Icon(Icons.chevron_right),
+            trailing: c.dueAmount > 0.5
+                ? FilledButton.tonal(onPressed: () => _openFees(c), child: Text('Pay ₹${c.dueAmount.toStringAsFixed(0)}'))
+                : const Icon(Icons.chevron_right),
+            onTap: () => _openFees(c),
           ),
         )).toList(),
       ),
+    );
+  }
+
+  /// Drill into one child's fees — the checkout entry point. The screen
+  /// loads that child's openInvoices and drives the real Razorpay flow.
+  void _openFees(Child c) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => ChildFeesScreen(child: c)),
     );
   }
 
@@ -158,18 +172,33 @@ class FeesTab extends StatefulWidget {
   State<FeesTab> createState() => _FeesTabState();
 }
 
+/// Fees for the LOGGED-IN viewer, resolved through /parents/me/children-summary:
+///   • a PARENT sees every linked child as a section, each with that child's
+///     open invoices (openInvoices) and a pay action per invoice;
+///   • a STUDENT self-resolves to one row — the same screen serves both
+///     shells, so /students/my-fees (string-formatted, unpayable) is retired.
+///
+/// Paying mints a server order (amount computed from the DB, never the
+/// client), opens the Razorpay checkout sheet, and verifies through
+/// /fees/checkout/verify — the production capture path.
 class _FeesTabState extends State<FeesTab> {
-  List<FeeItem>? _items;
+  List<Map<String, dynamic>>? _children;
   String? _error;
-  String? _payingInvoiceId;
+  String? _payingId;
 
   @override
   void initState() { super.initState(); _load(); }
 
   Future<void> _load() async {
     try {
-      final rows = await ApiClient.instance.list('/students/my-fees');
-      setState(() { _items = rows.map((e) => FeeItem.fromJson(Map<String, dynamic>.from(e))).toList(); _error = null; });
+      // children-summary returns {students: [...]} — .get(), not .list().
+      final data = await ApiClient.instance.get('/parents/me/children-summary');
+      final students = (data is Map ? data['students'] : data) as List<dynamic>? ?? const [];
+      if (!mounted) return;
+      setState(() {
+        _children = students.map((e) => Map<String, dynamic>.from(e)).toList();
+        _error = null;
+      });
     } on ApiError catch (e) {
       setState(() => _error = e.detail);
     } catch (_) {
@@ -177,30 +206,47 @@ class _FeesTabState extends State<FeesTab> {
     }
   }
 
-  Future<void> _pay(FeeItem item) async {
-    setState(() => _payingInvoiceId = item.id);
+  Future<void> _pay(Map<String, dynamic> child, Map<String, dynamic> inv) async {
+    setState(() => _payingId = inv['id']?.toString());
     try {
-      // 1. Ask the backend for a Razorpay order (INITIATED payment row).
+      // 1. Server-minted Razorpay order for THIS invoice's outstanding.
       final order = await ApiClient.instance.post('/fees/checkout/orders', body: {
-        'invoiceId': item.id,
-        'amount': item.due,
+        'studentId': child['id'],
+        'invoiceIds': [inv['id']],
       });
       final o = Map<String, dynamic>.from(order as Map);
-      // 2. Hand the order to the platform checkout sheet.
-      //    (Native Razorpay SDK lands with the dev-client build; Expo/Play
-      //    releases ship the same contract.)
-      // ignore: avoid_print
-      print('Razorpay order ${o['orderId']} for ${o['amount']}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Checkout order created — native sheet ships with the next build')),
-        );
+      final keyId = o['keyId']?.toString() ?? '';
+      if (keyId.isEmpty) {
+        throw ApiError(503, 'Online payments are not configured on this deployment.');
+      }
+      if (!mounted) return;
+      // 2. Checkout sheet; the screen runs /fees/checkout/verify itself.
+      final result = await RazorpayCheckoutScreen.open(
+        context,
+        orderId: o['orderId'].toString(),
+        amountRupees: (o['amount'] as num).toDouble(),
+        keyId: keyId,
+        schoolName: SchoolBrand.instance.name ?? 'School Fees',
+      );
+      if (result != null && result['captured'] == true) {
+        final payment = Map<String, dynamic>.from((result['payment'] ?? const {}) as Map);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              content: Text(payment['receiptNo'] != null
+                  ? 'Payment captured — receipt ${payment['receiptNo']}'
+                  : 'Payment captured ✓'),
+            ));
+        }
       }
       await _load();
     } on ApiError catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.detail)));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not start checkout')));
     } finally {
-      if (mounted) setState(() => _payingInvoiceId = null);
+      if (mounted) setState(() => _payingId = null);
     }
   }
 
@@ -212,26 +258,53 @@ class _FeesTabState extends State<FeesTab> {
       child: ListViewScreen(
         title: 'Fees',
         error: _error,
-        empty: _items != null && _items!.isEmpty,
-        emptyText: 'No invoices yet',
+        empty: _children != null && _children!.isEmpty,
+        emptyText: 'No student linked to this account',
         onRetry: _load,
-        children: (_items ?? []).map((f) {
-          final isDue = f.due > 0.5;
-          return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: ListTile(
-              title: Text(f.title, style: const TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: Text('${f.invoiceNo} · paid ${fmt.format(f.paid)} of ${fmt.format(f.amount)}'),
-              trailing: isDue
-                  ? FilledButton.tonal(
-                      onPressed: _payingInvoiceId == f.id ? null : () => _pay(f),
-                      child: _payingInvoiceId == f.id
-                          ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                          : Text('Pay ${fmt.format(f.due)}'),
-                    )
-                  : Chip(label: const Text('Paid'), backgroundColor: Colors.green.shade50),
+        children: (_children ?? []).expand((child) {
+          final invoices = ((child['openInvoices'] ?? const []) as List<dynamic>)
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+          final name = '${child['firstName'] ?? ''} ${child['lastName'] ?? ''}'.trim();
+          final totalDue = invoices.fold<double>(0, (s, i) => s + ((i['outstanding'] ?? 0) as num).toDouble());
+          return <Widget>[
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+              leading: const Icon(Icons.school_outlined),
+              title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
+              subtitle: Text('${child['className'] ?? '-'} ${child['sectionName'] ?? ''} · outstanding ${fmt.format(totalDue)}'),
             ),
-          );
+            ...invoices.map((inv) {
+              final outstanding = ((inv['outstanding'] ?? 0) as num).toDouble();
+              final isDue = outstanding > 0.5;
+              final status = inv['status']?.toString() ?? '';
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: ListTile(
+                  title: Text(inv['type']?.toString() ?? 'School Fee', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text('${inv['invoiceNo'] ?? ''} · ${fmt.format(((inv['totalAmount'] ?? 0) as num).toDouble())} total'
+                      '${inv['dueDate'] != null ? ' · due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}'),
+                  trailing: isDue
+                      ? FilledButton(
+                          onPressed: _payingId == inv['id'].toString() ? null : () => _pay(child, inv),
+                          child: _payingId == inv['id'].toString()
+                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                              : Text('Pay ${fmt.format(outstanding)}'),
+                        )
+                      : Chip(
+                          label: Text(status == 'PAID' ? 'Paid' : status),
+                          backgroundColor: status == 'PAID' ? Colors.green.shade50 : Colors.orange.shade50,
+                        ),
+                ),
+              );
+            }),
+            if (invoices.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text('No open invoices — nothing to pay 🎉', style: TextStyle(color: Colors.green)),
+              ),
+            const SizedBox(height: 8),
+          ];
         }).toList(),
       ),
     );
