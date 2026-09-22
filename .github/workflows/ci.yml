@@ -147,7 +147,7 @@ jobs:
       # mostly stdlib CVEs, so the fix is a current Go, not code changes.
       # '1.26' resolves to the latest 1.26.x patch, which carries the stdlib
       # fixes; bulk-processor's pgx v5.11 requires go ≥ 1.26.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
       - name: govulncheck (Go engines)
