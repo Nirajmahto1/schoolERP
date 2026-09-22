@@ -14,7 +14,7 @@ import '../../core/photo.dart';
 import '../../core/sockets.dart';
 
 class ListViewScreen extends StatelessWidget {
-  final String title;
+  final String? title;
   final String? error;
   final bool empty;
   final String emptyText;
@@ -23,7 +23,7 @@ class ListViewScreen extends StatelessWidget {
 
   const ListViewScreen({
     super.key,
-    required this.title,
+    this.title,
     this.error,
     required this.empty,
     required this.emptyText,
@@ -34,8 +34,11 @@ class ListViewScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final loading = error == null && !empty && children.isEmpty;
+    // Screens embedded in a shell already sit under the shell's AppBar —
+    // pass title: null to avoid the double header.
+    final appBar = title == null ? null : AppBar(title: Text(title!));
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: appBar,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 720),

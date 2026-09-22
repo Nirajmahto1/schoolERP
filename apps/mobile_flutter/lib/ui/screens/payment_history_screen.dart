@@ -92,10 +92,11 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
     final title = widget.childName != null ? '${widget.childName} — Receipts' : 'Payment History';
     final years = [for (int y = DateTime.now().year; y >= (_earliestYear ?? DateTime.now().year); y--) y];
     return Scaffold(
+      appBar: AppBar(title: Text(title)),
       body: RefreshIndicator(
         onRefresh: () async { await _load(); await _discoverEarliestYear(); },
         child: ListViewScreen(
-          title: title,
+          // AppBar above carries the title — no double header.
           error: _error,
           empty: _groups != null && _groups!.isEmpty,
           emptyText: 'No payments in this period — clear a filter or pick another month.',
@@ -185,6 +186,8 @@ class _PaymentHistoryScreenState extends State<PaymentHistoryScreen> {
                 ...payments.map((p) {
                   final paidAt = p['paidAt'] == null ? null : DateTime.tryParse(p['paidAt'].toString());
                   final isOnline = p['gatewayProvider']?.toString() == 'RAZORPAY';
+                  // Row layout kept: three short, flex-safe cells — no
+                  // squeeze possible (amount is fixed-width text).
                   return Card(
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                     child: ListTile(

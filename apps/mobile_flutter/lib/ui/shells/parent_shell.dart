@@ -69,8 +69,13 @@ class _ChildrenTabState extends State<ChildrenTab> {
 
   Future<void> _load() async {
     try {
-      final rows = await ApiClient.instance.list('/parents/me/children-summary');
-      setState(() { _children = rows.map((e) => Child.fromJson(Map<String, dynamic>.from(e))).toList(); _error = null; });
+      // children-summary returns {students: [...]} — .list() only unwraps
+      // {data: [...]}/bare arrays, so it always produced an empty Children
+      // tab while the Fees tab (fixed earlier) worked. Same unwrap here.
+      final data = await ApiClient.instance.get('/parents/me/children-summary');
+      final students = (data is Map ? data['students'] : data) as List<dynamic>? ?? const [];
+      if (!mounted) return;
+      setState(() { _children = students.map((e) => Child.fromJson(Map<String, dynamic>.from(e))).toList(); _error = null; });
     } on ApiError catch (e) {
       setState(() => _error = e.detail);
     } catch (_) {
@@ -83,41 +88,60 @@ class _ChildrenTabState extends State<ChildrenTab> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListViewScreen(
-        title: 'My Children',
         error: _error,
         empty: _children != null && _children!.isEmpty,
         emptyText: 'No linked children',
         onRetry: _load,
         children: (_children ?? []).map((c) => Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: ListTile(
-            leading: GestureDetector(
-              onTap: () => _uploadChildPhoto(c),
-              child: Stack(children: [
-                c.photo != null && c.photo!.isNotEmpty
-                    ? CircleAvatar(radius: 22, backgroundImage: AuthPhotoProvider(c.photo!))
-                    : CircleAvatar(radius: 22, child: Text(c.name.isNotEmpty ? c.name[0] : '?')),
-                const Positioned(
-                  right: -2, bottom: -2,
-                  child: CircleAvatar(radius: 9, backgroundColor: Colors.blueGrey, child: Icon(Icons.camera_alt, size: 10, color: Colors.white)),
+          // Column layout on purpose — a ListTile with a trailing
+          // [IconButton, Pay ₹…] row squeezed the name/subtitle on narrow
+          // phones (same bug class as the fee rows).
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                GestureDetector(
+                  onTap: () => _uploadChildPhoto(c),
+                  child: Stack(children: [
+                    c.photo != null && c.photo!.isNotEmpty
+                        ? CircleAvatar(radius: 22, backgroundImage: AuthPhotoProvider(c.photo!))
+                        : CircleAvatar(radius: 22, child: Text(c.name.isNotEmpty ? c.name[0] : '?')),
+                    const Positioned(
+                      right: -2, bottom: -2,
+                      child: CircleAvatar(radius: 9, backgroundColor: Colors.blueGrey, child: Icon(Icons.camera_alt, size: 10, color: Colors.white)),
+                    ),
+                  ]),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(c.name, style: const TextStyle(fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
+                    Text('${c.className ?? '-'} ${c.section ?? ''} · ${c.admissionNo}',
+                        style: Theme.of(context).textTheme.bodySmall, overflow: TextOverflow.ellipsis),
+                  ]),
                 ),
               ]),
-            ),
-            title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text('${c.className ?? '-'} ${c.section ?? ''} · ${c.admissionNo}\nAttendance ${c.attendancePct.toStringAsFixed(0)}%  ·  Due ₹${c.dueAmount.toStringAsFixed(0)}'),
-            isThreeLine: true,
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-              IconButton(
-                tooltip: 'Payment history',
-                icon: const Icon(Icons.receipt_long_outlined),
-                onPressed: () => _openHistory(c),
-              ),
-              if (c.dueAmount > 0.5)
-                FilledButton.tonal(onPressed: () => _openFees(c), child: Text('Pay ₹${c.dueAmount.toStringAsFixed(0)}'))
-              else
-                const Icon(Icons.chevron_right),
+              const SizedBox(height: 8),
+              Text('Attendance ${c.attendancePct.toStringAsFixed(0)}%  ·  Due ₹${c.dueAmount.toStringAsFixed(0)}',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _openHistory(c),
+                    icon: const Icon(Icons.receipt_long_outlined, size: 18),
+                    label: const Text('Receipts', overflow: TextOverflow.ellipsis),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: c.dueAmount > 0.5
+                      ? FilledButton(onPressed: () => _openFees(c), child: Text('Pay ₹${c.dueAmount.toStringAsFixed(0)}', overflow: TextOverflow.ellipsis))
+                      : OutlinedButton(onPressed: () => _openFees(c), child: const Text('Fees', overflow: TextOverflow.ellipsis)),
+                ),
+              ]),
             ]),
-            onTap: () => _openFees(c),
           ),
         )).toList(),
       ),
@@ -282,7 +306,6 @@ class _FeesTabState extends State<FeesTab> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListViewScreen(
-        title: 'Fees',
         error: _error,
         empty: _children != null && _children!.isEmpty,
         emptyText: 'No student linked to this account',
@@ -294,44 +317,85 @@ class _FeesTabState extends State<FeesTab> {
           final name = '${child['firstName'] ?? ''} ${child['lastName'] ?? ''}'.trim();
           final totalDue = invoices.fold<double>(0, (s, i) => s + ((i['outstanding'] ?? 0) as num).toDouble());
           return <Widget>[
-            ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-              leading: const Icon(Icons.school_outlined),
-              title: Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              subtitle: Text('${child['className'] ?? '-'} ${child['sectionName'] ?? ''} · outstanding ${fmt.format(totalDue)}'),
+            // Section header — compact row, never squeezed by trailing actions.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+              child: Row(children: [
+                const Icon(Icons.school_outlined, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(name,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                Text('Outstanding ${fmt.format(totalDue)}',
+                    style: TextStyle(fontSize: 12, color: totalDue > 0.5 ? Colors.red.shade700 : Colors.green.shade700, fontWeight: FontWeight.w600)),
+              ]),
             ),
             ...invoices.map((inv) {
               final outstanding = ((inv['outstanding'] ?? 0) as num).toDouble();
               final isDue = outstanding > 0.5;
               final status = inv['status']?.toString() ?? '';
+              final isPaid = status == 'PAID' || (!isDue && status != 'DRAFT');
+              // Column layout on purpose: ListTile+trailing-button
+              // compositions squeezed the title to one character per line on
+              // narrow phones (screenshot bug). Nothing here can steal width
+              // from the text.
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: ListTile(
-                  title: Text(inv['type']?.toString() ?? 'School Fee', style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('${inv['invoiceNo'] ?? ''} · ${fmt.format(((inv['totalAmount'] ?? 0) as num).toDouble())} total'
-                      '${inv['dueDate'] != null ? ' · due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}'),
-                  trailing: isDue
-                      ? FilledButton(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Expanded(
+                        child: Text(inv['type']?.toString() ?? 'School Fee',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isPaid ? Colors.green.shade50 : Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          isPaid ? 'Paid' : status,
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isPaid ? Colors.green.shade800 : Colors.orange.shade900),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${inv['invoiceNo'] ?? ''} · ${fmt.format(((inv['totalAmount'] ?? 0) as num).toDouble())} total'
+                      '${inv['dueDate'] != null ? ' · due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: Text(
+                          isDue ? 'Outstanding ${fmt.format(outstanding)}' : 'Settled',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: isDue ? Colors.red.shade700 : Colors.green.shade700,
+                          ),
+                        ),
+                      ),
+                      if (isDue)
+                        FilledButton(
                           onPressed: _payingId == inv['id'].toString() ? null : () => _pay(child, inv),
                           child: _payingId == inv['id'].toString()
                               ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : Text('Pay ${fmt.format(outstanding)}'),
                         )
-                      : Row(mainAxisSize: MainAxisSize.min, children: [
-                          Chip(
-                            label: Text(status == 'PAID' ? 'Paid' : status),
-                            backgroundColor: status == 'PAID' ? Colors.green.shade50 : Colors.orange.shade50,
-                          ),
-                          IconButton(
-                            tooltip: 'View receipt',
-                            icon: const Icon(Icons.picture_as_pdf_outlined),
-                            onPressed: () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString()),
-                          ),
-                        ]),
-                  // Any settled row opens its numbered receipt directly.
-                  onTap: !isDue
-                      ? () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString())
-                      : null,
+                      else
+                        TextButton.icon(
+                          onPressed: () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString()),
+                          icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                          label: const Text('Receipt'),
+                        ),
+                    ]),
+                  ]),
                 ),
               );
             }),

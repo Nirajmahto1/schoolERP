@@ -14,6 +14,9 @@ import type { InvoiceStatus } from '@prisma/client';
 import { ctx, encryptField, decryptField, isEncryptedField } from '@school-erp/auth';
 
 const OPEN_INVOICE_STATUSES: InvoiceStatus[] = ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'];
+/** What the app's fees screen shows: open dues PLUS settled ones (their
+ * receipts are the point — a parent must be able to open REC-xxxxx). */
+const VISIBLE_INVOICE_STATUSES: InvoiceStatus[] = [...OPEN_INVOICE_STATUSES, 'PAID'];
 
 const router = Router();
 
@@ -36,8 +39,12 @@ function childrenInclude() {
           include: { examSubject: { include: { subject: { select: { name: true } } } } },
         },
         invoices: {
-          where: { status: { in: OPEN_INVOICE_STATUSES }, deletedAt: null },
-          take: 5,
+          where: { status: { in: VISIBLE_INVOICE_STATUSES }, deletedAt: null },
+          take: 12,
+          orderBy: { dueDate: 'desc' as const },
+          // Successful payments ride along so the app can offer the numbered
+          // receipt per invoice (the receipt PDF route keys off payment id).
+          include: { payments: { where: { status: 'SUCCESS' as const }, select: { id: true, receiptNo: true, method: true, createdAt: true }, orderBy: { createdAt: 'desc' as const } } },
         },
         bookIssues: { where: { status: 'ISSUED' }, include: { book: { select: { title: true } } } },
       },
@@ -54,7 +61,16 @@ type StudentGuardianWithStudent = {
     deletedAt: Date | null;
     enrollments: Array<{ class: { id: string; name: string }; section: { id: string; name: string } }>;
     examResults: unknown[];
-    invoices: Array<{ totalAmount: unknown; paidAmount: unknown }>;
+    invoices: Array<{
+      id: string;
+      invoiceNo: string;
+      status: string;
+      dueDate: Date;
+      totalAmount: unknown;
+      paidAmount: unknown;
+      lines?: Array<{ feeHead?: { name: string } | null }> | unknown[];
+      payments?: Array<{ id: string; receiptNo: string | null; method: string; createdAt: Date }>;
+    }>;
     bookIssues: unknown[];
   };
 };
@@ -123,10 +139,12 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
     const pendingFees = students.reduce(
       (sum, s) =>
         sum +
-        s.invoices.reduce(
-          (a, inv) => a + Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount)),
-          0,
-        ),
+        s.invoices
+          .filter((inv) => (OPEN_INVOICE_STATUSES as string[]).includes(inv.status))
+          .reduce(
+            (a, inv) => a + Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount)),
+            0,
+          ),
       0,
     );
 
@@ -147,18 +165,26 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
         recentResults: s.examResults,
         // Open dues PER CHILD — the parent app's fees screen renders this
         // list; the aggregate stats.pendingFees alone cannot (it is summed
-        // across children). Shape matches the checkout client: totalAmount,
-        // paidAmount, outstanding computed client-side for display only —
-        // the ORDER amount is still computed server-side at /checkout/orders.
+        // across children). PAID invoices are included so the app can offer
+        // their receipts; `openInvoices` is the established wire name.
+        // Shape matches the checkout client: totalAmount, paidAmount,
+        // outstanding computed client-side for display only — the ORDER
+        // amount is still computed server-side at /checkout/orders.
+        dueAmount: s.invoices
+          .filter((inv) => (OPEN_INVOICE_STATUSES as string[]).includes(inv.status))
+          .reduce((a, inv) => a + Math.max(0, Number((inv as any).totalAmount) - Number((inv as any).paidAmount)), 0),
         openInvoices: s.invoices.map((inv) => ({
-          id: (inv as any).id,
-          invoiceNo: (inv as any).invoiceNo,
-          type: (inv as any).lines?.[0]?.feeHead?.name ?? 'School Fee',
-          status: (inv as any).status,
-          dueDate: (inv as any).dueDate,
-          totalAmount: Number((inv as any).totalAmount),
-          paidAmount: Number((inv as any).paidAmount),
-          outstanding: Math.max(0, Number((inv as any).totalAmount) - Number((inv as any).paidAmount)),
+          id: inv.id,
+          invoiceNo: inv.invoiceNo,
+          type: (inv.lines as Array<{ feeHead?: { name: string } | null }> | undefined)?.[0]?.feeHead?.name ?? 'School Fee',
+          status: inv.status,
+          dueDate: inv.dueDate,
+          totalAmount: Number(inv.totalAmount),
+          paidAmount: Number(inv.paidAmount),
+          outstanding: Math.max(0, Number(inv.totalAmount) - Number(inv.paidAmount)),
+          // Newest successful payment first — the receipt viewer opens
+          // `receipts[0].id`.
+          receipts: (inv.payments ?? []).map((p) => ({ id: p.id, receiptNo: p.receiptNo, method: p.method, paidAt: p.createdAt })),
         })),
         bookIssues: s.bookIssues,
       })),
