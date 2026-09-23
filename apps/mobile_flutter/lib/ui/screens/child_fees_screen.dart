@@ -116,10 +116,14 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
     final fmt = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0);
     final totalDue = (_items ?? []).fold<double>(0, (s, i) => s + i.due);
     return Scaffold(
+      // Own AppBar — this screen is pushed, so it carries the back button.
+      // (An earlier fix removed the INNER ListViewScreen title; the outer bar
+      // must stay or the screen has no header at all.)
+      appBar: AppBar(title: Text(widget.child.name, overflow: TextOverflow.ellipsis)),
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListViewScreen(
-          title: '${widget.child.name} — Fees',
+          // AppBar above carries the title — no double header.
           error: _error,
           empty: _items != null && _items!.isEmpty,
           emptyText: 'No invoices for ${widget.child.name} — nothing to pay 🎉',
@@ -140,28 +144,58 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
               ),
             ...(_items ?? []).map((f) {
               final isDue = f.due > 0.5;
+              // Column layout — ListTile+trailing squeezed titles to one
+              // character per line on narrow phones.
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: ListTile(
-                  title: Text(f.title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('${f.invoiceNo} · paid ${fmt.format(f.paid)} of ${fmt.format(f.amount)}'
-                      '${f.dueDate != null ? ' · due ${DateFormat('d MMM yyyy').format(f.dueDate!)}' : ''}'),
-                  trailing: isDue
-                      ? FilledButton(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Expanded(
+                        child: Text(f.title, style: const TextStyle(fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isDue ? Colors.orange.shade50 : Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          isDue ? 'Due' : 'Paid',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDue ? Colors.orange.shade900 : Colors.green.shade800),
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${f.invoiceNo} · paid ${fmt.format(f.paid)} of ${fmt.format(f.amount)}'
+                      '${f.dueDate != null ? ' · due ${DateFormat('d MMM yyyy').format(f.dueDate!)}' : ''}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: Text(
+                          isDue ? 'Outstanding ${fmt.format(f.due)}' : 'Settled',
+                          style: TextStyle(fontWeight: FontWeight.w700, color: isDue ? Colors.red.shade700 : Colors.green.shade700),
+                        ),
+                      ),
+                      if (isDue)
+                        FilledButton(
                           onPressed: _payingId == f.id ? null : () => _pay(f),
                           child: _payingId == f.id
                               ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : Text('Pay ${fmt.format(f.due)}'),
                         )
-                      : Row(mainAxisSize: MainAxisSize.min, children: [
-                          Chip(label: const Text('Paid'), backgroundColor: Colors.green.shade50),
-                          IconButton(
-                            tooltip: 'View receipt',
-                            icon: const Icon(Icons.picture_as_pdf_outlined),
-                            onPressed: () => ReceiptViewerScreen.openForInvoice(context, f.id),
-                          ),
-                        ]),
-                  onTap: !isDue ? () => ReceiptViewerScreen.openForInvoice(context, f.id) : null,
+                      else
+                        TextButton.icon(
+                          onPressed: () => ReceiptViewerScreen.openForInvoice(context, f.id),
+                          icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+                          label: const Text('Receipt'),
+                        ),
+                    ]),
+                  ]),
                 ),
               );
             }),
