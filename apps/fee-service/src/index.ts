@@ -31,6 +31,10 @@ const SERVICE_NAME = 'fee-service';
 export interface FeeAppOptions {
   env: {
     INTERNAL_ASSERTION_PUBLIC_KEY: string;
+    /** Peer notifications (guardian fine alerts) — optional per ADR-3. */
+    INTERNAL_ASSERTION_PRIVATE_KEY?: string;
+    COMMUNICATION_SERVICE_URL?: string;
+    NOTIFICATION_ENGINE_URL?: string;
     /** Razorpay (BUILD_PLAN 4.1) — optional; checkout answers 503 without. */
     RAZORPAY_KEY_ID?: string;
     RAZORPAY_KEY_SECRET?: string;
@@ -621,7 +625,14 @@ r.post('/write-offs', async (req, res) => {
   mount('/history', createHistoryRoute({ prisma }));
   mount('/settlements', createSettlementsRoute(gatewayOptions));
   // Counter features: late-fee slabs + advance cash collection (staff-gated).
-  mount('/late-fees', createLateFeeRoutes(prisma));
+  // The apply pass notifies guardians (FCM + WS) through these peers; both are
+  // optional — an unset key/URL skips the channel inside the notify helper.
+  const notifyOpts = {
+    internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+    communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+    notificationEngineUrl: env.NOTIFICATION_ENGINE_URL,
+  };
+  mount('/late-fees', createLateFeeRoutes(prisma, notifyOpts));
   mount('/advance', createAdvanceRoutes(prisma));
   // Payment methods: cheques + deposits + virtual accounts + carry-forward + receipts.
   mount('/', createMethodsRoutes(prisma));

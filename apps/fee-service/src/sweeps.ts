@@ -15,6 +15,7 @@
 import type { PrismaClient } from '@school-erp/database';
 import type { ServiceEnv } from '@school-erp/config';
 import { runLateFeeApply } from './late-fees.routes';
+import { sweepIdentity } from './late-fee-notify';
 
 /** Server-local date key — the "already ran today" marker. */
 function dayKey(now: Date): string {
@@ -22,6 +23,13 @@ function dayKey(now: Date): string {
 }
 
 export function startLateFeeSweeps(prisma: PrismaClient, env: ServiceEnv): void {
+  // The sweep notifies through the same peers as the manual apply; a missing
+  // signing key simply skips the peer calls inside the notify helper.
+  const notifyOpts = {
+    internalAssertionPrivateKey: env.INTERNAL_ASSERTION_PRIVATE_KEY,
+    communicationBaseUrl: env.COMMUNICATION_SERVICE_URL,
+    notificationEngineUrl: env.NOTIFICATION_ENGINE_URL,
+  };
   if (!env.LATE_FEE_SWEEP_ENABLED) {
     console.log('[late-fee-sweep] disabled by LATE_FEE_SWEEP_ENABLED — fines are manual only');
     return;
@@ -37,7 +45,13 @@ export function startLateFeeSweeps(prisma: PrismaClient, env: ServiceEnv): void 
         // runLateFeeApply records the LateFeeSweepRun audit row (SUCCESS with
         // the per-fine report, or FAILED with the error) — the nightly pass
         // is auditable exactly like a manual console apply.
-        const result = await runLateFeeApply(prisma, { id: branch.id, name: branch.name }, 'NIGHTLY', null);
+        const result = await runLateFeeApply(
+          prisma,
+          { id: branch.id, name: branch.name },
+          'NIGHTLY',
+          null,
+          { identity: sweepIdentity(branch.id), opts: notifyOpts },
+        );
         if (result.applied.length > 0) {
           console.log(
             `[late-fee-sweep] ${branch.name}: applied ${result.applied.length} fine(s), ` +

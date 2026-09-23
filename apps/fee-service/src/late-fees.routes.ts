@@ -19,6 +19,7 @@ import type { PrismaClient } from '@school-erp/database';
 import { applyLateFees, previewAdvance, collectAdvance, reverseLateFeeRun } from '@school-erp/domain';
 import type { LateFeeRule } from '@prisma/client';
 import { ctx } from '@school-erp/auth';
+import { notifyGuardiansOfFines, sweepIdentity } from './late-fee-notify';
 
 const FEE_MANAGERS = ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'FINANCE', 'ACCOUNTANT'];
 
@@ -36,6 +37,7 @@ export async function runLateFeeApply(
   branch: { id: string; name?: string },
   source: 'NIGHTLY' | 'MANUAL',
   createdBy: string | null,
+  notify?: { identity: import('@school-erp/notify').NotifyIdentity; opts: import('@school-erp/notify').NotifyOptions },
 ): Promise<import('@school-erp/domain').ApplyLateFeesResult & { runId?: string }> {
   const started = Date.now();
   const year = await prisma.academicYear.findFirst({ where: { branchId: branch.id, isCurrent: true }, select: { id: true } });
@@ -72,6 +74,17 @@ export async function runLateFeeApply(
       },
       select: { id: true },
     });
+    // Guardian pushes fire AFTER the run row commits — the durable record is
+    // the DB, the notification just announces it. Fire-and-forget: a slow or
+    // down peer must not hold the HTTP response (or the sweep) open.
+    if (notify && result.applied.length > 0) {
+      void notifyGuardiansOfFines(
+        prisma,
+        notify.identity,
+        result.applied.map((a) => ({ studentId: a.studentId, invoiceNo: a.invoiceNo, amount: a.amount })),
+        notify.opts,
+      );
+    }
     return { ...result, runId: run.id };
   } catch (err) {
     // A failed pass is itself an audit event — record it, then rethrow so
@@ -90,7 +103,7 @@ export async function runLateFeeApply(
   }
 }
 
-export function createLateFeeRoutes(prisma: PrismaClient): Router {
+export function createLateFeeRoutes(prisma: PrismaClient, notifyOpts?: import('@school-erp/notify').NotifyOptions): Router {
   const r = Router();
 
   // ── Rules CRUD ──
@@ -184,8 +197,13 @@ export function createLateFeeRoutes(prisma: PrismaClient): Router {
       return;
     }
 
-    // Real apply — audited as a MANUAL run row.
-    const result = await runLateFeeApply(prisma, { id: branchId }, 'MANUAL', userId);
+    // Real apply — audited as a MANUAL run row; acting user becomes the
+    // notification identity (their assertion signs the peer calls).
+    const c = ctx(req);
+    const notify = notifyOpts && c.userId
+      ? { identity: { userId: c.userId, email: c.email, tenantId: c.tenantId, branchId: c.branchId }, opts: notifyOpts }
+      : undefined;
+    const result = await runLateFeeApply(prisma, { id: branchId }, 'MANUAL', userId, notify);
     res.json({ ...result, dryRun });
   };
 
