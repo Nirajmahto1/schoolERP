@@ -88,7 +88,9 @@ class FeeItem {
     return FeeItem(
       id: j['id']?.toString() ?? '',
       invoiceNo: j['invoiceNo']?.toString() ?? '',
-      title: j['title']?.toString() ?? j['description']?.toString() ?? 'Fee',
+      // The wire sends the fee head as `type` (children-summary) — map it
+      // through, or every card degrades to a generic "Fee" title.
+      title: j['title']?.toString() ?? j['type']?.toString() ?? j['description']?.toString() ?? 'Fee',
       amount: num2(j['totalAmount'] ?? j['amount']),
       paid: num2(j['paidAmount'] ?? j['paid']),
       due: num2(j['dueAmount'] ?? j['due'] ?? ((num2(j['totalAmount'] ?? j['amount'])) - num2(j['paidAmount'] ?? j['paid']))),

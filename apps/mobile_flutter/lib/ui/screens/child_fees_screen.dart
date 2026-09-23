@@ -169,32 +169,39 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
                     ]),
                     const SizedBox(height: 4),
                     Text(
-                      '${f.invoiceNo} · paid ${fmt.format(f.paid)} of ${fmt.format(f.amount)}'
-                      '${f.dueDate != null ? ' · due ${DateFormat('d MMM yyyy').format(f.dueDate!)}' : ''}',
+                      'Invoice ${f.invoiceNo} · Total ${fmt.format(f.amount)}'
+                      ' · Paid ${fmt.format(f.paid)}'
+                      '${f.dueDate != null ? ' · Due ${DateFormat('d MMM yyyy').format(f.dueDate!)}' : ''}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 8),
-                    Row(children: [
-                      Expanded(
-                        child: Text(
-                          isDue ? 'Outstanding ${fmt.format(f.due)}' : 'Settled',
-                          style: TextStyle(fontWeight: FontWeight.w700, color: isDue ? Colors.red.shade700 : Colors.green.shade700),
+                    if (isDue) ...[
+                      Text(
+                        'Outstanding ${fmt.format(f.due)}',
+                        style: TextStyle(fontWeight: FontWeight.w700, color: Colors.red.shade700),
+                      ),
+                      const SizedBox(height: 8),
+                      // Full-width Pay — the single clearest affordance on the
+                      // card; nothing competes with it for width.
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _payingId == f.id ? null : () => _pay(f),
+                          icon: _payingId == f.id
+                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.payment_outlined, size: 18),
+                          label: Text('Pay ${fmt.format(f.due)}'),
                         ),
                       ),
-                      if (isDue)
-                        FilledButton(
-                          onPressed: _payingId == f.id ? null : () => _pay(f),
-                          child: _payingId == f.id
-                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                              : Text('Pay ${fmt.format(f.due)}'),
-                        )
-                      else
-                        TextButton.icon(
+                    ] else
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
                           onPressed: () => ReceiptViewerScreen.openForInvoice(context, f.id),
                           icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
-                          label: const Text('Receipt'),
+                          label: const Text('View receipt'),
                         ),
-                    ]),
+                      ),
                   ]),
                 ),
               );

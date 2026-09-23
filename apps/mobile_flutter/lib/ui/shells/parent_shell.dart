@@ -366,35 +366,38 @@ class _FeesTabState extends State<FeesTab> {
                     ]),
                     const SizedBox(height: 4),
                     Text(
-                      '${inv['invoiceNo'] ?? ''} · ${fmt.format(((inv['totalAmount'] ?? 0) as num).toDouble())} total'
-                      '${inv['dueDate'] != null ? ' · due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}',
+                      'Invoice ${inv['invoiceNo'] ?? ''} · Total ${fmt.format(((inv['totalAmount'] ?? 0) as num).toDouble())}'
+                      '${inv['dueDate'] != null ? ' · Due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const SizedBox(height: 8),
-                    Row(children: [
-                      Expanded(
-                        child: Text(
-                          isDue ? 'Outstanding ${fmt.format(outstanding)}' : 'Settled',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: isDue ? Colors.red.shade700 : Colors.green.shade700,
-                          ),
+                    if (isDue) ...[
+                      Text(
+                        'Outstanding ${fmt.format(outstanding)}',
+                        style: TextStyle(fontWeight: FontWeight.w700, color: Colors.red.shade700),
+                      ),
+                      const SizedBox(height: 8),
+                      // Full-width Pay — same affordance as the per-child
+                      // screen; nothing competes with it for width.
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: _payingId == inv['id'].toString() ? null : () => _pay(child, inv),
+                          icon: _payingId == inv['id'].toString()
+                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.payment_outlined, size: 18),
+                          label: Text('Pay ${fmt.format(outstanding)}'),
                         ),
                       ),
-                      if (isDue)
-                        FilledButton(
-                          onPressed: _payingId == inv['id'].toString() ? null : () => _pay(child, inv),
-                          child: _payingId == inv['id'].toString()
-                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                              : Text('Pay ${fmt.format(outstanding)}'),
-                        )
-                      else
-                        TextButton.icon(
+                    ] else
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
                           onPressed: () => ReceiptViewerScreen.openForInvoice(context, inv['id'].toString()),
                           icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
-                          label: const Text('Receipt'),
+                          label: const Text('View receipt'),
                         ),
-                    ]),
+                      ),
                   ]),
                 ),
               );
