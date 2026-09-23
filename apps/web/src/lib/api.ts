@@ -713,6 +713,13 @@ export const feeApi = {
       '/fees/late-fees/runs',
     ),
 
+  /** Undo every fine a run created. Blocked fines come back in `blocked`. */
+  reverseLateFeeRun: (id: string, reason: string) =>
+    apiRequest<{ voided: number; writtenOff: Array<{ invoiceNo: string; amount: number }>; blocked: Array<{ invoiceNo: string; reason: string }> }>(
+      `/fees/late-fees/runs/${id}/reverse`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+
   previewAdvance: (studentId: string, months: number) => {
     const qs = new URLSearchParams({ studentId, months: String(months) });
     return apiRequest<{ studentId: string; months: number; perMonth: number; total: number; generatedMonths: Array<{ periodStart: string; invoiceNo: string; alreadyInvoiced: boolean; amount: number }> }>(

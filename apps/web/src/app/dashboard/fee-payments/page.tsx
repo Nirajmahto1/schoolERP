@@ -44,6 +44,7 @@ export default function FeePaymentsPage() {
   const [lfReport, setLfReport] = useState<Array<{ studentId: string; invoiceNo: string; rule: string; amount: number; daysOverdue: number }> | null>(null);
   const [lfRuns, setLfRuns] = useState<any[]>([]);
   const [openRun, setOpenRun] = useState<string | null>(null);
+  const [reversingId, setReversingId] = useState<string | null>(null);
   const [advStudent, setAdvStudent] = useState<{ id: string; name: string } | null>(null);
   const [advSearch, setAdvSearch] = useState('');
   const [advResults, setAdvResults] = useState<any[]>([]);
@@ -122,6 +123,25 @@ export default function FeePaymentsPage() {
 
   const removeLfRule = async (id: string) => {
     try { await feeApi.deleteLateFeeRule(id); await fetchLfRules(); } catch { /* noop */ }
+  };
+
+  const reverseRun = async (run: any) => {
+    const reason = prompt(
+      `Reverse this ${run.source === 'NIGHTLY' ? 'nightly' : 'manual'} apply?\n\n` +
+      `It fined ${run.appliedCount} invoice(s), total ₹${Number(run.totalAmount).toLocaleString('en-IN')}.\n` +
+      `Unpaid fine invoices are voided; fully-paid ones get a write-off reversal entry.\n\nReason (required, shown in the audit trail):`,
+    );
+    if (!reason?.trim()) return;
+    setReversingId(run.id);
+    try {
+      const res = await feeApi.reverseLateFeeRun(run.id, reason.trim());
+      const parts = [`${res.voided} voided`, ...res.writtenOff.map((w) => `₹${w.amount.toLocaleString('en-IN')} written off (${w.invoiceNo})`), ...res.blocked.map((b) => `BLOCKED ${b.invoiceNo}: ${b.reason}`)];
+      setLfMsg({ ok: res.blocked.length === 0, text: `Reversal done — ${parts.join(' · ')}.` });
+      await fetchLfRules();
+    } catch (err: any) {
+      setLfMsg({ ok: false, text: err?.detail || 'Reversal failed.' });
+    }
+    setReversingId(null);
   };
 
   const runLateFees = async (dryRun: boolean) => {
@@ -534,7 +554,7 @@ export default function FeePaymentsPage() {
                       {lfRuns.length > 0 && (
                         <div className="mt-4">
                           <h3 style={{ fontSize: 15 }}>Apply history</h3>
-                          <div className="table-wrapper mt-2"><table className="table"><thead><tr><th>When</th><th>Source</th><th>Status</th><th>Fined</th><th>Amount</th><th>Took</th><th>By</th></tr></thead><tbody>
+                          <div className="table-wrapper mt-2"><table className="table"><thead><tr><th>When</th><th>Source</th><th>Status</th><th>Fined</th><th>Amount</th><th>Took</th><th>By</th><th></th></tr></thead><tbody>
                             {lfRuns.map((run) => (
                               <Fragment key={run.id}>
                                 <tr
@@ -543,17 +563,29 @@ export default function FeePaymentsPage() {
                                 >
                                   <td className="text-sm">{new Date(run.createdAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
                                   <td><span className={`badge ${run.source === 'NIGHTLY' ? 'badge-secondary' : 'badge-info'}`}>{run.source === 'NIGHTLY' ? '🌙 Nightly' : 'Manual'}</span></td>
-                                  <td><span className={`badge ${run.status === 'SUCCESS' ? 'badge-success' : 'badge-danger'}`}>{run.status}</span></td>
+                                  <td><span className={`badge ${run.status === 'SUCCESS' ? 'badge-success' : run.status === 'REVERSED' ? 'badge-secondary' : 'badge-danger'}`}>{run.status === 'REVERSED' ? 'Reversed' : run.status}</span></td>
                                   <td>{run.appliedCount} fine(s){run.skipped > 0 ? <span className="text-sm" style={{ color: '#6B7280' }}> · {run.scanned} scanned</span> : null}</td>
                                   <td className="font-semibold">₹{Number(run.totalAmount).toLocaleString('en-IN')}</td>
                                   <td className="text-sm" style={{ color: '#6B7280' }}>{run.durationMs != null ? `${(run.durationMs / 1000).toFixed(1)}s` : '—'}</td>
                                   <td className="text-sm" style={{ color: '#6B7280' }}>{run.createdBy ? 'Console user' : 'Scheduler'}</td>
+                                  <td>
+                                    {run.status === 'SUCCESS' && run.appliedCount > 0 && (
+                                      <button
+                                        className="btn btn-sm btn-secondary"
+                                        disabled={reversingId === run.id}
+                                        onClick={(e) => { e.stopPropagation(); reverseRun(run); }}
+                                        title="Undo every fine this run created"
+                                      >
+                                        <span className="icon icon-sm">undo</span>{reversingId === run.id ? 'Reversing…' : 'Reverse'}
+                                      </button>
+                                    )}
+                                  </td>
                                 </tr>
                                 {openRun === run.id && run.status === 'FAILED' && (
-                                  <tr><td colSpan={7} style={{ background: '#FEF2F2', padding: '10px 16px', color: '#B91C1C' }}>{run.errorMessage}</td></tr>
+                                  <tr><td colSpan={8} style={{ background: '#FEF2F2', padding: '10px 16px', color: '#B91C1C' }}>{run.errorMessage}</td></tr>
                                 )}
                                 {openRun === run.id && run.status === 'SUCCESS' && (run.details ?? []).length > 0 && (
-                                  <tr><td colSpan={7} style={{ background: '#F9FAFB', padding: '12px 16px' }}>
+                                  <tr><td colSpan={8} style={{ background: '#F9FAFB', padding: '12px 16px' }}>
                                     {(run.details ?? []).map((a: any, i: number) => (
                                       <div key={i} className="flex items-center gap-3" style={{ padding: '4px 0', borderBottom: '1px solid #E5E7EB' }}>
                                         <span className="font-mono text-sm">{a.invoiceNo}</span>

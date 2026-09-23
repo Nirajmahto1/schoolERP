@@ -374,3 +374,121 @@ export async function collectAdvance(prisma: PrismaClient, input: {
     advanceCredit: 0,
   };
 }
+
+// ── Fine reversal (mistaken applies) ──
+
+export interface ReverseRunResult {
+  voided: number;
+  writtenOff: Array<{ invoiceNo: string; amount: number }>;
+  blocked: Array<{ invoiceNo: string; reason: string }>;
+}
+
+/**
+ * Undo every fine a run created. The run's `details` JSON is the manifest:
+ * each entry names the SOURCE invoice that was fined (the fine itself is a
+ * separate demand invoice whose ledger reference is
+ * LATE:<ruleId>:<sourceInvoiceId>).
+ *
+ * Per fine invoice, three states:
+ *   • nothing paid        → VOID (it never legitimately existed)
+ *   • fully paid          → WRITE_OFF reversal entry (money came in; the
+ *                           ledger must show the correction, never a delete)
+ *   • partially paid      → BLOCKED — needs a manual refund decision first
+ *
+ * Reversal is idempotent: the run row flips to REVERSED, and re-reversing a
+ * REVERSED run is refused at the route layer.
+ */
+export async function reverseLateFeeRun(prisma: PrismaClient, input: {
+  runId: string;
+  branchId: string;
+  reason: string;
+  createdBy?: string | null;
+}): Promise<ReverseRunResult> {
+  const run = await prisma.lateFeeSweepRun.findUnique({ where: { id: input.runId } });
+  if (!run) throw new Error('Run not found.');
+  if (run.branchId !== input.branchId) throw new Error('Run belongs to a different branch.');
+  if (run.status === 'REVERSED') throw new Error('This run has already been reversed.');
+  if (run.status === 'FAILED') throw new Error('A failed run applied no fines — nothing to reverse.');
+  if (!input.reason?.trim()) throw new Error('A reversal reason is required.');
+
+  const details = (run.details as Array<{ studentId: string; invoiceNo: string }> | null) ?? [];
+  if (details.length === 0) {
+    await prisma.lateFeeSweepRun.update({ where: { id: run.id }, data: { status: 'REVERSED' } });
+    return { voided: 0, writtenOff: [], blocked: [] };
+  }
+
+  // Resolve each fine invoice via the idempotent ledger reference:
+  // LATE:<ruleId>:<sourceInvoiceId>. Match every LATE_FEE ledger row whose
+  // reference ends with one of this run's source invoice ids, then the row's
+  // invoiceId IS the fine demand invoice.
+  const sourceIds = details.map((d) => d.invoiceNo);
+  const sourceInvoices = await prisma.invoice.findMany({
+    where: { branchId: input.branchId, invoiceNo: { in: sourceIds } },
+    select: { id: true },
+  });
+  const suffixes = sourceInvoices.map((inv) => `:${inv.id}`);
+  const fineRefs = await prisma.feeLedger.findMany({
+    where: { branchId: input.branchId, type: 'LATE_FEE' },
+    select: { reference: true },
+  });
+  const matchedRefs = fineRefs
+    .map((e) => e.reference)
+    .filter((ref): ref is string => !!ref && suffixes.some((s) => ref.endsWith(s)));
+
+  // Fetch the fine invoices with payment state.
+  const fineLedgerRows = await prisma.feeLedger.findMany({
+    where: { branchId: input.branchId, type: 'LATE_FEE', reference: { in: matchedRefs } },
+    select: { reference: true, invoiceId: true },
+  });
+  const fineInvoiceIds = [...new Set(fineLedgerRows.map((r) => r.invoiceId).filter((v): v is string => !!v))];
+  const fineInvoices = await prisma.invoice.findMany({
+    where: { id: { in: fineInvoiceIds } },
+    select: { id: true, invoiceNo: true, totalAmount: true, paidAmount: true, status: true, academicYearId: true, studentId: true },
+  });
+
+  const result: ReverseRunResult = { voided: 0, writtenOff: [], blocked: [] };
+
+  for (const fine of fineInvoices) {
+    const outstanding = Number(fine.totalAmount) - Number(fine.paidAmount);
+    if (Number(fine.paidAmount) <= 0.005) {
+      // Nothing paid → void. The fine never legitimately existed.
+      await prisma.invoice.update({ where: { id: fine.id }, data: { status: 'VOID' } });
+      // Mark the demand entry as reversed so auditors see why the fine's
+      // invoice is void.
+      await prisma.feeLedger.updateMany({
+        where: { invoiceId: fine.id, type: 'LATE_FEE' },
+        data: { description: `REVERSED (run ${run.id}): ${input.reason}`.slice(0, 500) },
+      });
+      result.voided += 1;
+    } else if (outstanding <= 0.005) {
+      // Fully paid → the money actually moved; a WRITE_OFF entry corrects the
+      // books without rewriting history (2.5.8: reversals, never deletes).
+      await prisma.feeLedger.create({
+        data: {
+          studentId: fine.studentId,
+          branchId: input.branchId,
+          academicYearId: fine.academicYearId,
+          type: 'WRITE_OFF',
+          amount: -Number(fine.paidAmount),
+          invoiceId: fine.id,
+          description: `Late-fee reversal (run ${run.id}): ${input.reason}`.slice(0, 500),
+          reference: run.id,
+          createdBy: input.createdBy ?? null,
+        },
+      });
+      await prisma.invoice.update({ where: { id: fine.id }, data: { status: 'VOID' } });
+      result.writtenOff.push({ invoiceNo: fine.invoiceNo, amount: Number(fine.paidAmount) });
+    } else {
+      // Partially paid — allocation already touched other invoices. A human
+      // must decide (refund the payment or write off the remainder).
+      result.blocked.push({ invoiceNo: fine.invoiceNo, reason: `Partially paid (₹${Number(fine.paidAmount)} of ₹${Number(fine.totalAmount)}) — needs a manual refund or write-off first.` });
+    }
+  }
+
+  await prisma.lateFeeSweepRun.update({
+    where: { id: run.id },
+    data: { status: 'REVERSED' },
+  });
+
+  return result;
+}

@@ -16,7 +16,7 @@
 
 import { Router } from 'express';
 import type { PrismaClient } from '@school-erp/database';
-import { applyLateFees, previewAdvance, collectAdvance } from '@school-erp/domain';
+import { applyLateFees, previewAdvance, collectAdvance, reverseLateFeeRun } from '@school-erp/domain';
 import type { LateFeeRule } from '@prisma/client';
 import { ctx } from '@school-erp/auth';
 
@@ -202,6 +202,27 @@ export function createLateFeeRoutes(prisma: PrismaClient): Router {
       });
       res.json({ data: runs });
     } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+  });
+
+  // Undo every fine a run created (mistaken applies). Blocked fines come
+  // back listed; the run flips to REVERSED and cannot be reversed twice.
+  r.post('/runs/:id/reverse', async (req, res) => {
+    try {
+      const { branchId, roles, userId } = ctx(req);
+      if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+      if (!assertFeeManager(res, roles)) return;
+      const reason = (req.body as { reason?: string } | undefined)?.reason?.trim();
+      if (!reason) {
+        res.status(400).json({ type: 'validation-error', title: 'Invalid Input', status: 400, detail: 'A reversal reason is required.' });
+        return;
+      }
+      const result = await reverseLateFeeRun(prisma, { runId: req.params.id, branchId, reason, createdBy: userId });
+      res.json(result);
+    } catch (e) {
+      const msg = (e as Error).message;
+      const status = /not found|different branch|already been reversed|failed run/i.test(msg) ? 409 : 400;
+      res.status(status).json({ detail: msg });
+    }
   });
 
   r.post('/apply', async (req, res) => {
