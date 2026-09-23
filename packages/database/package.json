@@ -23,7 +23,7 @@
     "prisma": "^5.20.0",
     "rimraf": "^5.0.0",
     "ts-node": "^10.9.0",
-    "typescript": "^5.4.0"
+    "typescript": "^7.0.2"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

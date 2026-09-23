@@ -39,7 +39,7 @@
     "vitest": "^2.1.0",
     "rimraf": "^5.0.0",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.4.0"
+    "typescript": "^7.0.2"
   },
   "main": "./src/app.ts",
   "types": "./src/app.d.ts",
