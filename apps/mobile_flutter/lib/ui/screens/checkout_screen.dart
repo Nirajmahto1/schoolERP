@@ -133,17 +133,25 @@ window.onload = function(){ setTimeout(openCheckout, 300); };
 
   @override
   Widget build(BuildContext context) {
+    // SafeArea keeps the WebView (and Razorpay's own bottom sheet) clear of
+    // the system gesture bar — the checkout sheet was overflowing under it.
+    // resizeToAvoidBottomInset lets the keyboard push the page up instead of
+    // the sheet fighting the nav bar for space.
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(title: const Text('Fee Payment')),
-      body: Stack(children: [
-        WebViewWidget(controller: _controller),
-        if (_verifying)
-          Container(
-            color: Colors.black38,
-            alignment: Alignment.center,
-            child: const Card(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())),
-          ),
-      ]),
+      body: SafeArea(
+        top: false,
+        child: Stack(children: [
+          WebViewWidget(controller: _controller),
+          if (_verifying)
+            Container(
+              color: Colors.black38,
+              alignment: Alignment.center,
+              child: const Card(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())),
+            ),
+        ]),
+      ),
     );
   }
 }

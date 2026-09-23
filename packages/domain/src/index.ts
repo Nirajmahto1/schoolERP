@@ -11,6 +11,7 @@ export * from './fees';
 export * from './gateway-payments';
 export * from './payment-methods';
 export * from './gst';
+export * from './late-fees';
 export * from './pdf';
 export * from './invoice-pdf';
 export * from './attendance';

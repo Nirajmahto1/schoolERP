@@ -688,6 +688,38 @@ export const feeApi = {
     }>(`/fees/settlements?${qs}`);
   },
 
+  // ── Late fees + advance collection (counter features) ──
+  getLateFeeRules: () =>
+    apiRequest<{ data: Array<{ id: string; label: string; minDays: number; maxDays: number | null; amount: string | number; isPercent: boolean; isActive: boolean }> }>(
+      '/fees/late-fees/rules',
+    ),
+
+  createLateFeeRule: (data: { label: string; minDays: number; maxDays?: number | null; amount: number; isPercent?: boolean }) =>
+    apiRequest<any>('/fees/late-fees/rules', { method: 'POST', body: JSON.stringify(data) }),
+
+  deleteLateFeeRule: (id: string) =>
+    apiRequest<{ ok: boolean }>(`/fees/late-fees/rules/${id}`, { method: 'DELETE' }),
+
+  /** dryRun=true returns what WOULD be applied without writing. */
+  applyLateFees: (dryRun: boolean) =>
+    apiRequest<{ applied: Array<{ studentId: string; invoiceNo: string; rule: string; amount: number; daysOverdue: number }>; skipped: number; scanned: number; dryRun: boolean }>(
+      '/fees/late-fees/apply',
+      dryRun ? { method: 'GET' } : { method: 'POST' },
+    ),
+
+  previewAdvance: (studentId: string, months: number) => {
+    const qs = new URLSearchParams({ studentId, months: String(months) });
+    return apiRequest<{ studentId: string; months: number; perMonth: number; total: number; generatedMonths: Array<{ periodStart: string; invoiceNo: string; alreadyInvoiced: boolean; amount: number }> }>(
+      `/fees/advance/preview?${qs}`,
+    );
+  },
+
+  collectAdvance: (data: { studentId: string; months: number; monthKeys?: string[] }) =>
+    apiRequest<{ payment: { id: string; receiptNo: string | null; amount: number; method: string }; generatedInvoices: number; allocations: Array<{ invoiceId: string; amount: number }> }>(
+      '/fees/advance/collect',
+      { method: 'POST', body: JSON.stringify(data) },
+    ),
+
   // ── Receipts (BUILD_PLAN 4.1.4) ──
   /** Latest receipt for an invoice (payments are linked by allocations). */
   getInvoiceReceipt: (invoiceId: string) =>

@@ -1,7 +1,7 @@
 'use client';
 import Topbar from '@/components/Topbar';
 import { useState, useEffect, useCallback, Fragment } from 'react';
-import { feeApi, API_BASE } from '@/lib/api';
+import { feeApi, studentApi, API_BASE } from '@/lib/api';
 import { useLoading } from '@/context/LoadingContext';
 
 function authHeaders(): HeadersInit {
@@ -27,7 +27,7 @@ export default function FeePaymentsPage() {
   const [onlineResult, setOnlineResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
   // ── Razorpay settlements (§4.1.6) ──
-  const [tab, setTab] = useState<'collections' | 'settlements'>('collections');
+  const [tab, setTab] = useState<'collections' | 'settlements' | 'counter'>('collections');
   const [settleFrom, setSettleFrom] = useState(() => { const d = new Date(); d.setDate(1); return d.toISOString().split('T')[0]; });
   const [settleTo, setSettleTo] = useState(() => new Date().toISOString().split('T')[0]);
   const [settleDays, setSettleDays] = useState<any[]>([]);
@@ -35,6 +35,20 @@ export default function FeePaymentsPage() {
   const [settleLoading, setSettleLoading] = useState(false);
   const [settleError, setSettleError] = useState<string | null>(null);
   const [openDay, setOpenDay] = useState<string | null>(null);
+
+  // ── Late fees + advance collection (counter features) ──
+  const [lfRules, setLfRules] = useState<any[]>([]);
+  const [lfForm, setLfForm] = useState({ label: '', minDays: '', maxDays: '', amount: '', isPercent: false });
+  const [lfBusy, setLfBusy] = useState(false);
+  const [lfMsg, setLfMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [lfReport, setLfReport] = useState<Array<{ studentId: string; invoiceNo: string; rule: string; amount: number; daysOverdue: number }> | null>(null);
+  const [advStudent, setAdvStudent] = useState<{ id: string; name: string } | null>(null);
+  const [advSearch, setAdvSearch] = useState('');
+  const [advResults, setAdvResults] = useState<any[]>([]);
+  const [advMonths, setAdvMonths] = useState(3);
+  const [advPreview, setAdvPreview] = useState<any>(null);
+  const [advBusy, setAdvBusy] = useState(false);
+  const [advMsg, setAdvMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const fetchInvoices = useCallback(async () => {
     setLoading(true);
@@ -77,6 +91,84 @@ export default function FeePaymentsPage() {
   }, [settleFrom, settleTo]);
 
   useEffect(() => { fetchInvoices(); fetchPayments(); }, [fetchInvoices, fetchPayments]);
+
+  // Late-fee rules load with the page (cheap; the tab needs them).
+  const fetchLfRules = useCallback(async () => {
+    try { setLfRules((await feeApi.getLateFeeRules()).data ?? []); } catch { /* tab shows the error */ }
+  }, []);
+  useEffect(() => { fetchLfRules(); }, [fetchLfRules]);
+
+  const addLfRule = async () => {
+    setLfBusy(true); setLfMsg(null);
+    try {
+      await feeApi.createLateFeeRule({
+        label: lfForm.label || `Late fee after ${lfForm.minDays} days`,
+        minDays: Number(lfForm.minDays),
+        maxDays: lfForm.maxDays ? Number(lfForm.maxDays) : null,
+        amount: Number(lfForm.amount),
+        isPercent: lfForm.isPercent,
+      });
+      setLfForm({ label: '', minDays: '', maxDays: '', amount: '', isPercent: false });
+      setLfMsg({ ok: true, text: 'Slab added.' });
+      await fetchLfRules();
+    } catch (err: any) {
+      setLfMsg({ ok: false, text: err?.detail || 'Could not add the slab.' });
+    }
+    setLfBusy(false);
+  };
+
+  const removeLfRule = async (id: string) => {
+    try { await feeApi.deleteLateFeeRule(id); await fetchLfRules(); } catch { /* noop */ }
+  };
+
+  const runLateFees = async (dryRun: boolean) => {
+    setLfBusy(true); setLfMsg(null); setLfReport(null);
+    try {
+      const res = await feeApi.applyLateFees(dryRun);
+      setLfReport(res.applied ?? []);
+      setLfMsg({
+        ok: true,
+        text: dryRun
+          ? `Dry run: ${res.applied.length} fine(s) would be applied across ${res.scanned} overdue invoice(s), ${res.skipped} already fined or skipped.`
+          : `Applied ${res.applied.length} late fee(s) across ${res.scanned} overdue invoice(s), ${res.skipped} skipped (already fined or zero balance).`,
+      });
+      if (!dryRun) { await fetchInvoices(); }
+    } catch (err: any) {
+      setLfMsg({ ok: false, text: err?.detail || 'Apply failed.' });
+    }
+    setLfBusy(false);
+  };
+
+  // Advance: type a student name, pick, preview, collect.
+  useEffect(() => {
+    if (!advSearch.trim() || advSearch.trim().length < 2) { setAdvResults([]); return; }
+    const t = setTimeout(async () => {
+      try { setAdvResults((await studentApi.list({ search: advSearch.trim(), limit: 8 })).data ?? []); } catch { setAdvResults([]); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [advSearch]);
+
+  const fetchAdvPreview = async (studentId: string, months: number) => {
+    setAdvBusy(true); setAdvMsg(null);
+    try { setAdvPreview(await feeApi.previewAdvance(studentId, months)); }
+    catch (err: any) { setAdvPreview(null); setAdvMsg({ ok: false, text: err?.detail || 'Preview failed.' }); }
+    setAdvBusy(false);
+  };
+
+  const collectNow = async () => {
+    if (!advStudent || !advPreview?.total) return;
+    if (!confirm(`Collect ₹${advPreview.total.toLocaleString('en-IN')} in CASH for ${advStudent.name} — ${advMonths} month(s) advance? A numbered receipt will be minted.`)) return;
+    setAdvBusy(true); setAdvMsg(null);
+    try {
+      const res = await feeApi.collectAdvance({ studentId: advStudent.id, months: advMonths });
+      setAdvMsg({ ok: true, text: `Collected ₹${res.payment.amount.toLocaleString('en-IN')} — receipt ${res.payment.receiptNo ?? 'pending'} (${res.generatedInvoices} advance invoice(s) generated).` });
+      setAdvPreview(null); setAdvStudent(null); setAdvSearch('');
+      await fetchInvoices(); await fetchPayments();
+    } catch (err: any) {
+      setAdvMsg({ ok: false, text: err?.detail || 'Collection failed.' });
+    }
+    setAdvBusy(false);
+  };
 
   const recordPayment = async (inv: any) => {
     const amount = parseFloat(payForm.amount) || 0;
@@ -257,6 +349,7 @@ export default function FeePaymentsPage() {
               {([
                 ['collections', 'receipt', 'Collections'],
                 ['settlements', 'account_balance', 'Razorpay Settlements'],
+                ['counter', 'payments', 'Late Fees & Advance'],
               ] as const).map(([key, icon, label]) => (
                 <button key={key} className={`btn ${tab === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setTab(key); if (key === 'settlements' && !settleDays.length) fetchSettlements(); }}>
                   <span className="icon icon-sm">{icon}</span>{label}
@@ -384,6 +477,120 @@ export default function FeePaymentsPage() {
                   </tbody></table></div>
                 </div>
               </div>
+            )}
+
+            {tab === 'counter' && (
+              <>
+                <div className="grid grid-2 gap-4">
+                  {/* ── Late-fee slabs ── */}
+                  <div className="card">
+                    <div style={{ padding: '16px 20px 0' }}>
+                      <h3>Late-Fee Slabs</h3>
+                      <p className="text-sm" style={{ color: '#6B7280', marginTop: 4 }}>
+                        Fines by days overdue — e.g. 15–29 days → ₹50, 30+ days → ₹200 or 2%. Applied as proper fee invoices
+                        (LATE_FEE ledger), so receipts, allocation and reports all include them. Re-running never double-fines.
+                      </p>
+                    </div>
+                    <div className="card-body">
+                      <div className="flex gap-3 items-end" style={{ flexWrap: 'wrap' }}>
+                        <div className="input-group" style={{ minWidth: 150 }}><label className="input-label">Label</label><input className="input" placeholder="e.g. 15–29 days" value={lfForm.label} onChange={(e) => setLfForm({ ...lfForm, label: e.target.value })} /></div>
+                        <div className="input-group" style={{ width: 110 }}><label className="input-label">From (days)</label><input className="input" type="number" min="1" value={lfForm.minDays} onChange={(e) => setLfForm({ ...lfForm, minDays: e.target.value })} /></div>
+                        <div className="input-group" style={{ width: 110 }}><label className="input-label">To (blank = ∞)</label><input className="input" type="number" min="1" value={lfForm.maxDays} onChange={(e) => setLfForm({ ...lfForm, maxDays: e.target.value })} /></div>
+                        <div className="input-group" style={{ width: 120 }}><label className="input-label">{lfForm.isPercent ? '% of outstanding' : 'Fine ₹'}</label><input className="input" type="number" min="0" value={lfForm.amount} onChange={(e) => setLfForm({ ...lfForm, amount: e.target.value })} /></div>
+                        <label className="text-sm flex items-center gap-1" style={{ paddingBottom: 8 }}><input type="checkbox" checked={lfForm.isPercent} onChange={(e) => setLfForm({ ...lfForm, isPercent: e.target.checked })} /> percent</label>
+                        <button className="btn btn-primary" disabled={lfBusy || !lfForm.minDays || !lfForm.amount} onClick={addLfRule}><span className="icon icon-sm">add</span>Add slab</button>
+                      </div>
+
+                      <div className="table-wrapper mt-4"><table className="table"><thead><tr><th>Slab</th><th>Days overdue</th><th>Fine</th><th></th></tr></thead><tbody>
+                        {lfRules.map((r) => (
+                          <tr key={r.id}>
+                            <td className="font-semibold">{r.label}</td>
+                            <td>{r.minDays}{r.maxDays != null ? `–${r.maxDays}` : '+'} days</td>
+                            <td>{r.isPercent ? `${Number(r.amount)}% of outstanding` : `₹${Number(r.amount).toLocaleString('en-IN')} flat`}</td>
+                            <td><button className="btn btn-sm btn-secondary" onClick={() => removeLfRule(r.id)}><span className="icon icon-sm">delete</span></button></td>
+                          </tr>
+                        ))}
+                        {lfRules.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 16, color: '#9CA3AF' }}>No slabs yet — add one above (e.g. From 15, To 29, ₹50).</td></tr>}
+                      </tbody></table></div>
+
+                      <div className="flex gap-3 mt-4">
+                        <button className="btn btn-secondary" disabled={lfBusy || lfRules.length === 0} onClick={() => runLateFees(true)}><span className="icon icon-sm">preview</span>Dry run</button>
+                        <button className="btn btn-primary" disabled={lfBusy || lfRules.length === 0} onClick={() => runLateFees(false)}><span className="icon icon-sm">gavel</span>Apply late fees now</button>
+                      </div>
+                      {lfMsg && <div className="mt-3" style={{ padding: 12, borderRadius: 8, background: lfMsg.ok ? '#ECFDF5' : '#FEF2F2', border: `1px solid ${lfMsg.ok ? '#A7F3D0' : '#FECACA'}`, color: lfMsg.ok ? '#065F46' : '#B91C1C' }}>{lfMsg.text}</div>}
+                      {lfReport && lfReport.length > 0 && (
+                        <div className="table-wrapper mt-3"><table className="table"><thead><tr><th>Invoice</th><th>Slab</th><th>Days overdue</th><th>Fine</th></tr></thead><tbody>
+                          {lfReport.map((a, i) => (
+                            <tr key={`${a.invoiceNo}-${i}`}><td className="font-mono text-sm">{a.invoiceNo}</td><td>{a.rule}</td><td>{a.daysOverdue}</td><td className="font-semibold">₹{a.amount.toLocaleString('en-IN')}</td></tr>
+                          ))}
+                        </tbody></table></div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── Advance cash collection ── */}
+                  <div className="card">
+                    <div style={{ padding: '16px 20px 0' }}>
+                      <h3>Advance Collection (Cash)</h3>
+                      <p className="text-sm" style={{ color: '#6B7280', marginTop: 4 }}>
+                        Collect the next 1–12 months of a student&apos;s monthly fees at the counter. Advance months are generated
+                        as real invoices and settled with ONE cash payment + numbered receipt. Cash ≥ ₹2,00,000/day is refused
+                        (Income-tax §269ST).
+                      </p>
+                    </div>
+                    <div className="card-body">
+                      {!advStudent ? (
+                        <>
+                          <div className="input-group"><label className="input-label">Find student</label><input className="input" placeholder="Type a name…" value={advSearch} onChange={(e) => setAdvSearch(e.target.value)} /></div>
+                          {advResults.length > 0 && (
+                            <div className="mt-2" style={{ border: '1px solid #E5E7EB', borderRadius: 8, overflow: 'hidden' }}>
+                              {advResults.map((s) => (
+                                <div key={s.id} className="flex items-center gap-2" style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid #F3F4F6' }} onClick={() => { setAdvStudent({ id: s.id, name: `${s.firstName ?? ''} ${s.lastName ?? ''}`.trim() }); setAdvResults([]); setAdvSearch(`${s.firstName ?? ''} ${s.lastName ?? ''}`.trim()); fetchAdvPreview(s.id, advMonths); }}>
+                                  <span className="icon icon-sm" style={{ color: '#5048E5' }}>person</span>
+                                  <span className="font-semibold">{s.firstName} {s.lastName}</span>
+                                  <span className="text-sm" style={{ color: '#6B7280' }}>{s.admissionNo}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-3 mb-3">
+                            <span className="icon" style={{ color: '#5048E5' }}>person</span>
+                            <strong>{advStudent.name}</strong>
+                            <button className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => { setAdvStudent(null); setAdvPreview(null); setAdvSearch(''); }}>Change</button>
+                          </div>
+                          <div className="flex gap-3 items-end" style={{ flexWrap: 'wrap' }}>
+                            <div className="input-group" style={{ width: 140 }}><label className="input-label">Months in advance</label>
+                              <select className="input" value={advMonths} onChange={(e) => { const m = Number(e.target.value); setAdvMonths(m); fetchAdvPreview(advStudent.id, m); }}>
+                                {[1, 2, 3, 4, 5, 6, 9, 12].map((m) => <option key={m} value={m}>{m} month{m > 1 ? 's' : ''}</option>)}
+                              </select>
+                            </div>
+                            <button className="btn btn-secondary" disabled={advBusy} onClick={() => fetchAdvPreview(advStudent.id, advMonths)}><span className="icon icon-sm">refresh</span>Re-preview</button>
+                          </div>
+                          {advBusy && <p className="mt-3" style={{ color: '#6B7280' }}><span className="icon icon-sm">hourglass_empty</span> Working…</p>}
+                          {advPreview && (
+                            <div className="mt-3">
+                              <div className="stat-card" style={{ borderLeftColor: '#10B981' }}>
+                                <div className="stat-icon" style={{ background: '#10B98115', color: '#10B981' }}><span className="icon">currency_rupee</span></div>
+                                <div><div className="stat-value">₹{Number(advPreview.total).toLocaleString('en-IN')}</div><div className="stat-label">Cash to collect — {advPreview.months} month(s) @ ₹{Number(advPreview.perMonth).toLocaleString('en-IN')}/mo</div></div>
+                              </div>
+                              <div className="table-wrapper mt-3"><table className="table"><thead><tr><th>Month</th><th>Invoice</th><th>Amount</th></tr></thead><tbody>
+                                {advPreview.generatedMonths.map((m: any) => (
+                                  <tr key={m.periodStart}><td className="font-semibold">{m.periodStart}</td><td className="font-mono text-sm">{m.invoiceNo}{m.alreadyInvoiced && <span className="badge badge-secondary" style={{ marginLeft: 6 }}>existing</span>}</td><td>₹{Number(m.amount).toLocaleString('en-IN')}</td></tr>
+                                ))}
+                              </tbody></table></div>
+                              <button className="btn btn-primary mt-3" disabled={advBusy || !advPreview.total} onClick={collectNow}><span className="icon icon-sm">paid</span>Collect ₹{Number(advPreview.total).toLocaleString('en-IN')} in cash</button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {advMsg && <div className="mt-3" style={{ padding: 12, borderRadius: 8, background: advMsg.ok ? '#ECFDF5' : '#FEF2F2', border: `1px solid ${advMsg.ok ? '#A7F3D0' : '#FECACA'}`, color: advMsg.ok ? '#065F46' : '#B91C1C' }}>{advMsg.text}</div>}
+                    </div>
+                  </div>
+                </div>
+              </>
             )}
           </>
         )}

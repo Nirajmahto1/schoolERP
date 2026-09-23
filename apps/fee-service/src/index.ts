@@ -21,6 +21,7 @@ import {
 } from './gateway.routes';
 import { createMethodsRoutes } from './methods.routes';
 import { createHistoryRoute } from './history.routes';
+import { createLateFeeRoutes, createAdvanceRoutes } from './late-fees.routes';
 import { RazorpayClient } from './razorpay';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -618,6 +619,9 @@ r.post('/write-offs', async (req, res) => {
   // Ownership-scoped payment history — the parent/student apps' receipt list.
   mount('/history', createHistoryRoute({ prisma }));
   mount('/settlements', createSettlementsRoute(gatewayOptions));
+  // Counter features: late-fee slabs + advance cash collection (staff-gated).
+  mount('/late-fees', createLateFeeRoutes(prisma));
+  mount('/advance', createAdvanceRoutes(prisma));
   // Payment methods: cheques + deposits + virtual accounts + carry-forward + receipts.
   mount('/', createMethodsRoutes(prisma));
 

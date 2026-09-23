@@ -49,29 +49,29 @@ model School {
 }
 
 model Branch {
-  id        String   @id @default(cuid())
-  schoolId  String
-  name      String
-  code      String
-  address   String
-  phone     String
-  email     String
+  id               String   @id @default(cuid())
+  schoolId         String
+  name             String
+  code             String
+  address          String
+  phone            String
+  email            String
   // Staff self-attendance geofence as a BOUNDING BOX: the ERP form takes two
   // latitudes and two longitudes; a mark is accepted only when the reported
   // position is equal to or between the bounds on both axes. min/max are
   // normalized on write, so the form may enter the corners in any order.
   // When any bound is null the branch has no GPS fence and self-marking is
   // refused with a clear message.
-  minLatitude  Decimal? @db.Decimal(10, 7)
-  maxLatitude  Decimal? @db.Decimal(10, 7)
-  minLongitude Decimal? @db.Decimal(10, 7)
-  maxLongitude Decimal? @db.Decimal(10, 7)
+  minLatitude      Decimal? @db.Decimal(10, 7)
+  maxLatitude      Decimal? @db.Decimal(10, 7)
+  minLongitude     Decimal? @db.Decimal(10, 7)
+  maxLongitude     Decimal? @db.Decimal(10, 7)
   // Late-arrival cutoff: minutes past midnight (branch local time,
   // Asia/Kolkata) after which a self-check-in counts as LATE. Null = off.
   lateAfterMinutes Int?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
@@ -94,6 +94,7 @@ model Branch {
   enrollments            StudentEnrollment[]
   feeHeads               FeeHead[]
   invoices               Invoice[]
+  lateFeeRules           LateFeeRule[]
   ledgerEntries          FeeLedger[]
   sequences              Sequence[]
   academicCalendar       AcademicCalendar[]
@@ -846,13 +847,13 @@ model AttendanceAmendment {
 }
 
 model StaffAttendance {
-  id        String           @id @default(cuid())
-  staffId   String
-  branchId  String
-  date      DateTime         @db.Date
-  status    AttendanceStatus
-  remarks   String?
-  markedBy  String
+  id          String           @id @default(cuid())
+  staffId     String
+  branchId    String
+  date        DateTime         @db.Date
+  status      AttendanceStatus
+  remarks     String?
+  markedBy    String
   // Self-service GPS marking: server clock (never the device's) + where the
   // mark was made from, so an admin can audit any mark back to a place+time.
   // The first self-mark of the day is the arrival (markedAt); a second
@@ -968,6 +969,7 @@ model FeeHead {
   invoiceLines   InvoiceLine[]
   ledgerEntries  FeeLedger[]
   concessions    Concession[]
+  lateFeeRules   LateFeeRule[]
 
   @@unique([branchId, code])
   @@index([branchId, type])
@@ -1137,6 +1139,32 @@ enum FeeLedgerType {
   ADJUSTMENT
   REFUND
   WRITE_OFF
+}
+
+// Late-fee slabs per branch: "15–29 days overdue → ₹50", "30+ → ₹200".
+// Percent rules compute on the invoice outstanding at apply time.
+model LateFeeRule {
+  id        String    @id @default(cuid())
+  branchId  String
+  label     String
+  minDays   Int
+  // null = no upper bound (the "30 and above" slab)
+  maxDays   Int?
+  amount    Decimal   @db.Decimal(12, 2)
+  isPercent Boolean   @default(false)
+  // Defaults to the branch LATE_FEE head when null (auto-created on apply).
+  feeHeadId String?
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  deletedBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  branch  Branch   @relation(fields: [branchId], references: [id])
+  feeHead FeeHead? @relation(fields: [feeHeadId], references: [id], onDelete: SetNull)
+
+  @@index([branchId, isActive])
+  @@map("late_fee_rules")
 }
 
 model Invoice {
@@ -1898,7 +1926,7 @@ enum ConsentStatus {
 }
 
 model ConsentRecord {
-  id          String         @id @default(cuid())
+  id          String        @id @default(cuid())
   branchId    String
   studentId   String
   guardianId  String?
@@ -1915,8 +1943,8 @@ model ConsentRecord {
   method      String
   evidence    String?
   metadata    Json?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   branch  Branch  @relation("ConsentRecordBranch", fields: [branchId], references: [id])
   student Student @relation("ConsentRecordStudent", fields: [studentId], references: [id])
