@@ -42,9 +42,14 @@ function childrenInclude() {
           where: { status: { in: VISIBLE_INVOICE_STATUSES }, deletedAt: null },
           take: 12,
           orderBy: { dueDate: 'desc' as const },
-          // Successful payments ride along so the app can offer the numbered
-          // receipt per invoice (the receipt PDF route keys off payment id).
-          include: { payments: { where: { status: 'SUCCESS' as const }, select: { id: true, receiptNo: true, method: true, createdAt: true }, orderBy: { createdAt: 'desc' as const } } },
+          // Fee-head lines ride along so the app can label each invoice by
+          // what it actually is ("Late Fee" vs "Tuition") — without this,
+          // every invoice degraded to the 'School Fee' fallback in the UI,
+          // and fines were indistinguishable from regular dues.
+          include: {
+            lines: { include: { feeHead: { select: { name: true, type: true } } } },
+            payments: { where: { status: 'SUCCESS' as const }, select: { id: true, receiptNo: true, method: true, createdAt: true }, orderBy: { createdAt: 'desc' as const } },
+          },
         },
         bookIssues: { where: { status: 'ISSUED' }, include: { book: { select: { title: true } } } },
       },
@@ -68,7 +73,7 @@ type StudentGuardianWithStudent = {
       dueDate: Date;
       totalAmount: unknown;
       paidAmount: unknown;
-      lines?: Array<{ feeHead?: { name: string } | null }> | unknown[];
+      lines?: Array<{ feeHead?: { name: string; type?: string | null } | null }> | unknown[];
       payments?: Array<{ id: string; receiptNo: string | null; method: string; createdAt: Date }>;
     }>;
     bookIssues: unknown[];
@@ -177,6 +182,9 @@ router.get('/me/children-summary', async (req: Request, res: Response) => {
           id: inv.id,
           invoiceNo: inv.invoiceNo,
           type: (inv.lines as Array<{ feeHead?: { name: string } | null }> | undefined)?.[0]?.feeHead?.name ?? 'School Fee',
+          // FINE FLAG: lets the app style late-fee rows distinctly (orange,
+          // explanation line) instead of burying them among regular dues.
+          isFine: (inv.lines as Array<{ feeHead?: { type?: string | null } | null }> | undefined)?.[0]?.feeHead?.type === 'LATE_FEE',
           status: inv.status,
           dueDate: inv.dueDate,
           totalAmount: Number(inv.totalAmount),

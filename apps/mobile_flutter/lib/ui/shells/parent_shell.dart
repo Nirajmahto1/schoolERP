@@ -337,18 +337,30 @@ class _FeesTabState extends State<FeesTab> {
               final isDue = outstanding > 0.5;
               final status = inv['status']?.toString() ?? '';
               final isPaid = status == 'PAID' || (!isDue && status != 'DRAFT');
+              // Late-fee rows get an orange accent + explanation so parents
+              // understand WHY the amount exists — a fine buried among
+              // regular dues reads as a billing error and generates calls.
+              final isFine = inv['isFine'] == true ||
+                  (inv['type'] ?? '').toString().toLowerCase().contains('late');
+              final accent = isFine ? Colors.deepOrange : null;
               // Column layout on purpose: ListTile+trailing-button
               // compositions squeezed the title to one character per line on
               // narrow phones (screenshot bug). Nothing here can steal width
               // from the text.
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                clipBehavior: Clip.antiAlias,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: isFine ? BorderSide(color: accent!.withValues(alpha: 0.4)) : BorderSide.none),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
+                      if (isFine) ...[
+                        Icon(Icons.gavel_outlined, size: 18, color: accent),
+                        const SizedBox(width: 6),
+                      ],
                       Expanded(
-                        child: Text(inv['type']?.toString() ?? 'School Fee',
+                        child: Text(isFine ? 'Late Fee' : (inv['type']?.toString() ?? 'School Fee'),
                             style: const TextStyle(fontWeight: FontWeight.w700),
                             overflow: TextOverflow.ellipsis),
                       ),
@@ -370,6 +382,13 @@ class _FeesTabState extends State<FeesTab> {
                       '${inv['dueDate'] != null ? ' · Due ${DateFormat('d MMM yyyy').format(DateTime.parse(inv['dueDate'].toString()))}' : ''}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    if (isFine) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Added automatically because a fee invoice stayed unpaid past its due date (school late-fee policy).',
+                        style: TextStyle(fontSize: 12, color: accent, fontStyle: FontStyle.italic),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     if (isDue) ...[
                       Text(

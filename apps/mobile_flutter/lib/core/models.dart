@@ -71,6 +71,9 @@ class FeeItem {
   final double due;
   final DateTime? dueDate;
   final String status;
+  /// True when this invoice IS a late fee (fee head type LATE_FEE) — the UI
+  /// styles it distinctly so parents understand why the amount exists.
+  final bool isFine;
 
   FeeItem({
     required this.id,
@@ -81,6 +84,7 @@ class FeeItem {
     required this.due,
     this.dueDate,
     required this.status,
+    this.isFine = false,
   });
 
   factory FeeItem.fromJson(Map<String, dynamic> j) {
@@ -96,6 +100,7 @@ class FeeItem {
       due: num2(j['dueAmount'] ?? j['due'] ?? ((num2(j['totalAmount'] ?? j['amount'])) - num2(j['paidAmount'] ?? j['paid']))),
       dueDate: j['dueDate'] == null ? null : DateTime.tryParse(j['dueDate'].toString()),
       status: j['status']?.toString() ?? 'UNKNOWN',
+      isFine: j['isFine'] == true || (j['type'] ?? j['title'] ?? '').toString().toLowerCase().contains('late'),
     );
   }
 }

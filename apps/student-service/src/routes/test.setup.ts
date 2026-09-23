@@ -40,6 +40,12 @@ export function makeIdentityTestEnv(
     NOTIFICATION_ENGINE_URL: 'http://localhost:6001',
     // Chat hub listen port (Phase 9); never exercised here.
     CHAT_HUB_PORT: 6005,
+    // Nightly late-fee sweep knobs (fee-service schema defaults); the
+    // student-service suites never run the sweep, but this object is typed
+    // as the parsed OUTPUT env, so the fields must be explicit.
+    LATE_FEE_SWEEP_ENABLED: false,
+    LATE_FEE_SWEEP_HOUR: 1,
+    LATE_FEE_SWEEP_WINDOW_HOURS: 2,
   };
 }
 

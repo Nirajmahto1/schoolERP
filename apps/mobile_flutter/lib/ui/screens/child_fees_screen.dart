@@ -144,16 +144,26 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
               ),
             ...(_items ?? []).map((f) {
               final isDue = f.due > 0.5;
+              // Late-fee rows get an orange accent + explanation so parents
+              // understand WHY the amount exists — a fine buried among
+              // regular dues reads as a billing error and generates calls.
+              final accent = f.isFine ? Colors.deepOrange : null;
               // Column layout — ListTile+trailing squeezed titles to one
               // character per line on narrow phones.
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                clipBehavior: Clip.antiAlias,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: f.isFine ? BorderSide(color: accent!.withValues(alpha: 0.4)) : BorderSide.none),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
+                      if (f.isFine) ...[
+                        Icon(Icons.gavel_outlined, size: 18, color: accent),
+                        const SizedBox(width: 6),
+                      ],
                       Expanded(
-                        child: Text(f.title, style: const TextStyle(fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
+                        child: Text(f.isFine ? 'Late Fee' : f.title, style: const TextStyle(fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
                       ),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -170,10 +180,17 @@ class _ChildFeesScreenState extends State<ChildFeesScreen> {
                     const SizedBox(height: 4),
                     Text(
                       'Invoice ${f.invoiceNo} · Total ${fmt.format(f.amount)}'
-                      ' · Paid ${fmt.format(f.paid)}'
+                      '${f.paid > 0.005 ? ' · Paid ${fmt.format(f.paid)}' : ''}'
                       '${f.dueDate != null ? ' · Due ${DateFormat('d MMM yyyy').format(f.dueDate!)}' : ''}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    if (f.isFine) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Added automatically because a fee invoice stayed unpaid past its due date (school late-fee policy).',
+                        style: TextStyle(fontSize: 12, color: accent, fontStyle: FontStyle.italic),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     if (isDue) ...[
                       Text(
