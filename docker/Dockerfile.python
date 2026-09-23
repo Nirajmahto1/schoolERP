@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────
+# Python service image — analytics-service & ai-service (FastAPI/uvicorn).
+#
+# Build context = the SERVICE'S OWN DIRECTORY (compose does exactly this):
+#   docker build -f docker/Dockerfile.python \
+#     --build-arg SERVICE=analytics-service -t educore/analytics-service \
+#     apps/analytics-service
+#
+# Slim bookworm + pinned requirements; runs as non-root; uvicorn binds the
+# port from PORT_<SERVICE> (analytics: 5001). Config is env-only:
+# DATABASE_URL, INTERNAL_ASSERTION_PUBLIC_KEY.
+# ──────────────────────────────────────────────
+
+FROM python:3.12-slim-bookworm AS runtime
+ARG SERVICE
+WORKDIR /app
+
+# Deps first for layer caching.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Non-root. No writable paths needed — PDFs stream, nothing is cached to disk.
+RUN useradd --system --uid 10002 educore
+USER educore
+
+# ai-service serves its health route on the same port it binds (5002 via
+# PORT_AI_SERVICE); analytics uses PORT_ANALYTICS_SERVICE. The compose file
+# passes the exact var, and both apps default sanely if it is unset.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT_ANALYTICS_SERVICE', os.getenv('PORT_AI_SERVICE', '5001'))+'/health')" || exit 1
+
+CMD ["sh", "-c", "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT_ANALYTICS_SERVICE:-${PORT_AI_SERVICE:-5001}}"]

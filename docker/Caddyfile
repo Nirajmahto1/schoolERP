@@ -1,0 +1,38 @@
+# ──────────────────────────────────────────────
+# Caddy edge — TLS + routing (docker-compose.app.yml)
+#
+#   • $DOMAIN set    → automatic HTTPS (Let's Encrypt) for that host
+#   • $DOMAIN unset  → plain HTTP on :80 (local trial / behind a cloud LB
+#                      that already terminates TLS)
+#
+# Routes:
+#   /api/*  → api-gateway:4000   (WebSocket upgrades included — Caddy
+#                                 proxies them natively, no extra config)
+#   /*      → web:3000           (the parent/staff console)
+#
+# admin-console is NOT exposed here: it is the platform operator's tool and
+# should stay on an internal network or behind its own auth proxy. Port 3100
+# is published only if ADMIN_CONSOLE_PORT is set in .env.
+# ──────────────────────────────────────────────
+
+{$DOMAIN::80} {
+	# Gzip/zstd for the big things: Next.js chunks, PDFs already compressed.
+	encode zstd gzip
+
+	# API + WebSocket fan-out to the gateway.
+	handle /api/* {
+		reverse_proxy api-gateway:4000
+	}
+
+	# Everything else is the web console.
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

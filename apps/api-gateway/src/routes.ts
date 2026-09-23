@@ -10,7 +10,10 @@ import type { GatewayEnv } from '@school-erp/config';
 import type { UpstreamRoute } from './proxy';
 
 export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
-  const host = env.UPSTREAM_HOST;
+  const serviceHost = (name: string): string =>
+    env.UPSTREAM_HOST_STYLE === 'compose'
+      ? name
+      : env.UPSTREAM_HOST;
 
   return [
     // ── Public: login / refresh / logout / MFA verify / password reset only ──
@@ -20,7 +23,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/auth',
       service: 'identity-service',
-      host,
+      host: serviceHost('identity-service'),
       port: env.PORT_IDENTITY_SERVICE,
       rewriteTo: '/auth',
       public: true,
@@ -33,7 +36,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/setup',
       service: 'provision-service',
-      host,
+      host: serviceHost('provision-service'),
       port: env.PORT_PROVISION_SERVICE,
       rewriteTo: '/setup',
       public: true,
@@ -43,42 +46,42 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/branches',
       service: 'provision-service',
-      host,
+      host: serviceHost('provision-service'),
       port: env.PORT_PROVISION_SERVICE,
       rewriteTo: '/branches',
     },
     {
       path: '/api/v1/dpdp',
       service: 'student-service',
-      host,
+      host: serviceHost('student-service'),
       port: env.PORT_STUDENT_SERVICE,
       rewriteTo: '/dpdp',
     },
     {
       path: '/api/v1/students',
       service: 'student-service',
-      host,
+      host: serviceHost('student-service'),
       port: env.PORT_STUDENT_SERVICE,
       rewriteTo: '/students',
     },
     {
       path: '/api/v1/parents',
       service: 'student-service',
-      host,
+      host: serviceHost('student-service'),
       port: env.PORT_STUDENT_SERVICE,
       rewriteTo: '/parents',
     },
     {
       path: '/api/v1/users',
       service: 'identity-service',
-      host,
+      host: serviceHost('identity-service'),
       port: env.PORT_IDENTITY_SERVICE,
       rewriteTo: '/auth',
     },
     {
       path: '/api/v1/teacher',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/teacher',
     },
@@ -87,56 +90,56 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       // the relative /photos/file/... URL the apps resolve through here).
       path: '/api/v1/photos',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/photos',
     },
     {
       path: '/api/v1/staff',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/staff',
     },
     {
       path: '/api/v1/admin',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/admin',
     },
     {
       path: '/api/v1/payroll',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/payroll',
     },
     {
       path: '/api/v1/leave-requests',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/leave-requests',
     },
     {
       path: '/api/v1/transport',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/transport',
     },
     {
       path: '/api/v1/academics',
       service: 'academic-service',
-      host,
+      host: serviceHost('academic-service'),
       port: env.PORT_ACADEMIC_SERVICE,
       rewriteTo: '',
     },
     {
       path: '/api/v1/library',
       service: 'academic-service',
-      host,
+      host: serviceHost('academic-service'),
       port: env.PORT_ACADEMIC_SERVICE,
       rewriteTo: '/library',
     },
@@ -147,7 +150,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/fees/webhooks',
       service: 'fee-service',
-      host,
+      host: serviceHost('fee-service'),
       port: env.PORT_FEE_SERVICE,
       rewriteTo: '/webhooks',
       public: true,
@@ -155,7 +158,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/fees',
       service: 'fee-service',
-      host,
+      host: serviceHost('fee-service'),
       port: env.PORT_FEE_SERVICE,
       rewriteTo: '',
     },
@@ -166,7 +169,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/communication/webhooks',
       service: 'communication-service',
-      host,
+      host: serviceHost('communication-service'),
       port: env.PORT_COMMUNICATION_SERVICE,
       rewriteTo: '/webhooks',
       public: true,
@@ -174,7 +177,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/communication',
       service: 'communication-service',
-      host,
+      host: serviceHost('communication-service'),
       port: env.PORT_COMMUNICATION_SERVICE,
       rewriteTo: '',
       // Class-room chat live delivery (Phase 9): WebSocket upgrades for
@@ -185,28 +188,28 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/attendance',
       service: 'attendance-service',
-      host,
+      host: serviceHost('attendance-service'),
       port: env.PORT_ATTENDANCE_SERVICE,
       rewriteTo: '/attendance',
     },
     {
       path: '/api/v1/admissions',
       service: 'student-service',
-      host,
+      host: serviceHost('student-service'),
       port: env.PORT_STUDENT_SERVICE,
       rewriteTo: '/admissions',
     },
     {
       path: '/api/v1/exams',
       service: 'exam-service',
-      host,
+      host: serviceHost('exam-service'),
       port: env.PORT_EXAM_SERVICE,
       rewriteTo: '',
     },
     {
       path: '/api/v1/hr',
       service: 'staff-service',
-      host,
+      host: serviceHost('staff-service'),
       port: env.PORT_STAFF_SERVICE,
       rewriteTo: '/hr',
     },
@@ -220,7 +223,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/analytics/reports/download',
       service: 'analytics-service',
-      host,
+      host: serviceHost('analytics-service'),
       port: env.PORT_ANALYTICS_SERVICE,
       rewriteTo: '/analytics/reports/download',
       public: true,
@@ -228,14 +231,14 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/analytics',
       service: 'analytics-service',
-      host,
+      host: serviceHost('analytics-service'),
       port: env.PORT_ANALYTICS_SERVICE,
       rewriteTo: '/analytics',
     },
     {
       path: '/api/v1/ai',
       service: 'ai-service',
-      host,
+      host: serviceHost('ai-service'),
       port: env.PORT_AI_SERVICE,
       rewriteTo: '/api/v1/ai',
     },
@@ -244,7 +247,7 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/notifications',
       service: 'notification-engine',
-      host,
+      host: serviceHost('notification-engine'),
       port: env.PORT_NOTIFICATION_ENGINE,
       rewriteTo: '/notifications',
       ws: true,
@@ -252,21 +255,21 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
     {
       path: '/api/v1/bulk',
       service: 'bulk-processor',
-      host,
+      host: serviceHost('bulk-processor'),
       port: env.PORT_BULK_PROCESSOR,
       rewriteTo: '/bulk',
     },
     {
       path: '/api/v1/timetable',
       service: 'timetable-engine',
-      host,
+      host: serviceHost('timetable-engine'),
       port: env.PORT_TIMETABLE_ENGINE,
       rewriteTo: '/timetable',
     },
     {
       path: '/api/v1/files',
       service: 'file-service',
-      host,
+      host: serviceHost('file-service'),
       port: env.PORT_FILE_SERVICE,
       rewriteTo: '/files',
     },

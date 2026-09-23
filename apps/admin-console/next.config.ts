@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
     "prisma",
     "@prisma/client",
   ],
+
+  // Docker builds set NEXT_OUTPUT=standalone (docker/Dockerfile.nextjs);
+  // `next dev` and local `next start` are unaffected.
+  ...(process.env.NEXT_OUTPUT === "standalone" ? { output: "standalone" as const } : {}),
 };
 
 export default nextConfig;

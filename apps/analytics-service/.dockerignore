@@ -1,0 +1,9 @@
+*.exe
+__pycache__
+*.pyc
+*.log
+.env
+.env.*
+!.env.example
+Dockerfile*
+.dockerignore

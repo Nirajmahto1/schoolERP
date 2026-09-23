@@ -1,0 +1,33 @@
+# ──────────────────────────────────────────────
+# One-shot migration image (docker-compose.app.yml `migrate` service).
+#
+# Runs BOTH migration sets in order and exits 0 — the app services gate on
+#   migrate: condition: service_completed_successfully
+# so no service ever boots against an un-migrated database.
+#
+#   • tenant DB   — packages/database/prisma      (DATABASE_URL)
+#   • control DB  — packages/control-plane/prisma (CONTROL_PLANE_DATABASE_URL)
+#
+# prisma migrate deploy only applies pending migrations (never resets), so
+# re-running on every deploy is the correct, safe rollout order.
+# ──────────────────────────────────────────────
+
+FROM node:22-bookworm-slim
+WORKDIR /repo
+ENV NODE_ENV=production PRISMA_HIDE_UPDATE_MESSAGE=1
+
+COPY package.json package-lock.json turbo.json ./
+COPY packages/database/package.json packages/database/
+COPY packages/control-plane/package.json packages/control-plane/
+
+RUN npm ci --workspace @school-erp/database --workspace @school-erp/control-plane
+# (no --ignore-scripts: prisma's postinstall downloads the engine binaries
+# now, at image-build time — migrate deploy must not need the network later)
+
+COPY packages/database/prisma packages/database/prisma
+COPY packages/control-plane/prisma packages/control-plane/prisma
+
+CMD ["sh", "-c", "\
+  npx prisma migrate deploy --schema packages/control-plane/prisma/schema.prisma && \
+  npx prisma migrate deploy --schema packages/database/prisma/schema.prisma && \
+  echo '[migrate] both databases up to date'"]

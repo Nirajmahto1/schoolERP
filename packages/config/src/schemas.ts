@@ -161,6 +161,15 @@ export const gatewayEnvSchema = baseSchema.merge(jwtSchema)
     UPSTREAM_HOST: z.string().default('localhost'),
 
     /**
+     * Docker deployment (docker/docker-compose.app.yml): every upstream is
+     * its own container on one compose network, where DNS is the service
+     * name. Set UPSTREAM_HOST_STYLE=compose and the route table resolves
+     * each service to its container name; UNSET (default) = classic
+     * single-host: everything on UPSTREAM_HOST.
+     */
+    UPSTREAM_HOST_STYLE: z.enum(['single-host', 'compose']).default('single-host'),
+
+    /**
      * Apex domain tenants get subdomains of (`dps-noida.yourapp.in` → slug
      * `dps-noida`, BUILD_PLAN 1.3.1). Optional: when unset the gateway only
      * forwards the mobile app's explicit `X-Tenant-Slug` hint.

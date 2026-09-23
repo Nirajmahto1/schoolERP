@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────
+# Next.js image — apps/web & apps/admin-console.
+#
+# Build from the REPO ROOT:
+#   docker build -f docker/Dockerfile.nextjs \
+#     --build-arg APP=web --build-arg NEXT_PUBLIC_API_URL=https://api.example.com \
+#     --build-arg NEXT_PUBLIC_RAZORPAY_KEY_ID=rzp_live_xxx -t educore/web .
+#
+# NEXT_PUBLIC_* vars are inlined by the Next.js compiler at BUILD time, so
+# they are build args here — changing them means rebuilding the image (same
+# constraint as any Next deployment). Runtime config is not needed: the
+# frontends talk to the gateway through the browser, not to other services.
+#
+# `output: "standalone"` is enabled via an env-guard in apps/*/next.config.ts
+# so dev (`next dev`) behavior is unchanged; the Docker build sets
+# NEXT_OUTPUT=standalone. The runtime stage copies only the standalone
+# bundle — no node_modules, no source.
+# ──────────────────────────────────────────────
+
+# ---------- builder ----------
+FROM node:22-bookworm-slim AS builder
+ARG APP
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_RAZORPAY_KEY_ID
+ENV NEXT_TELEMETRY_DISABLED=1 NEXT_OUTPUT=standalone
+WORKDIR /repo
+
+# Manifests first: the dependency layer re-runs only when a package.json
+# changes. npm ci resolves the full workspace (apps/* packages/* globs), so
+# every workspace's manifest must exist before install.
+COPY package.json package-lock.json turbo.json ./
+COPY apps/*/package.json apps/
+COPY packages/*/package.json packages/
+RUN npm ci --ignore-scripts
+
+# Source last — it changes on every commit and only invalidates the build.
+COPY packages ./packages
+COPY apps/${APP} ./apps/${APP}
+
+# Turbo builds the app and its whole workspace-dependency graph (http,
+# config, shared-types, domain, … emit dist/ that the app imports).
+RUN npx turbo run build --filter=@school-erp/${APP} --output-logs=errors-only
+
+# ---------- runtime ----------
+FROM node:22-bookworm-slim AS runtime
+ARG APP
+# ARGs don't survive into shell-form CMD — re-export as runtime env so the
+# CMD below can find the standalone server under the right app dir.
+ENV APP=${APP} NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
+WORKDIR /app
+
+# Standalone output: server.js + the pruned node_modules. The bundle is
+# emitted at apps/${APP}/.next/standalone with a nested path by app name.
+COPY --from=builder /repo/apps/${APP}/.next/standalone ./
+COPY --from=builder /repo/apps/${APP}/.next/static ./apps/${APP}/.next/static
+# public/ is not traced by the standalone output — copy it explicitly.
+COPY --from=builder /repo/apps/${APP}/public ./apps/${APP}/public
+
+RUN useradd --system --uid 10004 educore
+USER educore
+EXPOSE 3000
+
+# `node server.js` serves on $PORT (compose maps 3000 for web, 3100 for admin).
+CMD ["sh", "-c", "exec node apps/${APP}/server.js"]

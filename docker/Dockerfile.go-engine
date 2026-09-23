@@ -1,0 +1,39 @@
+# ──────────────────────────────────────────────
+# Go engine image — one Dockerfile, every Go engine (Phase 11.4 completion).
+#
+# Build context = the ENGINE'S OWN DIRECTORY (compose does exactly this):
+#   docker build -f docker/Dockerfile.go-engine \
+#     --build-arg ENGINE=notification-engine -t educore/notification-engine \
+#     apps/notification-engine
+#
+# Multi-stage: the builder compiles a static binary (CGO off) so the runtime
+# stage is gcr.io/distroless/static — no shell, no package manager, nothing
+# to CVE-scan beyond the binary itself. Each engine has its own go.mod (no
+# shared Go workspace), so the small per-engine context is also the fastest.
+#
+# Config is env-only: PORT_<ENGINE>, INTERNAL_ASSERTION_PUBLIC_KEY,
+# DATABASE_URL. Health/metrics are served by the engines themselves.
+# ──────────────────────────────────────────────
+
+# ---------- builder ----------
+FROM golang:1.26-bookworm AS builder
+ARG ENGINE
+WORKDIR /src
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/engine .
+
+# ---------- runtime ----------
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG ENGINE
+WORKDIR /app
+COPY --from=builder /out/engine /app/engine
+
+# Engines read PORT_<ENGINE> (e.g. PORT_NOTIFICATION_ENGINE=6001); docker
+# compose sets the exact var, so no default PORT mapping is assumed here.
+EXPOSE 6001
+USER nonroot:nonroot
+ENTRYPOINT ["/app/engine"]

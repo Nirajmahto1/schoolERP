@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────
+# Repo-root build context (Dockerfile.service, Dockerfile.nextjs,
+# Dockerfile.db-migrate). Keeps secrets, local artifacts and the dependency
+# tree out of images and build cache.
+#
+# CRITICAL: `.env` is secrets — never bake it. `node_modules` would overwrite
+# the fresh `npm ci` install inside the builder with this machine's binaries.
+# ──────────────────────────────────────────────
+
+.env
+.env.*
+!.env.example
+
+node_modules
+**/node_modules
+.next
+**/.next
+**/dist
+**/build
+
+.git
+.github
+.vscode
+.idea
+
+# Local run artifacts (boot logs, PIDs, probes, APKs)
+.setuprun
+*.log
+*.apk
+
+# Per-engine stray binaries (bulk-processor.exe etc.)
+**/*.exe
+**/__pycache__
+
+# Docs and CI don't belong in images
+docs
+*.md
+!turbo.json
+
+# Mobile apps build outside Docker — but their package.json must stay in the
+# context (they are npm workspaces; npm ci resolves the full lockfile).
+apps/mobile_flutter/android
+apps/mobile_flutter/ios
+apps/mobile_flutter/.expo
+apps/mobile_flutter/.dart_tool
+apps/mobile/android
+apps/mobile/ios
+
+# Docker files themselves aren't needed inside images
+docker

@@ -1,0 +1,381 @@
+# ──────────────────────────────────────────────
+# EduCore — full application stack (Phase 11.4 completion)
+#
+#   cp .env.example .env     # fill secrets (JWT_SECRET, assertion keys, DB password)
+#   docker compose -f docker/docker-compose.app.yml up -d --build
+#
+# That is the whole deployment:
+#   • postgres + redis        state (self-contained; no external infra compose needed)
+#   • migrate (one-shot)      applies control-plane + tenant migrations, then exits
+#   • api-gateway             the public edge (:4000)
+#   • 9 Node services         student, staff, academic, fee, communication,
+#                             attendance, exam, identity, provision
+#   • 3 Go engines            notification-engine, timetable-engine, bulk-processor
+#   • 2 Python services       analytics-service, ai-service
+#   • web + admin-console     Next.js frontends
+#   • caddy                   TLS-terminating reverse proxy (:80/:443 → web + gateway)
+#
+# Networking: one compose network; DNS = service name. The gateway runs with
+# UPSTREAM_HOST_STYLE=compose so its route table resolves each upstream by
+# container name (apps/api-gateway/src/routes.ts serviceHost()).
+#
+# Peer URLs (COMMUNICATION_SERVICE_URL etc.) default to localhost in config —
+# every service that calls a peer gets the container URL explicitly below.
+#
+# Data safety: tenant data lives in the postgres volume; photos and documents
+# live in named volumes mounted at each service's data/ dir. Nothing of value
+# is stored in containers themselves — `docker compose down` keeps it all,
+# only `down -v` deletes it (see docs/ops/DEPLOY.md).
+# ──────────────────────────────────────────────
+
+name: educore
+
+x-common-env: &common-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+  CONTROL_PLANE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/school_erp_control?schema=public
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+  INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+  INTERNAL_ASSERTION_PRIVATE_KEY: ${INTERNAL_ASSERTION_PRIVATE_KEY:-}
+  INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+  # Optional processors — absent keys degrade gracefully (503s, log-only FCM).
+  RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+  RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+  RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+  WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+  WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+  SMS_API_KEY: ${SMS_API_KEY:-}
+  SMS_SENDER_ID: ${SMS_SENDER_ID:-}
+  SMTP_URL: ${SMTP_URL:-}
+  FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+  FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
+  FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
+
+x-node-service: &node-service
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.service
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+
+services:
+  # ── State ──────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-school_erp}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  # ── One-shot migrations (tenant + control plane) ──
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.db-migrate
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      CONTROL_PLANE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/school_erp_control?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Public edge ────────────────────────────
+  api-gateway:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: api-gateway
+    environment:
+      <<: *common-env
+      PORT_GATEWAY: "4000"
+      UPSTREAM_HOST_STYLE: compose
+    ports:
+      - "${GATEWAY_PORT:-4000}:4000"
+
+  # ── Node services ──────────────────────────
+  identity-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: identity-service
+    environment:
+      <<: *common-env
+      PORT_IDENTITY_SERVICE: "4010"
+
+  provision-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: provision-service
+    environment:
+      <<: *common-env
+      PORT_PROVISION_SERVICE: "4009"
+    volumes:
+      - provision_data:/repo/apps/provision-service/data
+
+  student-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: student-service
+    environment:
+      <<: *common-env
+      PORT_STUDENT_SERVICE: "4001"
+      TIMETABLE_ENGINE_URL: http://timetable-engine:6003
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  staff-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: staff-service
+    environment:
+      <<: *common-env
+      PORT_STAFF_SERVICE: "4002"
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+    volumes:
+      - staff_data:/repo/apps/staff-service/data
+
+  academic-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: academic-service
+    environment:
+      <<: *common-env
+      PORT_ACADEMIC_SERVICE: "4003"
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  fee-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: fee-service
+    environment:
+      <<: *common-env
+      PORT_FEE_SERVICE: "4004"
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  communication-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: communication-service
+    environment:
+      <<: *common-env
+      PORT_COMMUNICATION_SERVICE: "4005"
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  attendance-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: attendance-service
+    environment:
+      <<: *common-env
+      PORT_ATTENDANCE_SERVICE: "4006"
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  exam-service:
+    <<: *node-service
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      args:
+        SERVICE: exam-service
+    environment:
+      <<: *common-env
+      PORT_EXAM_SERVICE: "4007"
+      COMMUNICATION_SERVICE_URL: http://communication-service:4005
+      NOTIFICATION_ENGINE_URL: http://notification-engine:6001
+
+  # ── Go engines ─────────────────────────────
+  notification-engine:
+    build:
+      context: ../apps/notification-engine
+      dockerfile: ../../docker/Dockerfile.go-engine
+      args:
+        ENGINE: notification-engine
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    environment:
+      PORT_NOTIFICATION_ENGINE: "6001"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      REDIS_URL: redis://redis:6379
+      INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+      INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+
+  timetable-engine:
+    build:
+      context: ../apps/timetable-engine
+      dockerfile: ../../docker/Dockerfile.go-engine
+      args:
+        ENGINE: timetable-engine
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT_TIMETABLE_ENGINE: "6003"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+      INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+
+  bulk-processor:
+    build:
+      context: ../apps/bulk-processor
+      dockerfile: ../../docker/Dockerfile.go-engine
+      args:
+        ENGINE: bulk-processor
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT_BULK_PROCESSOR: "6002"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+      INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+
+  # ── Python services ────────────────────────
+  analytics-service:
+    build:
+      context: ../apps/analytics-service
+      dockerfile: ../../docker/Dockerfile.python
+      args:
+        SERVICE: analytics-service
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT_ANALYTICS_SERVICE: "5001"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+      INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+
+  ai-service:
+    build:
+      context: ../apps/ai-service
+      dockerfile: ../../docker/Dockerfile.python
+      args:
+        SERVICE: ai-service
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PORT_AI_SERVICE: "5002"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-school_erp}?schema=public
+      INTERNAL_ASSERTION_PUBLIC_KEY: ${INTERNAL_ASSERTION_PUBLIC_KEY:?set INTERNAL_ASSERTION_PUBLIC_KEY in .env}
+      INTERNAL_ASSERTION_TTL_SECONDS: ${INTERNAL_ASSERTION_TTL_SECONDS:-60}
+
+  # ── Frontends ──────────────────────────────
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.nextjs
+      args:
+        APP: web
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+        NEXT_PUBLIC_RAZORPAY_KEY_ID: ${NEXT_PUBLIC_RAZORPAY_KEY_ID:-}
+    restart: unless-stopped
+    depends_on:
+      - api-gateway
+    environment:
+      PORT: "3000"
+
+  admin-console:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.nextjs
+      args:
+        APP: admin-console
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *common-env
+      PORT: "3100"
+    # Loopback-only by default — the operator console should not face the
+    # internet. Override ADMIN_CONSOLE_PORT in .env to expose it deliberately.
+    ports:
+      - "${ADMIN_CONSOLE_PORT:-127.0.0.1:3100}:3100"
+
+  # ── TLS edge (:80/:443) → web + gateway ────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api-gateway
+
+volumes:
+  postgres_data:
+  redis_data:
+  staff_data:     # staff-service data/photos + data/documents
+  provision_data: # provision-service data/logos (school logos)
+  caddy_data:
+  caddy_config:
