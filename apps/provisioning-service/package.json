@@ -22,7 +22,7 @@
     "@school-erp/domain": "*",
     "@school-erp/tenant": "*",
     "@school-erp/testing": "*",
-    "bcryptjs": "^2.4.3",
+    "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.2",
     "minio": "^8.0.7"
   },
