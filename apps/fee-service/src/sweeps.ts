@@ -14,7 +14,7 @@
 
 import type { PrismaClient } from '@school-erp/database';
 import type { ServiceEnv } from '@school-erp/config';
-import { applyLateFees } from '@school-erp/domain';
+import { runLateFeeApply } from './late-fees.routes';
 
 /** Server-local date key — the "already ran today" marker. */
 function dayKey(now: Date): string {
@@ -34,35 +34,19 @@ export function startLateFeeSweeps(prisma: PrismaClient, env: ServiceEnv): void 
     const branches = await prisma.branch.findMany({ select: { id: true, name: true } });
     for (const branch of branches) {
       try {
-        const current = await prisma.academicYear.findFirst({
-          where: { branchId: branch.id, isCurrent: true },
-          select: { id: true },
-        });
-        if (!current) continue; // branch not set up for fees yet
-
-        const rules = await prisma.lateFeeRule.findMany({
-          where: { branchId: branch.id, deletedAt: null, isActive: true },
-          orderBy: { minDays: 'asc' },
-        });
-        if (rules.length === 0) continue; // nothing configured — nothing to do
-
-        const result = await applyLateFees(prisma, {
-          branchId: branch.id,
-          academicYearId: current.id,
-          rules: rules.map((rule) => ({
-            id: rule.id, label: rule.label, minDays: rule.minDays, maxDays: rule.maxDays,
-            amount: Number(rule.amount), isPercent: rule.isPercent, feeHeadId: rule.feeHeadId, isActive: rule.isActive,
-          })),
-          createdBy: null, // system sweep — no human actor
-        });
+        // runLateFeeApply records the LateFeeSweepRun audit row (SUCCESS with
+        // the per-fine report, or FAILED with the error) — the nightly pass
+        // is auditable exactly like a manual console apply.
+        const result = await runLateFeeApply(prisma, { id: branch.id, name: branch.name }, 'NIGHTLY', null);
         if (result.applied.length > 0) {
           console.log(
             `[late-fee-sweep] ${branch.name}: applied ${result.applied.length} fine(s), ` +
-            `scanned ${result.scanned} overdue invoice(s), skipped ${result.skipped}`,
+            `scanned ${result.scanned} overdue invoice(s), skipped ${result.skipped} (run ${result.runId})`,
           );
         }
       } catch (err) {
-        // One broken branch must never stop the others' sweep.
+        // One broken branch must never stop the others' sweep. The FAILED
+        // run row is already written by the runner.
         console.error(`[late-fee-sweep] branch ${branch.name} failed:`, (err as Error).message);
       }
     }

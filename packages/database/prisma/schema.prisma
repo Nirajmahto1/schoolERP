@@ -95,6 +95,7 @@ model Branch {
   feeHeads               FeeHead[]
   invoices               Invoice[]
   lateFeeRules           LateFeeRule[]
+  lateFeeSweepRuns       LateFeeSweepRun[]
   ledgerEntries          FeeLedger[]
   sequences              Sequence[]
   academicCalendar       AcademicCalendar[]
@@ -1165,6 +1166,32 @@ model LateFeeRule {
 
   @@index([branchId, isActive])
   @@map("late_fee_rules")
+}
+
+// One row per late-fee apply pass (nightly sweep or manual console click),
+// so admins can audit what was fined, by which rules, and when. The details
+// JSON carries the per-fine report; FAILURE rows carry the error instead.
+model LateFeeSweepRun {
+  id             String        @id @default(cuid())
+  branchId       String
+  // NIGHTLY (scheduler) | MANUAL (console apply)
+  source         String
+  status         String
+  scanned        Int           @default(0)
+  appliedCount   Int           @default(0)
+  skipped        Int           @default(0)
+  totalAmount    Decimal       @default(0) @db.Decimal(12, 2)
+  // Array<{ studentId, invoiceNo, rule, amount, daysOverdue }>
+  details        Json?
+  errorMessage   String?
+  durationMs     Int?
+  createdBy      String?
+  createdAt      DateTime      @default(now())
+
+  branch Branch @relation(fields: [branchId], references: [id])
+
+  @@index([branchId, createdAt])
+  @@map("late_fee_sweep_runs")
 }
 
 model Invoice {

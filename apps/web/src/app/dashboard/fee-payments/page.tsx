@@ -42,6 +42,8 @@ export default function FeePaymentsPage() {
   const [lfBusy, setLfBusy] = useState(false);
   const [lfMsg, setLfMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [lfReport, setLfReport] = useState<Array<{ studentId: string; invoiceNo: string; rule: string; amount: number; daysOverdue: number }> | null>(null);
+  const [lfRuns, setLfRuns] = useState<any[]>([]);
+  const [openRun, setOpenRun] = useState<string | null>(null);
   const [advStudent, setAdvStudent] = useState<{ id: string; name: string } | null>(null);
   const [advSearch, setAdvSearch] = useState('');
   const [advResults, setAdvResults] = useState<any[]>([]);
@@ -92,9 +94,10 @@ export default function FeePaymentsPage() {
 
   useEffect(() => { fetchInvoices(); fetchPayments(); }, [fetchInvoices, fetchPayments]);
 
-  // Late-fee rules load with the page (cheap; the tab needs them).
+  // Late-fee rules + audit history load with the page (cheap; the tab needs them).
   const fetchLfRules = useCallback(async () => {
     try { setLfRules((await feeApi.getLateFeeRules()).data ?? []); } catch { /* tab shows the error */ }
+    try { setLfRuns((await feeApi.getLateFeeRuns()).data ?? []); } catch { /* history is optional */ }
   }, []);
   useEffect(() => { fetchLfRules(); }, [fetchLfRules]);
 
@@ -126,6 +129,7 @@ export default function FeePaymentsPage() {
     try {
       const res = await feeApi.applyLateFees(dryRun);
       setLfReport(res.applied ?? []);
+      if (!dryRun) { setLfRuns((await feeApi.getLateFeeRuns()).data ?? []); }
       setLfMsg({
         ok: true,
         text: dryRun
@@ -524,6 +528,46 @@ export default function FeePaymentsPage() {
                             <tr key={`${a.invoiceNo}-${i}`}><td className="font-mono text-sm">{a.invoiceNo}</td><td>{a.rule}</td><td>{a.daysOverdue}</td><td className="font-semibold">₹{a.amount.toLocaleString('en-IN')}</td></tr>
                           ))}
                         </tbody></table></div>
+                      )}
+
+                      {/* ── Audit trail: who fined what, when, by which pass ── */}
+                      {lfRuns.length > 0 && (
+                        <div className="mt-4">
+                          <h3 style={{ fontSize: 15 }}>Apply history</h3>
+                          <div className="table-wrapper mt-2"><table className="table"><thead><tr><th>When</th><th>Source</th><th>Status</th><th>Fined</th><th>Amount</th><th>Took</th><th>By</th></tr></thead><tbody>
+                            {lfRuns.map((run) => (
+                              <Fragment key={run.id}>
+                                <tr
+                                  style={{ cursor: run.appliedCount > 0 || run.status === 'FAILED' ? 'pointer' : 'default' }}
+                                  onClick={() => (run.appliedCount > 0 || run.status === 'FAILED') && setOpenRun(openRun === run.id ? null : run.id)}
+                                >
+                                  <td className="text-sm">{new Date(run.createdAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+                                  <td><span className={`badge ${run.source === 'NIGHTLY' ? 'badge-secondary' : 'badge-info'}`}>{run.source === 'NIGHTLY' ? '🌙 Nightly' : 'Manual'}</span></td>
+                                  <td><span className={`badge ${run.status === 'SUCCESS' ? 'badge-success' : 'badge-danger'}`}>{run.status}</span></td>
+                                  <td>{run.appliedCount} fine(s){run.skipped > 0 ? <span className="text-sm" style={{ color: '#6B7280' }}> · {run.scanned} scanned</span> : null}</td>
+                                  <td className="font-semibold">₹{Number(run.totalAmount).toLocaleString('en-IN')}</td>
+                                  <td className="text-sm" style={{ color: '#6B7280' }}>{run.durationMs != null ? `${(run.durationMs / 1000).toFixed(1)}s` : '—'}</td>
+                                  <td className="text-sm" style={{ color: '#6B7280' }}>{run.createdBy ? 'Console user' : 'Scheduler'}</td>
+                                </tr>
+                                {openRun === run.id && run.status === 'FAILED' && (
+                                  <tr><td colSpan={7} style={{ background: '#FEF2F2', padding: '10px 16px', color: '#B91C1C' }}>{run.errorMessage}</td></tr>
+                                )}
+                                {openRun === run.id && run.status === 'SUCCESS' && (run.details ?? []).length > 0 && (
+                                  <tr><td colSpan={7} style={{ background: '#F9FAFB', padding: '12px 16px' }}>
+                                    {(run.details ?? []).map((a: any, i: number) => (
+                                      <div key={i} className="flex items-center gap-3" style={{ padding: '4px 0', borderBottom: '1px solid #E5E7EB' }}>
+                                        <span className="font-mono text-sm">{a.invoiceNo}</span>
+                                        <span className="text-sm">{a.rule}</span>
+                                        <span className="text-sm" style={{ color: '#6B7280' }}>{a.daysOverdue}d overdue</span>
+                                        <span className="font-semibold" style={{ marginLeft: 'auto' }}>₹{Number(a.amount).toLocaleString('en-IN')}</span>
+                                      </div>
+                                    ))}
+                                  </td></tr>
+                                )}
+                              </Fragment>
+                            ))}
+                          </tbody></table></div>
+                        </div>
                       )}
                     </div>
                   </div>

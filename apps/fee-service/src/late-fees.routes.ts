@@ -17,6 +17,7 @@
 import { Router } from 'express';
 import type { PrismaClient } from '@school-erp/database';
 import { applyLateFees, previewAdvance, collectAdvance } from '@school-erp/domain';
+import type { LateFeeRule } from '@prisma/client';
 import { ctx } from '@school-erp/auth';
 
 const FEE_MANAGERS = ['SUPER_ADMIN', 'BRANCH_ADMIN', 'PRINCIPAL', 'FINANCE', 'ACCOUNTANT'];
@@ -27,6 +28,66 @@ function assertFeeManager(res: import('express').Response, roles: string[]): boo
     return false;
   }
   return true;
+}
+
+/** Shared by the manual route and the nightly sweep — one audit row per pass. */
+export async function runLateFeeApply(
+  prisma: PrismaClient,
+  branch: { id: string; name?: string },
+  source: 'NIGHTLY' | 'MANUAL',
+  createdBy: string | null,
+): Promise<import('@school-erp/domain').ApplyLateFeesResult & { runId?: string }> {
+  const started = Date.now();
+  const year = await prisma.academicYear.findFirst({ where: { branchId: branch.id, isCurrent: true }, select: { id: true } });
+  if (!year) throw new Error('The branch has no current academic year set.');
+  const rules: LateFeeRule[] = await prisma.lateFeeRule.findMany({
+    where: { branchId: branch.id, deletedAt: null, isActive: true },
+    orderBy: { minDays: 'asc' },
+  });
+  if (rules.length === 0) throw new Error('No late-fee rules configured for this branch yet — add slabs first.');
+
+  try {
+    const result = await applyLateFees(prisma, {
+      branchId: branch.id,
+      academicYearId: year.id,
+      rules: rules.map((rule) => ({
+        id: rule.id, label: rule.label, minDays: rule.minDays, maxDays: rule.maxDays,
+        amount: Number(rule.amount), isPercent: rule.isPercent, feeHeadId: rule.feeHeadId, isActive: rule.isActive,
+      })),
+      createdBy,
+    });
+    const totalAmount = result.applied.reduce((s, a) => s + a.amount, 0);
+    const run = await prisma.lateFeeSweepRun.create({
+      data: {
+        branchId: branch.id,
+        source,
+        status: 'SUCCESS',
+        scanned: result.scanned,
+        appliedCount: result.applied.length,
+        skipped: result.skipped,
+        totalAmount,
+        details: result.applied,
+        durationMs: Date.now() - started,
+        createdBy,
+      },
+      select: { id: true },
+    });
+    return { ...result, runId: run.id };
+  } catch (err) {
+    // A failed pass is itself an audit event — record it, then rethrow so
+    // the caller's error path (route 500 / sweep log) still happens.
+    await prisma.lateFeeSweepRun.create({
+      data: {
+        branchId: branch.id,
+        source,
+        status: 'FAILED',
+        errorMessage: (err as Error).message.slice(0, 1000),
+        durationMs: Date.now() - started,
+        createdBy,
+      },
+    }).catch(() => { /* never mask the original error with an audit failure */ });
+    throw err;
+  }
 }
 
 export function createLateFeeRoutes(prisma: PrismaClient): Router {
@@ -97,30 +158,51 @@ export function createLateFeeRoutes(prisma: PrismaClient): Router {
     if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
     if (!assertFeeManager(res, roles)) return;
 
-    const current = await prisma.academicYear.findFirst({ where: { branchId, isCurrent: true }, select: { id: true } });
-    if (!current) { res.status(409).json({ detail: 'The branch has no current academic year set.' }); return; }
-
-    const rules = await prisma.lateFeeRule.findMany({
-      where: { branchId, deletedAt: null, isActive: true },
-      orderBy: { minDays: 'asc' },
-    });
-    if (rules.length === 0) {
-      res.status(409).json({ detail: 'No late-fee rules configured for this branch yet — add slabs first.' });
+    if (dryRun) {
+      // Read-only — no run row: nothing was fined, nothing to audit.
+      const current = await prisma.academicYear.findFirst({ where: { branchId, isCurrent: true }, select: { id: true } });
+      if (!current) { res.status(409).json({ detail: 'The branch has no current academic year set.' }); return; }
+      const rules = await prisma.lateFeeRule.findMany({
+        where: { branchId, deletedAt: null, isActive: true },
+        orderBy: { minDays: 'asc' },
+      });
+      if (rules.length === 0) {
+        res.status(409).json({ detail: 'No late-fee rules configured for this branch yet — add slabs first.' });
+        return;
+      }
+      const result = await applyLateFees(prisma, {
+        branchId,
+        academicYearId: current.id,
+        rules: rules.map((rule) => ({
+          id: rule.id, label: rule.label, minDays: rule.minDays, maxDays: rule.maxDays,
+          amount: Number(rule.amount), isPercent: rule.isPercent, feeHeadId: rule.feeHeadId, isActive: rule.isActive,
+        })),
+        createdBy: userId,
+        dryRun: true,
+      });
+      res.json({ ...result, dryRun });
       return;
     }
 
-    const result = await applyLateFees(prisma, {
-      branchId,
-      academicYearId: current.id,
-      rules: rules.map((rule) => ({
-        id: rule.id, label: rule.label, minDays: rule.minDays, maxDays: rule.maxDays,
-        amount: Number(rule.amount), isPercent: rule.isPercent, feeHeadId: rule.feeHeadId, isActive: rule.isActive,
-      })),
-      createdBy: userId,
-      dryRun,
-    });
+    // Real apply — audited as a MANUAL run row.
+    const result = await runLateFeeApply(prisma, { id: branchId }, 'MANUAL', userId);
     res.json({ ...result, dryRun });
   };
+
+  // Audit trail: recent apply passes (nightly + manual), newest first.
+  r.get('/runs', async (req, res) => {
+    try {
+      const { branchId, roles } = ctx(req);
+      if (!branchId) { res.status(403).json({ detail: 'Account has no branch.' }); return; }
+      if (!assertFeeManager(res, roles)) return;
+      const runs = await prisma.lateFeeSweepRun.findMany({
+        where: { branchId },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      });
+      res.json({ data: runs });
+    } catch (e) { res.status(500).json({ detail: (e as Error).message }); }
+  });
 
   r.post('/apply', async (req, res) => {
     try { await runApply(req, res, false); }

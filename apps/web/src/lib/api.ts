@@ -707,6 +707,12 @@ export const feeApi = {
       dryRun ? { method: 'GET' } : { method: 'POST' },
     ),
 
+  /** Audit trail: recent apply passes (NIGHTLY sweep + MANUAL console). */
+  getLateFeeRuns: () =>
+    apiRequest<{ data: Array<{ id: string; source: string; status: string; scanned: number; appliedCount: number; skipped: number; totalAmount: string | number; details: Array<{ studentId: string; invoiceNo: string; rule: string; amount: number; daysOverdue: number }> | null; errorMessage: string | null; durationMs: number | null; createdBy: string | null; createdAt: string }> }>(
+      '/fees/late-fees/runs',
+    ),
+
   previewAdvance: (studentId: string, months: number) => {
     const qs = new URLSearchParams({ studentId, months: String(months) });
     return apiRequest<{ studentId: string; months: number; perMonth: number; total: number; generatedMonths: Array<{ periodStart: string; invoiceNo: string; alreadyInvoiced: boolean; amount: number }> }>(
