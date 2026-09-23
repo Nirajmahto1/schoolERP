@@ -184,13 +184,16 @@ way in). From there, configure in this order — each step feeds the next:
 
 ## Step 8 — Nightly backups (5 minutes, do not skip)
 
-`scripts/backup.sh` dumps **every** non-template database (custom format,
-restore-verified) and tars the upload roots (photos/documents/logos), 14-night
-retention, non-zero exit on any failure. On the Docker deployment:
+`scripts/backup.sh` is dual-mode and auto-detects the deployment: on a Docker
+host it runs `pg_dump` **inside the postgres container** (no published DB
+port needed) and tars the photo/document/logo volumes through the running
+service containers; on the Windows/dev box it behaves exactly as before.
+14-night retention, `pg_restore -l` integrity gate on every dump, non-zero
+exit on any failure. Test it:
 
 ```bash
-# One-shot test run (adjust paths inside for /opt/educore + docker volume)
 bash /opt/educore/scripts/backup.sh && tail -5 /opt/educore/backups/backup.log
+# → "backup run start (docker mode)", one OK line per DB + per service volume
 ```
 
 Schedule it (host cron; the script is idempotent and logs its own progress):
