@@ -22,6 +22,7 @@ import {
 import { createMethodsRoutes } from './methods.routes';
 import { createHistoryRoute } from './history.routes';
 import { createLateFeeRoutes, createAdvanceRoutes } from './late-fees.routes';
+import { startLateFeeSweeps } from './sweeps';
 import { RazorpayClient } from './razorpay';
 
 /** MUST equal the gateway route-table audience for this service. */
@@ -639,4 +640,7 @@ if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js
   const prisma = new PrismaClient();
   const app = createFeeApp({ env, prisma });
   listenWithGracefulShutdown(app, env.PORT, SERVICE_NAME, async () => { await prisma.$disconnect(); });
+  // Nightly late-fee application — armed only in the real entrypoint, never
+  // when the app factory is imported by tests.
+  startLateFeeSweeps(prisma, env);
 }

@@ -289,6 +289,27 @@ const peerServicesSchema = z.object({
     (v) => (typeof v !== 'string' || v.trim() === '' ? undefined : v),
     z.string().min(1).optional(),
   ),
+  // ── Nightly late-fee sweep (fee-service) ──
+  // Applies the branch's late-fee slabs to overdue invoices once a day.
+  // Idempotent by ledger reference (LATE:<rule>:<invoice>), so the sweep and
+  // a manual "Apply" from the console can never double-fine the same
+  // invoice. LATE_FEE_SWEEP_HOUR is SERVER-LOCAL (IST on the deployment
+  // box); 01:00 keeps it clear of the morning communication sweeps and the
+  // midnight Razorpay settlement boundary. Set LATE_FEE_SWEEP_ENABLED=false
+  // to stop fining automatically (e.g. a school that wants manual control).
+  LATE_FEE_SWEEP_ENABLED: z.preprocess(
+    (v) => (typeof v === 'string' ? v.trim().toLowerCase() !== 'false' : true),
+    z.boolean().default(true),
+  ),
+  LATE_FEE_SWEEP_HOUR: z.coerce.number().int().min(0).max(23).default(1),
+  // Run window length in hours: the hourly tick fires when hour === SWEEP_HOUR,
+  // but a service down at that hour would skip the day — so the sweep also
+  // runs when the hour falls INSIDE the first WINDOW hours after boot... no:
+  // the window is a catch-up band; see scheduler for the exact predicate.
+  // Catch-up band: if the service boots (or wakes) within WINDOW hours after
+  // SWEEP_HOUR and the sweep has not run today, it runs late rather than
+  // skipping the day. Max 12 keeps "nightly" nightly.
+  LATE_FEE_SWEEP_WINDOW_HOURS: z.coerce.number().int().min(1).max(12).default(2),
 });
 
 export const serviceEnvSchema = baseSchema
