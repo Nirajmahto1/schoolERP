@@ -13,6 +13,7 @@
   "dependencies": {
     "@school-erp/database": "*",
     "@school-erp/control-plane": "*",
+    "@school-erp/domain": "*",
     "@school-erp/tenant": "*",
     "@school-erp/shared-types": "*",
     "@school-erp/auth": "*",

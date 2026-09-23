@@ -19,6 +19,7 @@
     "@school-erp/config": "*",
     "@school-erp/control-plane": "*",
     "@school-erp/database": "*",
+    "@school-erp/domain": "*",
     "@school-erp/tenant": "*",
     "@school-erp/testing": "*",
     "bcryptjs": "^2.4.3",

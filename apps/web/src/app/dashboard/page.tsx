@@ -1,5 +1,6 @@
 'use client';
 import Topbar from '@/components/Topbar';
+import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import styles from './page.module.css';
 import { useRouter } from 'next/navigation';
@@ -109,7 +110,7 @@ function AdminDashboard() {
           <div className="card" style={{ gridColumn: 'span 2' }}><div className="card-body">
             <div className="flex items-center justify-between mb-4">
               <h3><span className="icon icon-sm text-primary">warning_amber</span> Students Needing Attention</h3>
-              <a href="/dashboard/students" className="btn btn-ghost btn-sm text-primary">View Students</a>
+              <Link href="/dashboard/students" className="btn btn-ghost btn-sm text-primary">View Students</Link>
             </div>
             {atRisk.length === 0 ? (
               <div className="text-sm text-gray">No at-risk students — all clear.</div>
