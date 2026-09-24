@@ -1,0 +1,133 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Length 7113 >>
+stream
+BT /F2 15 Tf 1 0 0 1 48.00 776.00 Tm (EduCore — The School ERP That Pays For Itself In One Term) Tj ET
+48.00 773.00 m 547.00 773.00 l S
+BT /F1 8 Tf 1 0 0 1 48.00 755.20 Tm (Print or PDF this. It is the leave-behind after the 20-minute demo \(see DEMO-SCRIPT.md\). One page, principal-ready.) Tj ET
+BT /F2 11 Tf 1 0 0 1 48.00 738.20 Tm (The problem you know too well) Tj ET
+48.00 734.20 m 547.00 734.20 l S
+BT /F1 8.6 Tf 1 0 0 1 48.00 717.10 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 717.10 Tm (Fees leak.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 100.12 717.10 Tm ( Cash registers, UPI on personal phones, Excel registers that) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 704.30 Tm (nobody reconciles — and every year, lakhs go missing in the gaps.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 690.70 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 690.70 Tm (Parents find out late.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 144.06 690.70 Tm ( An absence is discovered at 6 pm, not at 9 am.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 677.90 Tm (A fee reminder is a Wednesday phone-call ritual.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 664.30 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 664.30 Tm (Excel runs the school.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 150.29 664.30 Tm ( Timetables, report cards, and comparison across) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 651.50 Tm (campuses all live in one coordinator's spreadsheet — and that person's leave) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 637.90 Tm (stops the school.) Tj ET
+BT /F2 11 Tf 1 0 0 1 48.00 622.90 Tm (What EduCore does on day one) Tj ET
+48.00 618.90 m 547.00 618.90 l S
+BT /F2 8.4 Tf 1 0 0 1 48.00 608.90 Tm (Your staff does this) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 297.50 608.90 Tm (EduCore does this) Tj ET
+48.00 595.50 m 547.00 595.50 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 592.00 Tm (Teacher marks attendance) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 592.00 Tm (Parent's phone buzzes within seconds — by name) Tj ET
+48.00 578.60 m 547.00 578.60 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 575.10 Tm (Office collects a fee \(cash or UPI\)) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 575.10 Tm (Numbered receipt, ledger entry, and the parent's app updates —) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 564.70 Tm (one trail) Tj ET
+48.00 551.30 m 547.00 551.30 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 547.80 Tm (Term-end marks entry) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 547.80 Tm (CBSE-format report cards published to parents, zero formatting) Tj ET
+48.00 534.40 m 547.00 534.40 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 530.90 Tm (Coordinator builds a timetable) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 530.90 Tm (Clash detection catches the double-booked teacher before) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 520.50 Tm (students do) Tj ET
+48.00 507.10 m 547.00 507.10 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 503.60 Tm (Principal asks "how are we doing?") Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 503.60 Tm (Dashboard answers: enrollment, collection rate, attendance %,) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 493.20 Tm (per campus) Tj ET
+48.00 479.80 m 547.00 479.80 l S
+BT /F2 11 Tf 1 0 0 1 48.00 458.80 Tm (Built for how Indian schools actually run) Tj ET
+48.00 454.80 m 547.00 454.80 l S
+BT /F1 8.6 Tf 1 0 0 1 48.00 437.70 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 437.70 Tm (Multi-branch groups) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 142.14 437.70 Tm (: one login for the owner, per-campus dashboards,) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 424.90 Tm (consolidated fee and attendance numbers.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 411.30 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 411.30 Tm (Razorpay fee collection) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 155.06 411.30 Tm ( with automatic reconciliation — every online) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 398.50 Tm (rupee matches a receipt, every mismatch is flagged.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 384.90 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 384.90 Tm (Late fees that are fair) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 145.51 384.90 Tm (: your rules, your slabs, applied nightly,) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 372.10 Tm (reversed in one click with an audit trail.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 358.50 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 358.50 Tm (The parent app) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 120.64 358.50 Tm ( \(Android\): fees, receipts, attendance, results, class) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 345.70 Tm (chat, school announcements, push notifications — offline-tolerant.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 332.10 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 332.10 Tm (DPDP-compliant from day one) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 182.76 332.10 Tm (: consent registry, data export, erasure,) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 319.30 Tm (breach runbook — procurement-ready for 2026.) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 305.70 Tm (•) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 59.00 305.70 Tm (Your data is yours) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 134.03 305.70 Tm (: isolated per-school database, exportable any time.) Tj ET
+BT /F2 11 Tf 1 0 0 1 48.00 291.50 Tm (Pricing \(per student, per year\)) Tj ET
+48.00 287.50 m 547.00 287.50 l S
+BT /F2 8.4 Tf 1 0 0 1 48.00 277.50 Tm (Tier) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 185.23 277.50 Tm (Price) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 297.50 277.50 Tm (For) Tj ET
+48.00 264.10 m 547.00 264.10 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 260.60 Tm (Essential) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 185.23 260.60 Tm (Rs.150) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 260.60 Tm (Single-branch schools — attendance, fees, app, reports) Tj ET
+48.00 247.20 m 547.00 247.20 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 243.70 Tm (Standard) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 185.23 243.70 Tm (Rs.300) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 243.70 Tm (+ timetable, analytics, late-fee automation, exams) Tj ET
+48.00 230.30 m 547.00 230.30 l S
+BT /F1 8.4 Tf 1 0 0 1 48.00 226.80 Tm (Group) Tj ET
+BT /F2 8.4 Tf 1 0 0 1 185.23 226.80 Tm (Rs.500) Tj ET
+BT /F1 8.4 Tf 1 0 0 1 297.50 226.80 Tm (Multi-branch groups — consolidated ownership dashboards) Tj ET
+48.00 213.40 m 547.00 213.40 l S
+BT /F1 8.6 Tf 1 0 0 1 48.00 193.80 Tm (One-time onboarding fee covers data import and staff training. Messaging) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 180.20 Tm (\(WhatsApp/SMS\) passed through at cost. **A 600-student school on Standard) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 166.60 Tm (pays Rs.1.8L/year — less than one term of fee leakage.**) Tj ET
+BT /F2 11 Tf 1 0 0 1 48.00 151.60 Tm (Why now) Tj ET
+48.00 147.60 m 547.00 147.60 l S
+BT /F1 8.6 Tf 1 0 0 1 48.00 130.50 Tm (Pilot programs for the coming academic session are limited to a handful of) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 116.90 Tm (schools per city. Pilot terms run one full term with success criteria agreed) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 103.30 Tm (in writing \(PILOT-AGREEMENT-SKELETON.md\).) Tj ET
+BT /F2 8.6 Tf 1 0 0 1 48.00 89.70 Tm (Next step:) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 89.57 89.70 Tm ( book a 20-minute demo ? /request-demo, or write to the) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 76.10 Tm (pilot desk. Bring one fee register and one timetable — we'll load your real) Tj ET
+BT /F1 8.6 Tf 1 0 0 1 48.00 62.50 Tm (data shape before you decide.) Tj ET
+48.00 46.00 m 547.00 46.00 l S
+BT /F1 7.5 Tf 1 0 0 1 48.00 34.00 Tm (EduCore · generated from docs/go-to-market/ONE-PAGER.md · 24 Sept 2026) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000000348 00000 n 
+0000000450 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+7614
+%%EOF
