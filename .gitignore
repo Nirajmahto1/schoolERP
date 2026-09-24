@@ -67,6 +67,8 @@ data/
 # local dev stack scratch: boot scripts, probes, runtime logs
 .setuprun/
 educore.apk
+# installable sales assets — rebuilt per release, too big for git
+sales-assets/*.apk
 
 # Nightly backup artifacts (pg_dump + upload archives) — never in git
 backups/

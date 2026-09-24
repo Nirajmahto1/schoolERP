@@ -9,7 +9,8 @@ this pack is what turns them into a sale.
 |---|---|
 | Demo tenant (3 branches, 1,200 students, full year) | `npm run seed:demo` — verify before every demo |
 | 20-minute demo script | [DEMO-SCRIPT.md](./DEMO-SCRIPT.md) |
-| One-page leave-behind | [ONE-PAGER.md](./ONE-PAGER.md) |
+| One-page leave-behind | [ONE-PAGER.md](./ONE-PAGER.md) → printed PDF in [sales-assets/](../../sales-assets/) |
+| Product sheet (9 live screenshots) + parent-app APK | [sales-assets/](../../sales-assets/) — see its README for regeneration |
 | Pricing page (public) | `/pricing` on the web app |
 | Security page (public, for procurement) | `/security` on the web app |
 | Request-demo form → lead pipeline | `/request-demo` → `demo_leads` (control plane) → admin console |

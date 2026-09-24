@@ -271,7 +271,7 @@ export async function seedDemoTenant(
   options: DemoSeedOptions = {},
 ): Promise<DemoSeedResult> {
   const code = (options.code ?? 'DEMO').toUpperCase();
-  const schoolName = options.schoolName ?? 'Delhi Public School';
+  const schoolName = options.schoolName ?? 'Sunrise Public School';
   const branchCount = options.branches ?? 3;
   const perBranch = options.studentsPerBranch ?? 400;
   const attDays = options.attendanceDaysPerYear ?? 30;
