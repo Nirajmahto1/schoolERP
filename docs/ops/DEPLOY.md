@@ -131,8 +131,6 @@ the metrics say so.
   out of every context.
 - `NEXT_PUBLIC_*` values are **build-time** inlined (Next.js semantics):
   changing `NEXT_PUBLIC_API_URL` means rebuilding `web`/`admin-console`.
-- The gateway's `/files` route targets a `file-service` that is not
-  implemented yet — it 502s harmlessly; no container exists for it.
 - This stack was validated statically (compose config parse, per-image
   contracts, gateway route matrix) on a machine without Docker; the first
   `up` on a real host may surface platform-specific fixups — treat them as

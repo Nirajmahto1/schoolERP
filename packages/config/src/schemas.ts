@@ -155,7 +155,6 @@ export const gatewayEnvSchema = baseSchema.merge(jwtSchema)
     PORT_NOTIFICATION_ENGINE: port(6001),
     PORT_BULK_PROCESSOR: port(6002),
     PORT_TIMETABLE_ENGINE: port(6003),
-    PORT_FILE_SERVICE: port(6004),
 
     UPSTREAM_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(15_000),
     UPSTREAM_HOST: z.string().default('localhost'),

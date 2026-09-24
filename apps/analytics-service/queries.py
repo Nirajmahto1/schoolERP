@@ -467,10 +467,9 @@ async def parent_app_adoption(branch_id: str) -> dict[str, Any]:
         SELECT
           (SELECT count(*) FROM families)::int AS total_families,
           (SELECT count(*) FROM families f
-            WHERE f."guardianId" IN (
-              SELECT g."userId" FROM guardians g
-               WHERE g."userId" IS NOT NULL
-                 AND g."userId" IN (SELECT "userId" FROM adopted)))::int AS adopted_families
+            JOIN guardians g ON g.id = f."guardianId"
+            WHERE g."userId" IS NOT NULL
+              AND g."userId" IN (SELECT "userId" FROM adopted))::int AS adopted_families
         """,
         branch_id,
     )

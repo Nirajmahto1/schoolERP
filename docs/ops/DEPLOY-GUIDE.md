@@ -251,7 +251,6 @@ deleting the volume destroys school data.
 | Services restart-loop after boot | migrations failed → `logs migrate` first, always first |
 | Certificate not issued | DNS A record not propagated, or :80 blocked → `dig +short $DOMAIN`, `ufw status` |
 | 502 from a route | that upstream is unhealthy → `docker compose ps`, check the specific service's logs |
-| `/files` route 502s | expected — no file-service container exists yet; the route is registered but unimplemented |
 | Web loads but no data | `NEXT_PUBLIC_API_URL` baked wrong at build time → fix `.env`, `up -d --build web` |
 | Password reset email never arrives | SMTP unset → set `SMTP_URL`, `up -d` |
 

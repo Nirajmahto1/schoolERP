@@ -54,6 +54,7 @@ export interface DemoSeedResult {
     payments: number;
     ledgerEntries: number;
     examResults: number;
+    deviceTokens: number;
   };
 }
 
@@ -1193,6 +1194,30 @@ export async function seedDemoTenant(
     });
   }
 
+  // ── 12. Parent-app adoption: ~75% of families have the app installed ──
+  // The analytics adoption metric counts active device tokens per family;
+  // without this the parent-app-adoption chart reads 0% on a fresh seed.
+  const adoptableGuardians = new Set(
+    studentGuardianRows.filter((sg) => sg.receivesComms).map((sg) => sg.guardianId),
+  );
+  const guardianUserById = new Map(guardianRows.map((g) => [g.id, g.userId]));
+  const adoptees = [...adoptableGuardians]
+    .map((gid) => guardianUserById.get(gid))
+    .filter((uid): uid is string => !!uid)
+    .sort(() => Math.random() - 0.5)
+    .slice(0, Math.ceil(adoptableGuardians.size * 0.75));
+  await prisma.deviceToken.createMany({
+    data: adoptees.map((uid, i) => ({
+      id: `dt_${sc}_${String(i + 1).padStart(4, '0')}`,
+      userId: uid,
+      token: `seed-fcm-${sc}-${uid}`,
+      platform: Math.random() < 0.85 ? 'ANDROID' : 'IOS',
+      label: 'Parent app (demo seed)',
+      isActive: true,
+    })),
+    skipDuplicates: true,
+  });
+
   return {
     schoolId: school.id,
     branchIds: branches.map((b) => b.id),
@@ -1213,6 +1238,7 @@ export async function seedDemoTenant(
       payments: paymentRows.length,
       ledgerEntries: ledgerRows.length,
       examResults: resultRows.length,
+      deviceTokens: adoptees.length,
     },
   };
 }

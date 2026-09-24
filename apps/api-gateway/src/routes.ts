@@ -266,12 +266,5 @@ export function buildRoutes(env: GatewayEnv): UpstreamRoute[] {
       port: env.PORT_TIMETABLE_ENGINE,
       rewriteTo: '/timetable',
     },
-    {
-      path: '/api/v1/files',
-      service: 'file-service',
-      host: serviceHost('file-service'),
-      port: env.PORT_FILE_SERVICE,
-      rewriteTo: '/files',
-    },
   ];
 }
