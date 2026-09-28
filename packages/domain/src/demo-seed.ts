@@ -460,6 +460,41 @@ export async function seedDemoTenant(
     }
   }
 
+  // One demo login per staff role (docs/go-to-market/DEMO-VIDEO-RUNBOOK.md)
+  // — HOD, academic head, accountant, finance, librarian, transport — so the
+  // video can show every role landing in its own home screen.
+  const staffRoleUsers: Array<{ uid: string; email: string; roleCode: string; employeeId: string; firstName: string; lastName: string; designation: string; department: string; gender: 'MALE' | 'FEMALE' }> = [
+    { uid: `usr_${sc}_hod`, email: `hod@${sc}.demo.edu.in`, roleCode: 'HOD', employeeId: `EMP-${code}-HOD-001`, firstName: 'Anita', lastName: 'Sharma', designation: 'HOD', department: 'Mathematics', gender: 'FEMALE' },
+    { uid: `usr_${sc}_academic`, email: `academic@${sc}.demo.edu.in`, roleCode: 'ACADEMIC_HEAD', employeeId: `EMP-${code}-AH-001`, firstName: 'Rajesh', lastName: 'Verma', designation: 'Academic Coordinator', department: 'Academics', gender: 'MALE' },
+    { uid: `usr_${sc}_accounts`, email: `accounts@${sc}.demo.edu.in`, roleCode: 'ACCOUNTANT', employeeId: `EMP-${code}-ACC-001`, firstName: 'Sunita', lastName: 'Gupta', designation: 'Accountant', department: 'Finance', gender: 'FEMALE' },
+    { uid: `usr_${sc}_finance`, email: `finance@${sc}.demo.edu.in`, roleCode: 'FINANCE', employeeId: `EMP-${code}-FIN-001`, firstName: 'Vikram', lastName: 'Mehta', designation: 'Finance Manager', department: 'Finance', gender: 'MALE' },
+    { uid: `usr_${sc}_library`, email: `library@${sc}.demo.edu.in`, roleCode: 'LIBRARIAN', employeeId: `EMP-${code}-LIB-001`, firstName: 'Priya', lastName: 'Nair', designation: 'Librarian', department: 'Library', gender: 'FEMALE' },
+    { uid: `usr_${sc}_transport`, email: `transport@${sc}.demo.edu.in`, roleCode: 'TRANSPORT_MANAGER', employeeId: `EMP-${code}-TRN-001`, firstName: 'Harpreet', lastName: 'Kaur', designation: 'Transport Manager', department: 'Transport', gender: 'FEMALE' },
+  ];
+  const staffRoleByUser = new Map(staffRoleUsers.map((sr) => [sr.uid, sr.roleCode]));
+  staffRoleUsers.forEach((sr, ri) => {
+    users.push({ id: sr.uid, email: sr.email, passwordHash, isActive: true, defaultBranchId: branches[0].id });
+    userBranches.push({ userId: sr.uid, branchId: branches[0].id });
+    staffRows.push({
+      id: `stf_${sc}_sr${ri}`,
+      userId: sr.uid,
+      employeeId: sr.employeeId,
+      firstName: sr.firstName,
+      lastName: sr.lastName,
+      dateOfBirth: monthDay(1985 + ri, 1 + ri, 5),
+      gender: sr.gender,
+      designation: sr.designation,
+      department: sr.department,
+      qualification: 'M.Ed',
+      experience: 8,
+      joinDate: monthDay(2019, 4, 1),
+      salary: 45000,
+      address: 'Staff Colony',
+      phone: `+91 98765 ${String(70000 + ri).padStart(5, '0')}`,
+      branchId: branches[0].id,
+    });
+  });
+
   // Student + parent users and rows.
   // Per-student latent profile — marks, attendance and payments all read
   // from this (see the correlated-profiles note above prand).
@@ -599,7 +634,7 @@ export async function seedDemoTenant(
       const isTeacher = u.id.includes('_teach');
       const isAdmin = u.id.includes('_admin');
       const isPrincipal = u.id.includes('_principal');
-      const roleCode = isStudent ? 'STUDENT' : isParent ? 'PARENT' : isTeacher ? 'TEACHER' : isAdmin ? 'BRANCH_ADMIN' : isPrincipal ? 'PRINCIPAL' : 'TEACHER';
+      const roleCode = staffRoleByUser.get(u.id) ?? (isStudent ? 'STUDENT' : isParent ? 'PARENT' : isTeacher ? 'TEACHER' : isAdmin ? 'BRANCH_ADMIN' : isPrincipal ? 'PRINCIPAL' : 'TEACHER');
       return {
         id: `ura_${u.id}`,
         userId: u.id,
