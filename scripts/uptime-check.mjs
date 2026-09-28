@@ -12,6 +12,15 @@
 //             /TR "C:\Program Files\nodejs\node.exe D:\...\scripts\uptime-check.mjs"
 // Linux:    */5 * * * * node /opt/educore/scripts/uptime-check.mjs >> /var/log/uptime.log 2>&1
 //
+// NOTE (dev machines): a scheduled console task flashes a terminal window on
+// every run. Two clean options on a real deployment:
+//   1. Run whether user is logged on or not (schtasks /RU ...) — task runs
+//      in session 0, no window is ever shown; or
+//   2. Point /TR at a hidden launcher (wscript //B run-uptime-check.vbs).
+// On the dev box the task is DISABLED (schtasks /Change /TN
+// "EduCore Uptime Check" /DISABLE) because the stack is not running there
+// around the clock; re-enable when hosting for a school.
+//
 // Teardown note (Node 24 on Windows): calling process.exit() while undici's
 // socket pool still holds a handle trips a libuv assertion and yields exit
 // code 127 — which the scheduler would read as a failure. Every path here
